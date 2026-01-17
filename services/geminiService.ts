@@ -129,7 +129,7 @@ export const analyzeBankStatement = async (base64Data: string, mimeType: string,
       const systemKeys = envKeys.split(',').map(k => k.trim()).filter(k => k.length > 0);
 
       if (systemKeys.length === 0) {
-        throw new Error("No API Key available. Please add one in Settings.");
+        throw new Error("No API Key available. Please add one in Settings or configure API_KEY in your .env file.");
       }
 
       // Retry Logic: Try up to 3 times
