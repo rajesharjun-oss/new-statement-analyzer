@@ -1,3 +1,4 @@
+
 export interface Transaction {
   date: string;
   description: string;
@@ -6,6 +7,7 @@ export interface Transaction {
   debit: number;
   credit: number;
   balance: number;
+  is_reversal: boolean;
 }
 
 export interface AnalysisResult {
@@ -25,25 +27,25 @@ export enum AppStatus {
 }
 
 export const CATEGORIES = [
-  // Income
-  'Operating Income', 'Other Income',
-  // Cost of Sales
-  'COS 1', 'COS 2',
-  // Operating Expenses
-  'Salaries & Wages', 'Staff Welfare', 'Staff Meals/Canteen', 'Staff Uniforms/Laundry', 
-  'Staff Training', 'Staff Incentives', 'Telephone Expense', 'Utilities', 'Cable & Internet', 
-  'Repairs & Maintenance', 'Cleaning', 'Diesel', 'Security', 'Depreciation', 'Travel Expense', 
-  'Insurance', 'Licenses & Permits', 'Software Subscriptions', 'IT Maintenance & Repairs',
-  // Marketing
-  'Advertising & Promotions',
-  // Professional Fees
-  'Legal Fees', 'Audit Fees', 'Consultancy Fees',
-  // Finance Costs
-  'Bank POS / Merchant Transaction Fees', 'Bank Charges', 'Interest Expense', 'Exchange Rate Loss',
-  // Taxes
-  'Company Income Tax', 'Education Tax', 'Hotel Occupancy & Restaurant Consumption Tax', 'Fines & Penalties',
-  // Transfers
-  'Transfer In', 'Transfer Out', 
-  // Default
+  // Inflows (Credit Side)
+  'Operating Income', 
+  'Student Exam Fees (Pass-Through)', 
+  'Owner\'s Capital', 
+  'Inter-Account Transfer', 
+  'Interest Income', 
+  'Refund / Reversal',
+  'Incoming Transfer',
+
+  // Expenses (Decision Tree)
+  'Staff Costs',           // Salary / Staff
+  'Cost of Service',       // Student / Exam / Uniform
+  'Repairs & Maintenance', // Repairs / Servicing
+  'Utilities',             // Utility / Fuel
+  'Bank Charges',          // Bank / SMS / Charges
+  'Tax Payable',           // Tax
+  'Capital Asset',         // Asset Purchase
+  'Administrative Expenses', // Otherwise
+
+  // Fallback
   'Unallocated'
 ];

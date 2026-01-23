@@ -47,7 +47,8 @@ export const generateExcel = (
     Reference: t.reference || '',
     Debit: t.debit || 0,
     Credit: t.credit || 0,
-    Balance: t.balance || 0
+    Balance: t.balance || 0,
+    Reversal: t.is_reversal ? 'YES' : 'NO'
   }));
 
   const wsTransactions = XLSX.utils.json_to_sheet(tableData);
