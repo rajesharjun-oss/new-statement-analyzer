@@ -1,3 +1,4 @@
+
 import * as XLSX_PKG from 'xlsx';
 import { Transaction } from '../types';
 
@@ -66,10 +67,11 @@ export const generateExcel = (
   const incomeSummary: Record<string, number> = {};
 
   transactions.forEach(t => {
-    if (t.debit > 0) {
+    // Check for non-zero to include negative values (reversals)
+    if ((t.debit || 0) !== 0) {
       expenseSummary[t.category] = (expenseSummary[t.category] || 0) + t.debit;
     }
-    if (t.credit > 0) {
+    if ((t.credit || 0) !== 0) {
       incomeSummary[t.category] = (incomeSummary[t.category] || 0) + t.credit;
     }
   });

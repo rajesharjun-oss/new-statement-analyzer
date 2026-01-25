@@ -1,3 +1,4 @@
+
 import React, { useMemo, useState, useEffect } from "react";
 import {
   ShieldCheck,
@@ -20,7 +21,8 @@ import {
   BadgeCheck,
   Activity,
   PieChart as PieChartIcon,
-  BarChart as BarChartIcon
+  BarChart as BarChartIcon,
+  Timer
 } from "lucide-react";
 import { 
   PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, Legend,
@@ -46,6 +48,12 @@ function formatMoney(n: number) {
   return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function formatTime(seconds: number) {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.floor(seconds % 60);
+  return `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
+}
+
 function MetricCard(props: {
   label: string;
   value: string;
@@ -53,12 +61,12 @@ function MetricCard(props: {
   icon?: React.ReactNode;
 }) {
   return (
-    <Card className="bg-white/70 backdrop-blur supports-[backdrop-filter]:bg-white/55 border-black/5 shadow-[0_10px_30px_-18px_rgba(0,0,0,0.35)] rounded-2xl">
+    <Card className="bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 border-black/5 shadow-[0_10px_30px_-18px_rgba(0,0,0,0.35)] rounded-2xl">
       <CardContent className="p-5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-xs tracking-wide text-zinc-500">{props.label}</div>
-            <div className="mt-1 text-xl font-semibold text-zinc-900 truncate">{props.value}</div>
+            <div className="text-xs tracking-wide text-zinc-600 font-medium">{props.label}</div>
+            <div className="mt-1 text-xl font-bold text-zinc-900 truncate">{props.value}</div>
             {props.helper ? (
               <div className="mt-1 text-xs text-zinc-500">{props.helper}</div>
             ) : null}
@@ -78,8 +86,8 @@ function StatusPill({ ok, text }: { ok: boolean, text?: string }) {
       className={cn(
         "inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium border",
         ok
-          ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-          : "bg-amber-50 text-amber-700 border-amber-200"
+          ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+          : "bg-amber-500/10 text-amber-400 border-amber-500/20"
       )}
     >
       <span className={cn("h-2 w-2 rounded-full", ok ? "bg-emerald-500" : "bg-amber-500")} />
@@ -93,7 +101,7 @@ function FlagPill({ flag }: { flag?: Txn["flag"] }) {
     return (
       <Badge
         variant="outline"
-        className="border-rose-200 bg-rose-50 text-rose-700 rounded-full"
+        className="border-rose-500/30 bg-rose-500/10 text-rose-300 rounded-full"
       >
         <AlertTriangle className="mr-1 h-3 w-3" />
         Anomaly
@@ -103,7 +111,7 @@ function FlagPill({ flag }: { flag?: Txn["flag"] }) {
     return (
       <Badge
         variant="outline"
-        className="border-amber-200 bg-amber-50 text-amber-700 rounded-full"
+        className="border-amber-500/30 bg-amber-500/10 text-amber-300 rounded-full"
       >
         <Info className="mr-1 h-3 w-3" />
         Review
@@ -112,7 +120,7 @@ function FlagPill({ flag }: { flag?: Txn["flag"] }) {
   return (
     <Badge
       variant="outline"
-      className="border-emerald-200 bg-emerald-50 text-emerald-700 rounded-full"
+      className="border-emerald-500/30 bg-emerald-500/10 text-emerald-300 rounded-full"
     >
       <CheckCircle2 className="mr-1 h-3 w-3" />
       Verified
@@ -127,7 +135,7 @@ function ConfidenceBar({ value }: { value: number }) {
       <div className="w-24">
         <Progress value={pct} className="h-2" />
       </div>
-      <div className="text-xs text-zinc-500 tabular-nums">{pct}%</div>
+      <div className="text-xs text-zinc-400 tabular-nums">{pct}%</div>
     </div>
   );
 }
@@ -137,6 +145,7 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState("");
+  const [processingTime, setProcessingTime] = useState(0);
   
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   
@@ -162,11 +171,19 @@ export default function App() {
   const txns: Txn[] = useMemo(() => {
     if (!analysisResult) return [];
     return analysisResult.transactions.map((t, i) => {
-      // Mock confidence & flags based on available data
-      const confidence = t.category === "Unallocated" ? 0.65 : 0.90 + (Math.random() * 0.09);
+      // Use real confidence if available, otherwise mock based on category
+      const confidence = t.confidence !== undefined 
+        ? t.confidence 
+        : (t.category === "Review Required" || t.category === "Unallocated" ? 0.5 : 0.85);
+      
       let flag: "ok" | "review" | "anomaly" = "ok";
-      if (t.category === "Unallocated") flag = "review";
-      if (analysisResult.reconciliation_failed && i === analysisResult.transactions.length -1) flag = "anomaly"; // Flag last txn if reco failed
+      
+      // Determine flag based on spec rules or fallback
+      if (t.category === "Review Required") flag = "review";
+      else if (confidence < 0.7) flag = "review";
+      
+      // Anomaly detection
+      if (analysisResult.reconciliation_failed && i === analysisResult.transactions.length -1) flag = "anomaly"; 
       
       return {
         ...t,
@@ -195,7 +212,8 @@ export default function App() {
     if (!txns.length) return [];
     const categoryMap: Record<string, number> = {};
     txns.forEach(t => {
-      if ((t.debit || 0) > 0) {
+      // Net debits, including negatives (reversals)
+      if ((t.debit || 0) !== 0) {
         categoryMap[t.category] = (categoryMap[t.category] || 0) + (t.debit || 0);
       }
     });
@@ -209,6 +227,12 @@ export default function App() {
     setFileName(file.name);
     setIsAnalyzing(true);
     setError(null);
+    setProcessingTime(0);
+
+    const startTime = Date.now();
+    const timerInterval = setInterval(() => {
+      setProcessingTime((Date.now() - startTime) / 1000);
+    }, 100);
 
     try {
       const reader = new FileReader();
@@ -222,12 +246,22 @@ export default function App() {
           setError(err.message || "Failed to analyze document");
         } finally {
           setIsAnalyzing(false);
+          clearInterval(timerInterval);
+          setProcessingTime((Date.now() - startTime) / 1000);
         }
       };
+      
+      reader.onerror = () => {
+         setError("File reading failed");
+         setIsAnalyzing(false);
+         clearInterval(timerInterval);
+      };
+
       reader.readAsDataURL(file);
     } catch (e) {
       setError("File reading failed");
       setIsAnalyzing(false);
+      clearInterval(timerInterval);
     }
   };
 
@@ -258,7 +292,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-zinc-950 font-sans text-slate-200">
+    <div className="min-h-screen bg-zinc-950 font-sans text-zinc-200">
       <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} onSave={handleSaveSettings} currentKey={userApiKey} />
       
       {/* Premium background */}
@@ -275,29 +309,46 @@ export default function App() {
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-3 cursor-pointer" onClick={() => setHasFile(false)}>
               <div className="h-9 w-9 rounded-xl bg-white/5 border border-white/10 grid place-items-center">
-                <ShieldCheck className="h-5 w-5 text-white/90" />
+                <ShieldCheck className="h-5 w-5 text-white" />
               </div>
               <div className="leading-tight">
                 <div className="flex items-center gap-2">
                   <div className="text-sm font-semibold text-white">SentinelAI</div>
                   <Badge
                     variant="outline"
-                    className="border-white/10 text-white/70 bg-white/5 rounded-full"
+                    className="border-white/20 text-zinc-300 bg-white/5 rounded-full"
                   >
                     Audit Intelligence
                   </Badge>
                 </div>
-                <div className="text-xs text-white/55">Bank Statement Analyzer</div>
+                <div className="text-xs text-zinc-400">Bank Statement Analyzer</div>
               </div>
             </div>
 
             <div className="flex items-center gap-3">
+              {(isAnalyzing || hasFile) && (
+                <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10">
+                   <Timer className="w-3.5 h-3.5 text-zinc-400" />
+                   <div className="text-xs font-mono text-zinc-400 tabular-nums">
+                      {formatTime(processingTime)}
+                   </div>
+                   {hasFile && (
+                      <>
+                        <div className="h-3 w-[1px] bg-white/10" />
+                        <div className="text-xs font-mono text-zinc-400">
+                          {txns.length} txns
+                        </div>
+                      </>
+                   )}
+                </div>
+              )}
+
               <StatusPill ok={!isAnalyzing} text={isAnalyzing ? "Processing..." : undefined} />
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
                     variant="outline"
-                    className="rounded-xl border-white/10 bg-white/5 text-white/85 hover:bg-white/10"
+                    className="rounded-xl border-white/10 bg-white/5 text-zinc-100 hover:bg-white/10"
                   >
                     Account <ChevronDown className="ml-2 h-4 w-4 opacity-80" />
                   </Button>
@@ -316,14 +367,14 @@ export default function App() {
         {/* Page Title Bar */}
         <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div>
-            <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/75">
+            <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-zinc-300">
               <BadgeCheck className="h-3.5 w-3.5" />
               Audit-grade financial reconciliation
             </div>
             <h1 className="mt-3 text-3xl md:text-4xl font-semibold tracking-tight text-white">
               Statement Intelligence Workspace
             </h1>
-            <p className="mt-2 text-sm text-white/65 max-w-2xl">
+            <p className="mt-2 text-sm text-zinc-400 max-w-2xl">
               Extract, reconcile, and validate transactions with traceable evidence — built for finance and audit teams.
             </p>
           </div>
@@ -332,7 +383,7 @@ export default function App() {
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 variant="outline"
-                className="rounded-xl border-white/10 bg-white/5 text-white/85 hover:bg-white/10"
+                className="rounded-xl border-white/10 bg-white/5 text-zinc-100 hover:bg-white/10"
                 onClick={handleExport}
               >
                 <Download className="mr-2 h-4 w-4" />
@@ -353,13 +404,13 @@ export default function App() {
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <div className="text-sm font-semibold text-white">Document Intake</div>
-                    <div className="mt-1 text-xs text-white/60">
+                    <div className="mt-1 text-xs text-zinc-400">
                       Secure upload with evidence-grade processing options.
                     </div>
                   </div>
                   <Badge
                     variant="outline"
-                    className="rounded-full border-white/10 bg-white/5 text-white/70"
+                    className="rounded-full border-white/10 bg-white/5 text-zinc-300"
                   >
                     <Lock className="mr-1 h-3.5 w-3.5" />
                     AES-256 at rest
@@ -385,16 +436,16 @@ export default function App() {
                     <div className="flex flex-col items-center justify-center py-10">
                       <div className="w-12 h-12 rounded-full border-4 border-white/10 border-t-blue-500 animate-spin mb-4"></div>
                       <p className="text-white font-medium">Processing Document...</p>
-                      <p className="text-xs text-white/50 mt-1">This involves OCR and Semantic Analysis</p>
+                      <p className="text-xs text-zinc-400 mt-1">This involves OCR and Semantic Analysis</p>
                     </div>
                   ) : (
                     <div className="flex items-center gap-3">
                       <div className="h-12 w-12 rounded-2xl bg-white/5 border border-white/10 grid place-items-center">
-                        <Upload className="h-5 w-5 text-white/85" />
+                        <Upload className="h-5 w-5 text-zinc-200" />
                       </div>
                       <div className="min-w-0">
                         <div className="text-white font-medium">Drag & drop your statement</div>
-                        <div className="text-xs text-white/60">
+                        <div className="text-xs text-zinc-400">
                           PDF, scanned images, or Excel.
                         </div>
                       </div>
@@ -407,7 +458,7 @@ export default function App() {
                         <FileUp className="mr-2 h-4 w-4" />
                         Browse Secure Files
                       </Button>
-                      <div className="text-[11px] text-white/55">
+                      <div className="text-[11px] text-zinc-500">
                         Files processed locally in browser memory.
                       </div>
                     </div>
@@ -437,11 +488,11 @@ export default function App() {
                     ].map(([title, desc]) => (
                       <li key={title} className="flex gap-3">
                         <div className="mt-0.5 h-8 w-8 rounded-xl bg-white/5 border border-white/10 grid place-items-center">
-                          <CheckCircle2 className="h-4 w-4 text-white/80" />
+                          <CheckCircle2 className="h-4 w-4 text-zinc-400" />
                         </div>
                         <div className="min-w-0">
-                          <div className="text-sm text-white/85 font-medium">{title}</div>
-                          <div className="text-xs text-white/55">{desc}</div>
+                          <div className="text-sm text-zinc-200 font-medium">{title}</div>
+                          <div className="text-xs text-zinc-400">{desc}</div>
                         </div>
                       </li>
                     ))}
@@ -458,7 +509,7 @@ export default function App() {
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <div className="text-sm font-semibold text-white">Statement Source</div>
-                    <div className="mt-1 text-xs text-white/60">
+                    <div className="mt-1 text-xs text-zinc-400">
                       Original document view (evidence source).
                     </div>
                   </div>
@@ -466,7 +517,7 @@ export default function App() {
                     <Button
                       size="sm"
                       variant="outline"
-                      className="rounded-xl border-white/10 bg-white/5 text-white/85 hover:bg-white/10"
+                      className="rounded-xl border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10"
                       onClick={() => setHasFile(false)}
                     >
                       <RefreshCw className="mr-2 h-4 w-4" />
@@ -481,13 +532,13 @@ export default function App() {
                   <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
                     <div className="flex items-center gap-2">
                       <div className="h-8 w-8 rounded-xl bg-white/5 border border-white/10 grid place-items-center">
-                        <FileText className="h-4 w-4 text-white/85" />
+                        <FileText className="h-4 w-4 text-zinc-300" />
                       </div>
                       <div className="leading-tight">
-                        <div className="text-sm text-white/85 font-medium">
+                        <div className="text-sm text-zinc-200 font-medium">
                           {fileName}
                         </div>
-                        <div className="text-xs text-white/55">{analysisResult?.bankName} • {analysisResult?.organizationName}</div>
+                        <div className="text-xs text-zinc-500">{analysisResult?.bankName} • {analysisResult?.organizationName}</div>
                       </div>
                     </div>
                   </div>
@@ -496,12 +547,12 @@ export default function App() {
                     <div className="aspect-[16/10] rounded-2xl border border-white/10 bg-zinc-950/40 grid place-items-center">
                       <div className="text-center px-6">
                         <div className="mx-auto h-12 w-12 rounded-2xl bg-white/5 border border-white/10 grid place-items-center">
-                          <FileText className="h-6 w-6 text-white/80" />
+                          <FileText className="h-6 w-6 text-zinc-400" />
                         </div>
-                        <div className="mt-3 text-sm font-medium text-white/85">
+                        <div className="mt-3 text-sm font-medium text-zinc-200">
                           PDF/Image Content
                         </div>
-                        <div className="mt-1 text-xs text-white/55">
+                        <div className="mt-1 text-xs text-zinc-500">
                           Document content is processed in memory.
                         </div>
                       </div>
@@ -529,7 +580,7 @@ export default function App() {
                   <div className="mt-3 space-y-2">
                     {summary.anomalies > 0 && (
                       <div className="w-full flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3 py-2">
-                        <div className="flex items-center gap-2 text-sm text-white/85">
+                        <div className="flex items-center gap-2 text-sm text-zinc-200">
                           <AlertTriangle className="h-4 w-4 text-rose-400" />
                           {summary.anomalies} high-risk anomalies detected
                         </div>
@@ -537,7 +588,7 @@ export default function App() {
                     )}
 
                     <div className="w-full flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3 py-2">
-                      <div className="flex items-center gap-2 text-sm text-white/85">
+                      <div className="flex items-center gap-2 text-sm text-zinc-200">
                         <Info className="h-4 w-4 text-amber-400" />
                         {summary.reviews} items require review
                       </div>
@@ -545,7 +596,7 @@ export default function App() {
 
                     {!analysisResult?.reconciliation_failed && (
                       <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2">
-                        <div className="flex items-center gap-2 text-sm text-white/85">
+                        <div className="flex items-center gap-2 text-sm text-zinc-200">
                           <CheckCircle2 className="h-4 w-4 text-emerald-400" />
                           Balance validation complete
                         </div>
@@ -594,10 +645,10 @@ export default function App() {
                       <div className="flex items-center justify-between">
                         <div>
                           <div className="text-sm font-semibold text-white">Expense Distribution</div>
-                          <div className="mt-1 text-xs text-white/60">Top categories by volume</div>
+                          <div className="mt-1 text-xs text-zinc-400">Top categories by volume</div>
                         </div>
                         <div className="p-2 rounded-lg bg-white/5 border border-white/10">
-                          <PieChartIcon className="w-4 h-4 text-white/70" />
+                          <PieChartIcon className="w-4 h-4 text-zinc-300" />
                         </div>
                       </div>
                     </CardHeader>
@@ -643,10 +694,10 @@ export default function App() {
                       <div className="flex items-center justify-between">
                         <div>
                           <div className="text-sm font-semibold text-white">Category Breakdown</div>
-                          <div className="mt-1 text-xs text-white/60">Spending across main categories</div>
+                          <div className="mt-1 text-xs text-zinc-400">Spending across main categories</div>
                         </div>
                         <div className="p-2 rounded-lg bg-white/5 border border-white/10">
-                          <BarChartIcon className="w-4 h-4 text-white/70" />
+                          <BarChartIcon className="w-4 h-4 text-zinc-300" />
                         </div>
                       </div>
                     </CardHeader>
@@ -692,7 +743,7 @@ export default function App() {
                   <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                     <div>
                       <div className="text-sm font-semibold text-white">Audit Ledger</div>
-                      <div className="mt-1 text-xs text-white/60">
+                      <div className="mt-1 text-xs text-zinc-400">
                         Clean transactions with categories, confidence, and evidence.
                       </div>
                     </div>
@@ -716,7 +767,7 @@ export default function App() {
 
                     <TabsContent value="transactions" className="mt-4">
                       <div className="overflow-hidden rounded-2xl border border-white/10">
-                        <div className="grid grid-cols-12 bg-zinc-950/40 px-4 py-3 text-xs text-white/60 font-semibold uppercase tracking-wider">
+                        <div className="grid grid-cols-12 bg-zinc-950/40 px-4 py-3 text-xs text-zinc-400 font-semibold uppercase tracking-wider">
                           <div className="col-span-2">Date</div>
                           <div className="col-span-4">Description</div>
                           <div className="col-span-2 text-right">Debit</div>
@@ -738,36 +789,41 @@ export default function App() {
                               }}
                             >
                               <div className="col-span-2">
-                                <div className="text-sm text-white/85 font-mono">{t.date}</div>
+                                <div className="text-sm text-zinc-200 font-mono">{t.date}</div>
                                 <div className="mt-1">{<FlagPill flag={t.flag} />}</div>
                               </div>
 
                               <div className="col-span-4 min-w-0">
-                                <div className="text-sm text-white/85 truncate" title={t.description}>{t.description}</div>
+                                <div className="text-sm text-zinc-200 truncate" title={t.description}>{t.description}</div>
                                 <div className="mt-1 flex flex-wrap items-center gap-2">
                                   <Badge
                                     variant="outline"
-                                    className="rounded-full border-white/10 bg-white/5 text-white/75"
+                                    className="rounded-full border-white/10 bg-white/5 text-zinc-300"
                                   >
                                     {t.category}
                                   </Badge>
+                                  {t.ruleId && (
+                                     <Badge variant="outline" className="rounded-full border-blue-500/20 bg-blue-500/10 text-blue-300 text-[10px] px-1.5 py-0 h-4">
+                                       {t.ruleId.split('_')[0]}
+                                     </Badge>
+                                  )}
                                 </div>
                               </div>
 
                               <div className="col-span-2 text-right">
-                                <div className="text-sm text-white/85 tabular-nums font-mono text-rose-300">
+                                <div className="text-sm text-zinc-200 tabular-nums font-mono text-rose-300">
                                   {t.debit ? `${formatMoney(t.debit)}` : "—"}
                                 </div>
                               </div>
 
                               <div className="col-span-2 text-right">
-                                <div className="text-sm text-white/85 tabular-nums font-mono text-emerald-300">
+                                <div className="text-sm text-zinc-200 tabular-nums font-mono text-emerald-300">
                                   {t.credit ? `${formatMoney(t.credit)}` : "—"}
                                 </div>
                               </div>
 
                               <div className="col-span-2 text-right">
-                                <div className="text-sm text-white/85 tabular-nums font-mono font-bold">
+                                <div className="text-sm text-zinc-200 tabular-nums font-mono font-bold">
                                   {formatMoney(t.balance)}
                                 </div>
                                 <div className="mt-1 flex justify-end">
@@ -787,7 +843,7 @@ export default function App() {
                             <div className="flex items-start justify-between">
                               <div>
                                 <div className="text-sm font-semibold text-white">High-risk</div>
-                                <div className="mt-1 text-xs text-white/60">
+                                <div className="mt-1 text-xs text-zinc-400">
                                   Items that may affect reporting accuracy.
                                 </div>
                               </div>
@@ -807,7 +863,7 @@ export default function App() {
                                     key={i}
                                     className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-left hover:bg-white/10 transition"
                                   >
-                                    <div className="text-sm text-white/85 truncate">{t.description}</div>
+                                    <div className="text-sm text-zinc-200 truncate">{t.description}</div>
                                   </div>
                                 ))}
                             </div>
@@ -819,7 +875,7 @@ export default function App() {
                             <div className="flex items-start justify-between">
                               <div>
                                 <div className="text-sm font-semibold text-white">Needs review</div>
-                                <div className="mt-1 text-xs text-white/60">
+                                <div className="mt-1 text-xs text-zinc-400">
                                   Low confidence or classification uncertainties.
                                 </div>
                               </div>
@@ -839,8 +895,8 @@ export default function App() {
                                     key={i}
                                     className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-left hover:bg-white/10 transition"
                                   >
-                                    <div className="text-sm text-white/85 truncate">{t.description}</div>
-                                    <div className="mt-1 text-xs text-white/55">
+                                    <div className="text-sm text-zinc-200 truncate">{t.description}</div>
+                                    <div className="mt-1 text-xs text-zinc-500">
                                       Category: {t.category}
                                     </div>
                                   </div>
@@ -858,7 +914,7 @@ export default function App() {
         )}
 
         {/* Footer */}
-        <div className="mt-10 text-center text-xs text-white/45">
+        <div className="mt-10 text-center text-xs text-zinc-500">
           SentinelAI • Evidence-grade financial intelligence • Designed for audit workflows
         </div>
       </main>
