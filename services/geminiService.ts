@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { AnalysisResult, Transaction, CATEGORIES } from "../types";
+import { AnalysisResult, Transaction, CATEGORIES, AnalysisStatistics } from "../types";
 import { categorizeTransaction } from "./categorizationRules";
 
 const SYSTEM_INSTRUCTION = `
@@ -14,10 +14,16 @@ RECONCILIATION RULES (STRICT):
    - Validate running balances: previous_balance - debit + credit == current_balance.
    - Allow a tolerance of 0.02.
    - If validation fails, set reconciliation_failed = true.
-2. **Column Mapping Rule**:
+
+2. **Column Mapping Rule (CRITICAL)**:
    - "Pay In" / "Deposit" / "Credit" -> **Credit**.
    - "Pay Out" / "Withdrawal" / "Debit" -> **Debit**.
    - "Details" / "Narration" / "Memo" -> **Description**.
+   - **NEGATIVE VALUES / REVERSALS (NON-NEGOTIABLE)**:
+     - If a value appears in the **Debit** column with parentheses e.g. "(123.45)" or a minus sign "-123.45", extract it as a **NEGATIVE NUMBER** in the **Debit** field (e.g., "debit": -123.45).
+     - **DO NOT** move it to the Credit column.
+     - **DO NOT** convert it to a positive number.
+     - The same applies to negative values in the Credit column: keep them in the Credit field as negative numbers.
 
 RECORD COUNT RULE (NON-NEGOTIABLE):
 3. Extract every single dated row that has a debit, credit, or opening balance.
@@ -28,7 +34,7 @@ CATEGORIZATION RULES:
 6. Analyze each "Description" and assign a "Category" from the provided Chart of Accounts.
    - **Prioritize specific matches**: Travel, Fuel, Utilities, Healthcare, Bank Charges.
    - **Reversal Rule**: If a transaction is a reversal (starts with REV/), assign the ORIGINAL category (e.g. REV/Fuel -> Fuel).
-   - **Defaults**: If unsure, use "Unallocated".
+   - **Defaults**: If unsure, use "Review Required".
    - **Categories**: ${CATEGORIES.join(', ')}.
 
 OUTPUT RULES:
@@ -72,10 +78,10 @@ const RESPONSE_SCHEMA: Schema = {
 };
 
 // Helper: Perform the actual API call
-const performGeminiCall = async (apiKey: string, base64Data: string, mimeType: string) => {
+const performGeminiCall = async (apiKey: string, base64Data: string, mimeType: string, model: string) => {
   const ai = new GoogleGenAI({ apiKey });
   const response = await ai.models.generateContent({
-    model: 'gemini-3-flash-preview',
+    model, 
     contents: {
       parts: [
         {
@@ -94,6 +100,10 @@ const performGeminiCall = async (apiKey: string, base64Data: string, mimeType: s
       responseMimeType: "application/json",
       responseSchema: RESPONSE_SCHEMA,
       temperature: 0,
+      // Increase output budget to handle large transaction lists without truncation
+      maxOutputTokens: 65536,
+      // Reduced thinking budget for speed (Flash models are efficient)
+      thinkingConfig: { thinkingBudget: 1024 },
     },
   });
 
@@ -101,58 +111,118 @@ const performGeminiCall = async (apiKey: string, base64Data: string, mimeType: s
   
   // Robust JSON cleaning to prevent parsing errors if markdown is included
   let cleanText = response.text.trim();
-  if (cleanText.startsWith('```json')) {
-    cleanText = cleanText.replace(/^```json/, '').replace(/```$/, '');
-  } else if (cleanText.startsWith('```')) {
-     cleanText = cleanText.replace(/^```/, '').replace(/```$/, '');
-  }
+  // Remove markdown fences if present (start and end)
+  cleanText = cleanText.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
 
   try {
     return JSON.parse(cleanText);
   } catch (e) {
-    console.error("JSON Parse Error on text:", cleanText);
-    throw new Error("Failed to parse AI response. Please try again.");
+    console.error("JSON Parse Error on text length:", cleanText.length);
+    console.error("Snippet:", cleanText.slice(-200));
+    // If we can't parse, it's likely truncation due to extreme length
+    throw new Error("Analysis incomplete or file too large. Please try splitting the document into fewer pages.");
   }
 };
 
 export const analyzeBankStatement = async (base64Data: string, mimeType: string, customApiKey?: string): Promise<AnalysisResult> => {
   try {
+    // --- RUN STATS INITIALIZATION ---
+    const runStats: AnalysisStatistics = {
+      total_txns: 0,
+      rule_hits: 0,
+      memory_hits: 0,
+      ai_txns: 0,
+      ai_calls: 0,
+      human_overrides: 0,
+      ai_rate_percent: 0,
+      auto_rate_percent: 0
+    };
+
     let rawData: any;
+    // Fallback strategy: Prioritize Flash for speed, fall back to Pro
+    const models = ['gemini-3-flash-preview', 'gemini-3-pro-preview'];
 
-    if (customApiKey) {
-      rawData = await performGeminiCall(customApiKey, base64Data, mimeType);
-    } 
-    else {
-      const envKeys = process.env.API_KEY || "";
-      const systemKeys = envKeys.split(',').map(k => k.trim()).filter(k => k.length > 0);
+    const getKeys = () => {
+       if (customApiKey) return [customApiKey];
+       const envKeys = process.env.API_KEY || "";
+       return envKeys.split(',').map(k => k.trim()).filter(k => k.length > 0);
+    };
 
-      if (systemKeys.length === 0) {
-        throw new Error("No API Key available. Please add one in Settings or configure API_KEY in your .env file.");
-      }
-
-      let lastError: any;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          const key = systemKeys[Math.floor(Math.random() * systemKeys.length)];
-          rawData = await performGeminiCall(key, base64Data, mimeType);
-          break;
-        } catch (error: any) {
-          lastError = error;
-          // Handle Rate Limits (429) and Service Unavailable (503)
-          const isTransient = error.message?.includes('429') || error.status === 429 || error.message?.includes('Quota') || error.status === 503;
-          if (isTransient && attempt < 2) {
-            console.warn(`Attempt ${attempt + 1} failed (Transient Error). Retrying...`);
-            await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
-            continue; 
-          }
-          throw error;
-        }
-      }
-      if (!rawData && lastError) throw lastError;
+    const keys = getKeys();
+    if (keys.length === 0) {
+      throw new Error("No API Key available. Please add one in Settings or configure API_KEY in your .env file.");
     }
 
-    // Sanitize and Apply Strict Categorization Rules
-    const processedTransactions = (rawData.transactions || []).map((t: Transaction) => categorizeTransaction(t));
+    let lastError: any;
+    let success = false;
+
+    // Outer Loop: Model Fallback
+    for (const model of models) {
+        if (success) break;
+        
+        // Inner Loop: Retry Logic
+        for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+                const key = keys[Math.floor(Math.random() * keys.length)];
+                
+                // Track AI Call (Actual API Hit)
+                runStats.ai_calls++;
+                
+                rawData = await performGeminiCall(key, base64Data, mimeType, model);
+                success = true;
+                break; // Success, exit retry loop
+            } catch (error: any) {
+                lastError = error;
+                const errMsg = error.message || '';
+                const status = error.status || 0;
+                
+                // Enhanced transient check including RPC/500 errors often caused by network/proxy issues
+                const isNetworkError = errMsg.includes('Rpc failed') || errMsg.includes('xhr error') || errMsg.includes('fetch failed');
+                const isServerError = status >= 500 || errMsg.includes('500') || errMsg.includes('503');
+                const isRateLimit = status === 429 || errMsg.includes('429') || errMsg.includes('Quota');
+                
+                const isTransient = isNetworkError || isServerError || isRateLimit;
+
+                if (isTransient && attempt < 2) {
+                    console.warn(`Attempt ${attempt + 1} with ${model} failed (${errMsg}). Retrying...`);
+                    await new Promise(resolve => setTimeout(resolve, 2000 * (attempt + 1))); // Exponential backoff
+                    continue; 
+                }
+                
+                // If error is not transient (e.g. 400 Bad Request) or we exhausted retries, break retry loop to try next model
+                break; 
+            }
+        }
+    }
+
+    if (!success) {
+        throw lastError || new Error("Analysis failed. Please check your internet connection or try a smaller file.");
+    }
+
+    // Sanitize, Apply Strict Categorization Rules, and TRACK STATS
+    const processedTransactions = (rawData.transactions || []).map((t: Transaction) => {
+      runStats.total_txns++;
+      
+      const classified = categorizeTransaction(t);
+      
+      // Increment counters based on decision source
+      if (classified.decision_source === 'RULE') {
+        runStats.rule_hits++;
+      } else if (classified.decision_source === 'MEMORY') {
+        runStats.memory_hits++;
+      } else {
+        // Fallback to AI (or if undefined)
+        runStats.ai_txns++;
+      }
+      
+      return classified;
+    });
+
+    // Compute Rates
+    if (runStats.total_txns > 0) {
+      runStats.ai_rate_percent = parseFloat(((runStats.ai_txns / runStats.total_txns) * 100).toFixed(2));
+      runStats.auto_rate_percent = parseFloat((((runStats.rule_hits + runStats.memory_hits) / runStats.total_txns) * 100).toFixed(2));
+    }
 
     const data: AnalysisResult = {
       reconciliation_failed: rawData.reconciliation_failed || false,
@@ -160,7 +230,8 @@ export const analyzeBankStatement = async (base64Data: string, mimeType: string,
       currency: rawData.currency || "USD",
       transactions: processedTransactions,
       organizationName: rawData.organizationName || "Unknown Organization",
-      bankName: rawData.bankName || "Unknown Bank"
+      bankName: rawData.bankName || "Unknown Bank",
+      stats: runStats
     };
     
     return data;

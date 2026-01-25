@@ -1,3 +1,4 @@
+
 import React from 'react';
 import * as TabsPrimitive from '@radix-ui/react-tabs'; // Assuming we simulate or use simple state if radix not avail.
 // Actually, to avoid deps, I'll build simple controlled components.
@@ -108,7 +109,7 @@ export const Tabs = ({ defaultValue, value, onValueChange, children, className }
 };
 
 export const TabsList = ({ className, children }: any) => (
-  <div className={cn("inline-flex h-9 items-center justify-center rounded-lg bg-zinc-100 p-1 text-zinc-500 dark:bg-white/5", className)}>
+  <div className={cn("inline-flex h-9 items-center justify-center rounded-lg bg-zinc-100 p-1 text-zinc-500 dark:bg-white/5 dark:text-zinc-400", className)}>
     {children}
   </div>
 );

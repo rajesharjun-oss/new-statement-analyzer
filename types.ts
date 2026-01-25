@@ -1,4 +1,3 @@
-
 export interface Transaction {
   date: string;
   description: string;
@@ -8,6 +7,20 @@ export interface Transaction {
   credit: number;
   balance: number;
   is_reversal: boolean;
+  confidence?: number;
+  ruleId?: string;
+  decision_source?: 'AI' | 'RULE' | 'MEMORY';
+}
+
+export interface AnalysisStatistics {
+  total_txns: number;
+  rule_hits: number;
+  memory_hits: number;
+  ai_txns: number;
+  ai_calls: number;
+  human_overrides: number;
+  ai_rate_percent: number;
+  auto_rate_percent: number;
 }
 
 export interface AnalysisResult {
@@ -17,6 +30,7 @@ export interface AnalysisResult {
   transactions: Transaction[];
   organizationName: string;
   bankName: string;
+  stats?: AnalysisStatistics;
 }
 
 export enum AppStatus {
@@ -27,25 +41,35 @@ export enum AppStatus {
 }
 
 export const CATEGORIES = [
-  // Inflows (Credit Side)
-  'Operating Income', 
-  'Student Exam Fees (Pass-Through)', 
-  'Owner\'s Capital', 
-  'Inter-Account Transfer', 
-  'Interest Income', 
-  'Refund / Reversal',
-  'Incoming Transfer',
+  // System
+  'Opening Balance',
+  'Closing Balance',
 
-  // Expenses (Decision Tree)
-  'Staff Costs',           // Salary / Staff
-  'Cost of Service',       // Student / Exam / Uniform
-  'Repairs & Maintenance', // Repairs / Servicing
-  'Utilities',             // Utility / Fuel
-  'Bank Charges',          // Bank / SMS / Charges
-  'Tax Payable',           // Tax
-  'Capital Asset',         // Asset Purchase
-  'Administrative Expenses', // Otherwise
+  // P&L - Income
+  'Operating Income',
+  'Interest Income',
 
-  // Fallback
-  'Unallocated'
+  // P&L - Expenses
+  'Bank Charges',
+  'Administrative Expenses',
+  'Office Rent / Lease',
+  'Event & Conference Expenses',
+  'Transport & Logistics',
+  'Repairs & Maintenance',
+  'Staff Welfare',
+  'Salaries & Wages',
+  'Staff Training & Development',
+
+  // Balance Sheet - Assets
+  'Capital Expenditure (CWIP)',
+  'WHT Receivable',
+  'VAT Receivable',
+  'Staff Debtors / Salary Advances',
+
+  // Balance Sheet - Liabilities/Movement
+  'Student Exam Fees (Pass-Through)',
+  'Inter-Account / Treasury Transfer',
+
+  // Control
+  'Review Required'
 ];
