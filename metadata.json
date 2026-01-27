@@ -1,5 +1,5 @@
 {
-  "name": "Bank Statement Sentinel",
-  "description": "A sophisticated AI-powered bank statement analyzer that extracts, reconciles, and categorizes transactions with exportable Excel reports.",
+  "name": "LedgerSentinel",
+  "description": "Evidence-grade statement reconciliation.",
   "requestFramePermissions": []
 }

@@ -1,3 +1,5 @@
+export type DecisionSource = 'AI' | 'RULE' | 'MEMORY' | 'HUMAN';
+
 export interface Transaction {
   date: string;
   description: string;
@@ -9,7 +11,7 @@ export interface Transaction {
   is_reversal: boolean;
   confidence?: number;
   ruleId?: string;
-  decision_source?: 'AI' | 'RULE' | 'MEMORY';
+  decision_source?: DecisionSource;
 }
 
 export interface AnalysisStatistics {

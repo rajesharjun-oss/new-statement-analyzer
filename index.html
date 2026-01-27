@@ -1,29 +1,66 @@
+
 <!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Bank Statement Sentinel</title>
+    <title>LedgerSentinel | Statement Reconciliation</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
+      :root {
+        --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+        --font-mono: 'JetBrains Mono', monospace;
+        --bg-app: #070707;
+        --bg-surface: #0E0F12;
+        --border-color: rgba(255, 255, 255, 0.08);
+        --accent-color: rgba(155, 135, 255, 0.9);
+      }
       body {
-        font-family: 'Inter', sans-serif;
+        font-family: var(--font-sans);
+        background-color: var(--bg-app);
+        color: rgba(255, 255, 255, 0.92);
+        overflow-x: hidden;
+        -webkit-font-smoothing: antialiased;
       }
-      /* Custom premium scrollbar */
-      .scrollbar-thin::-webkit-scrollbar {
-        width: 6px;
-        height: 6px;
+      
+      /* Subtle grain texture for matte finish */
+      .bg-grain {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        opacity: 0.025;
+        pointer-events: none;
+        z-index: 50;
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
       }
-      .scrollbar-thin::-webkit-scrollbar-track {
-        background: transparent;
+
+      /* Dark Scrollbar */
+      ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
       }
-      .scrollbar-thin::-webkit-scrollbar-thumb {
-        background: #cbd5e1;
-        border-radius: 3px;
+      ::-webkit-scrollbar-track {
+        background: #070707;
       }
-      .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-        background: #94a3b8;
+      ::-webkit-scrollbar-thumb {
+        background: #1F2125;
+        border-radius: 4px;
+        border: 2px solid #070707;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #2D3035;
+      }
+
+      .animate-enter {
+        animation: fadeUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+      
+      @keyframes fadeUp {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
       }
     </style>
   <script type="importmap">
@@ -41,7 +78,8 @@
 }
 </script>
 </head>
-  <body class="bg-slate-50 text-slate-900 antialiased selection:bg-indigo-500 selection:text-white">
-    <div id="root"></div>
+  <body>
+    <div class="bg-grain"></div>
+    <div id="root" class="relative z-10"></div>
   </body>
 </html>
