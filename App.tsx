@@ -3,49 +3,41 @@ import React, { useMemo, useState, useEffect } from "react";
 import {
   ShieldCheck,
   Upload,
-  FileText,
   Lock,
-  Sparkles,
+  ChevronDown,
+  Loader2,
+  Filter,
+  FileCheck,
   Search,
-  SlidersHorizontal,
-  Download,
-  RefreshCw,
+  LayoutDashboard,
   CheckCircle2,
   AlertTriangle,
-  Info,
-  ChevronRight,
-  ChevronDown,
-  Eye,
-  FileUp,
-  ScanLine,
-  BadgeCheck,
-  Activity,
-  PieChart as PieChartIcon,
-  BarChart as BarChartIcon,
-  Timer
+  Clock,
+  Hash
 } from "lucide-react";
 import { 
-  PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, Legend,
+  PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip,
   BarChart, Bar, XAxis, YAxis, CartesianGrid
 } from 'recharts';
 
-import { Button, Card, CardContent, CardHeader, Input, Badge, Tabs, TabsContent, TabsList, TabsTrigger, Separator, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Progress, cn } from "./components/PrimitiveUI";
+import { Button, Card, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Progress, cn, Badge, Input } from "./components/PrimitiveUI";
 import { SettingsModal } from './components/SettingsModal';
 import { analyzeBankStatement } from './services/geminiService';
 import { generateExcel } from './services/excelService';
-import { AnalysisResult, Transaction } from './types';
+import { AnalysisResult, Transaction, DecisionSource } from './types';
 
 // Extended type for internal UI state
 type Txn = Transaction & {
-  confidence: number; // 0..1
+  confidence: number;
   flag: "anomaly" | "review" | "ok";
   evidence: { page: number; line: string };
 };
 
-const CHART_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
+// Apexfy Dark Palette (Purple, Green, Orange, Blue)
+const CHART_COLORS = ['#9B87FF', '#3CDCAB', '#FFB43C', '#4F85FF', '#FF5A78', '#A0A0A5'];
 
-function formatMoney(n: number) {
-  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function formatMoney(n: number, currency: string = "USD") {
+  return new Intl.NumberFormat('en-US', { style: 'decimal', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
 }
 
 function formatTime(seconds: number) {
@@ -54,90 +46,16 @@ function formatTime(seconds: number) {
   return `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
 }
 
-function MetricCard(props: {
-  label: string;
-  value: string;
-  helper?: string;
-  icon?: React.ReactNode;
-}) {
-  return (
-    <Card className="bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 border-black/5 shadow-[0_10px_30px_-18px_rgba(0,0,0,0.35)] rounded-2xl">
-      <CardContent className="p-5">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-xs tracking-wide text-zinc-600 font-medium">{props.label}</div>
-            <div className="mt-1 text-xl font-bold text-zinc-900 truncate">{props.value}</div>
-            {props.helper ? (
-              <div className="mt-1 text-xs text-zinc-500">{props.helper}</div>
-            ) : null}
-          </div>
-          <div className="shrink-0 rounded-xl border border-black/5 bg-zinc-50 p-2 text-zinc-800">
-            {props.icon}
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function StatusPill({ ok, text }: { ok: boolean, text?: string }) {
-  return (
-    <div
-      className={cn(
-        "inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium border",
-        ok
-          ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
-          : "bg-amber-500/10 text-amber-400 border-amber-500/20"
-      )}
-    >
-      <span className={cn("h-2 w-2 rounded-full", ok ? "bg-emerald-500" : "bg-amber-500")} />
-      {text || (ok ? "System Operational" : "Processing")}
-    </div>
-  );
-}
-
-function FlagPill({ flag }: { flag?: Txn["flag"] }) {
-  if (flag === "anomaly")
+// Quiet Status Pill
+function StatusPill({ state }: { state: 'idle' | 'busy' | 'ready' }) {
+  if (state === 'busy') {
     return (
-      <Badge
-        variant="outline"
-        className="border-rose-500/30 bg-rose-500/10 text-rose-300 rounded-full"
-      >
-        <AlertTriangle className="mr-1 h-3 w-3" />
-        Anomaly
+      <Badge variant="warning" className="animate-pulse">
+        Processing
       </Badge>
     );
-  if (flag === "review")
-    return (
-      <Badge
-        variant="outline"
-        className="border-amber-500/30 bg-amber-500/10 text-amber-300 rounded-full"
-      >
-        <Info className="mr-1 h-3 w-3" />
-        Review
-      </Badge>
-    );
-  return (
-    <Badge
-      variant="outline"
-      className="border-emerald-500/30 bg-emerald-500/10 text-emerald-300 rounded-full"
-    >
-      <CheckCircle2 className="mr-1 h-3 w-3" />
-      Verified
-    </Badge>
-  );
-}
-
-function ConfidenceBar({ value }: { value: number }) {
-  const pct = Math.max(0, Math.min(100, Math.round(value * 100)));
-  return (
-    <div className="flex items-center gap-2">
-      <div className="w-24">
-        <Progress value={pct} className="h-2" />
-      </div>
-      <div className="text-xs text-zinc-400 tabular-nums">{pct}%</div>
-    </div>
-  );
+  }
+  return <Badge variant="success">System Ready</Badge>;
 }
 
 export default function App() {
@@ -146,13 +64,9 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState("");
   const [processingTime, setProcessingTime] = useState(0);
+  const [searchTerm, setSearchTerm] = useState("");
   
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
-  
-  const [selectedPage, setSelectedPage] = useState(1);
-  const [selectedTxn, setSelectedTxn] = useState<Txn | null>(null);
-  
-  // Settings
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [userApiKey, setUserApiKey] = useState<string>('');
 
@@ -167,39 +81,48 @@ export default function App() {
     else localStorage.removeItem('gemini_custom_key');
   };
 
-  // Convert raw API result to enriched UI Txn type
   const txns: Txn[] = useMemo(() => {
     if (!analysisResult) return [];
     return analysisResult.transactions.map((t, i) => {
-      // Use real confidence if available, otherwise mock based on category
       const confidence = t.confidence !== undefined 
         ? t.confidence 
         : (t.category === "Review Required" || t.category === "Unallocated" ? 0.5 : 0.85);
       
       let flag: "ok" | "review" | "anomaly" = "ok";
-      
-      // Determine flag based on spec rules or fallback
       if (t.category === "Review Required") flag = "review";
       else if (confidence < 0.7) flag = "review";
-      
-      // Anomaly detection
       if (analysisResult.reconciliation_failed && i === analysisResult.transactions.length -1) flag = "anomaly"; 
       
       return {
         ...t,
         confidence,
         flag,
-        evidence: { page: 1, line: `L${(i+1).toString().padStart(2, '0')}` } // Mock evidence
+        evidence: { page: 1, line: `L${(i+1).toString().padStart(2, '0')}` }
       };
     });
   }, [analysisResult]);
 
+  const filteredTxns = useMemo(() => {
+    if (!searchTerm) return txns;
+    const lower = searchTerm.toLowerCase();
+    return txns.filter(t => 
+      t.description.toLowerCase().includes(lower) || 
+      t.category.toLowerCase().includes(lower) ||
+      t.date.includes(lower) ||
+      t.debit.toString().includes(lower) ||
+      t.credit.toString().includes(lower)
+    );
+  }, [txns, searchTerm]);
+
   const summary = useMemo(() => {
     if (!analysisResult) return { opening: 0, closing: 0, totalDebits: 0, totalCredits: 0, anomalies: 0, reviews: 0, currency: "USD" };
     
+    // Logic: If we have an explicit Opening Balance row, use it. Otherwise calculate backwards.
+    // Assuming transactions are roughly chronological or we simply take the first row's implied opening.
     const opening = txns.length > 0 
       ? (txns[0].balance + (txns[0].debit || 0) - (txns[0].credit || 0))
       : 0;
+      
     const closing = txns[txns.length - 1]?.balance ?? 0;
     const totalDebits = txns.reduce((a, t) => a + (t.debit ?? 0), 0);
     const totalCredits = txns.reduce((a, t) => a + (t.credit ?? 0), 0);
@@ -212,7 +135,6 @@ export default function App() {
     if (!txns.length) return [];
     const categoryMap: Record<string, number> = {};
     txns.forEach(t => {
-      // Net debits, including negatives (reversals)
       if ((t.debit || 0) !== 0) {
         categoryMap[t.category] = (categoryMap[t.category] || 0) + (t.debit || 0);
       }
@@ -220,7 +142,7 @@ export default function App() {
     return Object.entries(categoryMap)
       .map(([name, value]) => ({ name, value }))
       .sort((a, b) => b.value - a.value)
-      .slice(0, 10); // Top 10 for charts
+      .slice(0, 8); 
   }, [txns]);
 
   const handleFileProcess = async (file: File) => {
@@ -278,646 +200,351 @@ export default function App() {
     }
   };
 
-  const handleExport = () => {
-    if (analysisResult) {
-      generateExcel(
-        analysisResult.transactions, 
-        analysisResult.reconciliation_warnings, 
-        analysisResult.reconciliation_failed, 
-        analysisResult.currency, 
-        analysisResult.organizationName, 
-        analysisResult.bankName
-      );
-    }
-  };
-
   return (
-    <div className="min-h-screen bg-zinc-950 font-sans text-zinc-200">
+    <div className="min-h-screen font-sans text-zinc-300">
       <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} onSave={handleSaveSettings} currentKey={userApiKey} />
       
-      {/* Premium background */}
-      <div className="fixed inset-0 -z-10 pointer-events-none">
-        <div className="absolute inset-0 bg-[radial-gradient(90%_60%_at_50%_0%,rgba(59,110,245,0.15),transparent_55%)]" />
-        <div className="absolute inset-0 bg-[radial-gradient(70%_50%_at_20%_20%,rgba(255,255,255,0.05),transparent_55%)]" />
-        <div className="absolute inset-0 bg-gradient-to-b from-zinc-950 via-zinc-950 to-zinc-900" />
-        <div className="absolute inset-0 opacity-[0.05] [background-image:linear-gradient(to_right,rgba(255,255,255,0.07)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.07)_1px,transparent_1px)] [background-size:56px_56px]" />
-      </div>
-
-      {/* Top Command Bar */}
-      <header className="sticky top-0 z-50 border-b border-white/10 bg-zinc-950/70 backdrop-blur supports-[backdrop-filter]:bg-zinc-950/55">
-        <div className="mx-auto max-w-7xl px-4 py-3">
-          <div className="flex items-center justify-between gap-4">
+      {/* Top Bar - Apexfy Style: Dark, Minimal, Logo Left */}
+      <header className="fixed top-0 left-0 right-0 z-50 h-16 border-b border-white/[0.06] bg-[#070707]/90 backdrop-blur-md">
+        <div className="mx-auto max-w-[1200px] h-full px-6 flex items-center justify-between">
             <div className="flex items-center gap-3 cursor-pointer" onClick={() => setHasFile(false)}>
-              <div className="h-9 w-9 rounded-xl bg-white/5 border border-white/10 grid place-items-center">
-                <ShieldCheck className="h-5 w-5 text-white" />
-              </div>
-              <div className="leading-tight">
-                <div className="flex items-center gap-2">
-                  <div className="text-sm font-semibold text-white">SentinelAI</div>
-                  <Badge
-                    variant="outline"
-                    className="border-white/20 text-zinc-300 bg-white/5 rounded-full"
-                  >
-                    Audit Intelligence
-                  </Badge>
-                </div>
-                <div className="text-xs text-zinc-400">Bank Statement Analyzer</div>
-              </div>
+               <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#9B87FF] to-[#4F85FF] flex items-center justify-center shadow-lg shadow-purple-900/20">
+                  <ShieldCheck className="w-4 h-4 text-white" />
+               </div>
+               <span className="text-[15px] font-bold text-white tracking-tight">LedgerSentinel</span>
             </div>
 
-            <div className="flex items-center gap-3">
-              {(isAnalyzing || hasFile) && (
-                <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10">
-                   <Timer className="w-3.5 h-3.5 text-zinc-400" />
-                   <div className="text-xs font-mono text-zinc-400 tabular-nums">
-                      {formatTime(processingTime)}
-                   </div>
-                   {hasFile && (
-                      <>
-                        <div className="h-3 w-[1px] bg-white/10" />
-                        <div className="text-xs font-mono text-zinc-400">
-                          {txns.length} txns
-                        </div>
-                      </>
-                   )}
-                </div>
-              )}
-
-              <StatusPill ok={!isAnalyzing} text={isAnalyzing ? "Processing..." : undefined} />
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="outline"
-                    className="rounded-xl border-white/10 bg-white/5 text-zinc-100 hover:bg-white/10"
-                  >
-                    Account <ChevronDown className="ml-2 h-4 w-4 opacity-80" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent className="rounded-xl border-black/10">
-                  <DropdownMenuItem onClick={() => setIsSettingsOpen(true)}>API Settings</DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+            <div className="flex items-center gap-6">
+               <StatusPill state={isAnalyzing ? 'busy' : 'idle'} />
+               
+               <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button className="text-[13px] text-zinc-400 font-medium hover:text-white transition-colors flex items-center gap-2">
+                       <div className="w-7 h-7 rounded-full bg-white/10 flex items-center justify-center text-[10px] text-white font-bold">IO</div>
+                       Account <ChevronDown className="w-3 h-3 opacity-50" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={() => setIsSettingsOpen(true)}>
+                       API Configuration
+                    </DropdownMenuItem>
+                    <DropdownMenuItem>
+                       Audit Logs
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+               </DropdownMenu>
             </div>
-          </div>
         </div>
       </header>
 
-      {/* Body */}
-      <main className="mx-auto max-w-7xl px-4 py-8">
-        {/* Page Title Bar */}
-        <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-          <div>
-            <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-zinc-300">
-              <BadgeCheck className="h-3.5 w-3.5" />
-              Audit-grade financial reconciliation
-            </div>
-            <h1 className="mt-3 text-3xl md:text-4xl font-semibold tracking-tight text-white">
-              Statement Intelligence Workspace
-            </h1>
-            <p className="mt-2 text-sm text-zinc-400 max-w-2xl">
-              Extract, reconcile, and validate transactions with traceable evidence — built for finance and audit teams.
-            </p>
-          </div>
-
-          {hasFile && (
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                variant="outline"
-                className="rounded-xl border-white/10 bg-white/5 text-zinc-100 hover:bg-white/10"
-                onClick={handleExport}
-              >
-                <Download className="mr-2 h-4 w-4" />
-                Export Pack
-              </Button>
-            </div>
-          )}
-        </div>
-
-        <Separator className="my-8 bg-white/10" />
-
-        {/* Upload / Workspace */}
+      <main className="pt-28 pb-20 px-6 mx-auto max-w-[1200px]">
         {!hasFile ? (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* Left: Intake */}
-            <Card className="lg:col-span-7 rounded-2xl border-white/10 bg-white/5 backdrop-blur shadow-[0_18px_60px_-36px_rgba(0,0,0,0.75)]">
-              <CardHeader className="pb-0">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-semibold text-white">Document Intake</div>
-                    <div className="mt-1 text-xs text-zinc-400">
-                      Secure upload with evidence-grade processing options.
-                    </div>
-                  </div>
-                  <Badge
-                    variant="outline"
-                    className="rounded-full border-white/10 bg-white/5 text-zinc-300"
-                  >
-                    <Lock className="mr-1 h-3.5 w-3.5" />
-                    AES-256 at rest
-                  </Badge>
-                </div>
-              </CardHeader>
-
-              <CardContent className="pt-5">
-                <div 
-                  className={`relative rounded-2xl border border-white/10 bg-gradient-to-b from-white/5 to-white/[0.03] p-6 transition-all ${isAnalyzing ? 'opacity-50 pointer-events-none' : ''}`}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={handleDrop}
-                >
-                  <input
-                    type="file"
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
-                    onChange={handleFileInput}
-                    accept=".pdf,.jpg,.jpeg,.png,.webp"
-                    disabled={isAnalyzing}
-                  />
-                  
-                  {isAnalyzing ? (
-                    <div className="flex flex-col items-center justify-center py-10">
-                      <div className="w-12 h-12 rounded-full border-4 border-white/10 border-t-blue-500 animate-spin mb-4"></div>
-                      <p className="text-white font-medium">Processing Document...</p>
-                      <p className="text-xs text-zinc-400 mt-1">This involves OCR and Semantic Analysis</p>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-3">
-                      <div className="h-12 w-12 rounded-2xl bg-white/5 border border-white/10 grid place-items-center">
-                        <Upload className="h-5 w-5 text-zinc-200" />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-white font-medium">Drag & drop your statement</div>
-                        <div className="text-xs text-zinc-400">
-                          PDF, scanned images, or Excel.
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {!isAnalyzing && (
-                    <div className="mt-6 flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
-                       <Button className="rounded-xl bg-white text-zinc-950 hover:bg-white/90 pointer-events-none">
-                        <FileUp className="mr-2 h-4 w-4" />
-                        Browse Secure Files
-                      </Button>
-                      <div className="text-[11px] text-zinc-500">
-                        Files processed locally in browser memory.
-                      </div>
-                    </div>
-                  )}
-                </div>
-                
-                {error && (
-                  <div className="mt-4 p-3 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center gap-2 text-red-200 text-xs">
-                    <AlertTriangle className="w-4 h-4" /> {error}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* Right: Info */}
-            <div className="lg:col-span-5 space-y-6">
-              <Card className="rounded-2xl border-white/10 bg-white/5 backdrop-blur shadow-[0_18px_60px_-36px_rgba(0,0,0,0.75)]">
-                <CardHeader className="pb-2">
-                  <div className="text-sm font-semibold text-white">Capabilities</div>
-                </CardHeader>
-                <CardContent className="pt-3">
-                   <ul className="space-y-3">
-                    {[
-                      ["Validated extraction", "Structured ledger with clean columns."],
-                      ["Balance reconciliation", "Opening/closing checks with variance flags."],
-                      ["Categorization & confidence", "Transparent confidence scoring per entry."],
-                    ].map(([title, desc]) => (
-                      <li key={title} className="flex gap-3">
-                        <div className="mt-0.5 h-8 w-8 rounded-xl bg-white/5 border border-white/10 grid place-items-center">
-                          <CheckCircle2 className="h-4 w-4 text-zinc-400" />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="text-sm text-zinc-200 font-medium">{title}</div>
-                          <div className="text-xs text-zinc-400">{desc}</div>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                </CardContent>
-              </Card>
-            </div>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* Left: Statement Preview */}
-            <Card className="lg:col-span-7 rounded-2xl border-white/10 bg-white/5 backdrop-blur shadow-[0_18px_60px_-36px_rgba(0,0,0,0.75)]">
-              <CardHeader className="pb-2">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-semibold text-white">Statement Source</div>
-                    <div className="mt-1 text-xs text-zinc-400">
-                      Original document view (evidence source).
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="rounded-xl border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10"
-                      onClick={() => setHasFile(false)}
-                    >
-                      <RefreshCw className="mr-2 h-4 w-4" />
-                      Replace
-                    </Button>
-                  </div>
-                </div>
-              </CardHeader>
-
-              <CardContent className="pt-4">
-                <div className="rounded-2xl border border-white/10 bg-gradient-to-b from-white/5 to-white/[0.03] overflow-hidden">
-                  <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
-                    <div className="flex items-center gap-2">
-                      <div className="h-8 w-8 rounded-xl bg-white/5 border border-white/10 grid place-items-center">
-                        <FileText className="h-4 w-4 text-zinc-300" />
-                      </div>
-                      <div className="leading-tight">
-                        <div className="text-sm text-zinc-200 font-medium">
-                          {fileName}
-                        </div>
-                        <div className="text-xs text-zinc-500">{analysisResult?.bankName} • {analysisResult?.organizationName}</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="p-4">
-                    <div className="aspect-[16/10] rounded-2xl border border-white/10 bg-zinc-950/40 grid place-items-center">
-                      <div className="text-center px-6">
-                        <div className="mx-auto h-12 w-12 rounded-2xl bg-white/5 border border-white/10 grid place-items-center">
-                          <FileText className="h-6 w-6 text-zinc-400" />
-                        </div>
-                        <div className="mt-3 text-sm font-medium text-zinc-200">
-                          PDF/Image Content
-                        </div>
-                        <div className="mt-1 text-xs text-zinc-500">
-                          Document content is processed in memory.
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Right: Analysis Controls */}
-            <Card className="lg:col-span-5 rounded-2xl border-white/10 bg-white/5 backdrop-blur shadow-[0_18px_60px_-36px_rgba(0,0,0,0.75)]">
-               <CardHeader className="pb-2">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-semibold text-white">Analysis Status</div>
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent className="pt-4 space-y-4">
-                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="text-sm font-semibold text-white">Audit Findings</div>
-                  </div>
-
-                  <div className="mt-3 space-y-2">
-                    {summary.anomalies > 0 && (
-                      <div className="w-full flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3 py-2">
-                        <div className="flex items-center gap-2 text-sm text-zinc-200">
-                          <AlertTriangle className="h-4 w-4 text-rose-400" />
-                          {summary.anomalies} high-risk anomalies detected
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="w-full flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3 py-2">
-                      <div className="flex items-center gap-2 text-sm text-zinc-200">
-                        <Info className="h-4 w-4 text-amber-400" />
-                        {summary.reviews} items require review
-                      </div>
-                    </div>
-
-                    {!analysisResult?.reconciliation_failed && (
-                      <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2">
-                        <div className="flex items-center gap-2 text-sm text-zinc-200">
-                          <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-                          Balance validation complete
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Bottom: Metrics + Table */}
-            <div className="lg:col-span-12 space-y-6">
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                <MetricCard
-                  label="Opening Balance"
-                  value={`${formatMoney(summary.opening)}`}
-                  helper={summary.currency}
-                  icon={<FileText className="h-5 w-5" />}
-                />
-                <MetricCard
-                  label="Total Credits"
-                  value={`${formatMoney(summary.totalCredits)}`}
-                  helper="Validated Inflows"
-                  icon={<CheckCircle2 className="h-5 w-5" />}
-                />
-                <MetricCard
-                  label="Total Debits"
-                  value={`${formatMoney(summary.totalDebits)}`}
-                  helper="Validated Outflows"
-                  icon={<AlertTriangle className="h-5 w-5" />}
-                />
-                <MetricCard
-                  label="Closing Balance"
-                  value={`${formatMoney(summary.closing)}`}
-                  helper="Reconciled"
-                  icon={<ShieldCheck className="h-5 w-5" />}
-                />
+           /* --- STATE: UPLOAD WORKSPACE --- */
+           <div className="animate-enter">
+              
+              {/* Header Section */}
+              <div className="mb-10 max-w-2xl">
+                 <h1 className="text-[32px] font-bold text-white tracking-tight leading-snug mb-2">
+                    Reconciliation Workspace
+                 </h1>
+                 <p className="text-zinc-500 text-[14px]">
+                    Import a statement to extract, reconcile, and categorize transactions with traceable evidence.
+                 </p>
               </div>
 
-              {/* Charts Section */}
-              {categoryData.length > 0 && (
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  {/* Pie Chart */}
-                  <Card className="rounded-2xl border-white/10 bg-white/5 backdrop-blur shadow-[0_18px_60px_-36px_rgba(0,0,0,0.75)]">
-                    <CardHeader>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="text-sm font-semibold text-white">Expense Distribution</div>
-                          <div className="mt-1 text-xs text-zinc-400">Top categories by volume</div>
-                        </div>
-                        <div className="p-2 rounded-lg bg-white/5 border border-white/10">
-                          <PieChartIcon className="w-4 h-4 text-zinc-300" />
-                        </div>
-                      </div>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="h-[300px] w-full">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <PieChart>
-                            <Pie
-                              data={categoryData}
-                              cx="50%"
-                              cy="50%"
-                              innerRadius={60}
-                              outerRadius={80}
-                              paddingAngle={5}
-                              dataKey="value"
-                            >
-                              {categoryData.map((entry, index) => (
-                                <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} stroke="rgba(255,255,255,0.05)" />
-                              ))}
-                            </Pie>
-                            <RechartsTooltip 
-                              formatter={(value: number) => [formatMoney(value), 'Amount']}
-                              contentStyle={{ backgroundColor: '#18181b', borderColor: '#27272a', color: '#f8fafc', borderRadius: '12px' }}
-                              itemStyle={{ color: '#e2e8f0' }}
-                            />
-                            <Legend 
-                              layout="horizontal" 
-                              verticalAlign="bottom" 
-                              align="center"
-                              iconType="circle"
-                              iconSize={8}
-                              wrapperStyle={{ paddingTop: '20px', fontSize: '11px', color: '#a1a1aa' }}
-                            />
-                          </PieChart>
-                        </ResponsiveContainer>
-                      </div>
-                    </CardContent>
-                  </Card>
+              {/* Main Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
+                 
+                 {/* Import Card (Span 8) */}
+                 <Card className="md:col-span-8 overflow-hidden flex flex-col min-h-[420px]">
+                     <div className="px-6 py-5 border-b border-white/[0.06] flex items-center justify-between">
+                        <span className="text-[14px] font-semibold text-white">Import statement</span>
+                        <Badge variant="purple" className="font-mono">Local processing</Badge>
+                     </div>
 
-                  {/* Bar Chart */}
-                  <Card className="rounded-2xl border-white/10 bg-white/5 backdrop-blur shadow-[0_18px_60px_-36px_rgba(0,0,0,0.75)]">
-                    <CardHeader>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="text-sm font-semibold text-white">Category Breakdown</div>
-                          <div className="mt-1 text-xs text-zinc-400">Spending across main categories</div>
-                        </div>
-                        <div className="p-2 rounded-lg bg-white/5 border border-white/10">
-                          <BarChartIcon className="w-4 h-4 text-zinc-300" />
-                        </div>
-                      </div>
-                    </CardHeader>
-                    <CardContent>
-                       <div className="h-[300px] w-full">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <BarChart
-                            layout="vertical"
-                            data={categoryData}
-                            margin={{ top: 0, right: 20, left: 0, bottom: 0 }}
-                          >
-                            <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="rgba(255,255,255,0.05)" />
-                            <XAxis type="number" hide />
-                            <YAxis 
-                              dataKey="name" 
-                              type="category" 
-                              width={120} 
-                              tick={{fontSize: 11, fill: '#a1a1aa', fontWeight: 500}} 
-                              axisLine={false}
-                              tickLine={false}
-                            />
-                            <RechartsTooltip
-                              cursor={{fill: 'rgba(255,255,255,0.05)', radius: 4}}
-                              formatter={(value: number) => [formatMoney(value), 'Amount']}
-                              contentStyle={{ backgroundColor: '#18181b', borderColor: '#27272a', color: '#f8fafc', borderRadius: '12px' }}
-                              itemStyle={{ color: '#e2e8f0' }}
-                            />
-                            <Bar dataKey="value" radius={[0, 4, 4, 0]} barSize={16}>
-                              {categoryData.map((entry, index) => (
-                                <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
-                              ))}
-                            </Bar>
-                          </BarChart>
-                        </ResponsiveContainer>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </div>
-              )}
+                     <div 
+                        className="flex-1 relative p-8 flex flex-col items-center justify-center transition-all duration-300"
+                        onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('bg-white/[0.02]'); }}
+                        onDragLeave={(e) => { e.currentTarget.classList.remove('bg-white/[0.02]'); }}
+                        onDrop={handleDrop}
+                     >
+                        <input
+                           type="file"
+                           className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
+                           onChange={handleFileInput}
+                           accept=".pdf,.jpg,.jpeg,.png,.webp"
+                           disabled={isAnalyzing}
+                        />
 
-              <Card className="rounded-2xl border-white/10 bg-white/5 backdrop-blur shadow-[0_18px_60px_-36px_rgba(0,0,0,0.75)]">
-                <CardHeader className="pb-0">
-                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                    <div>
-                      <div className="text-sm font-semibold text-white">Audit Ledger</div>
-                      <div className="mt-1 text-xs text-zinc-400">
-                        Clean transactions with categories, confidence, and evidence.
-                      </div>
+                        {isAnalyzing ? (
+                           <div className="w-full max-w-xs space-y-6 text-center">
+                              {/* Prominent Stopwatch */}
+                              <div className="flex flex-col items-center justify-center">
+                                 <div className="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center mb-4 relative">
+                                    <div className="absolute inset-0 rounded-full border-t border-l border-[#9B87FF] animate-spin"></div>
+                                    <Clock className="w-6 h-6 text-[#9B87FF]" />
+                                 </div>
+                                 <div className="text-3xl font-mono font-bold text-white tracking-tight">
+                                    {formatTime(processingTime)}
+                                 </div>
+                                 <p className="text-xs text-zinc-500 mt-2 font-mono uppercase tracking-wider">Elapsed Time</p>
+                              </div>
+
+                              <div className="space-y-2">
+                                <Progress value={processingTime > 3 ? 75 : 25} />
+                                <p className="text-xs text-zinc-500">Extracting transaction logic...</p>
+                              </div>
+                           </div>
+                        ) : (
+                           <div className="w-full h-full border border-dashed border-white/10 rounded-[12px] bg-white/[0.01] flex flex-col items-center justify-center gap-6 hover:border-white/20 transition-colors">
+                              <div className="text-center">
+                                 <h3 className="text-[15px] font-medium text-white mb-1">Upload statement</h3>
+                                 <p className="text-[13px] text-zinc-500">PDF, JPEG, PNG • up to 20MB</p>
+                              </div>
+                              <div className="flex flex-col gap-3 w-40">
+                                 <Button variant="primary" className="w-full text-sm">Select file</Button>
+                                 <Button variant="ghost" className="w-full text-xs h-8">Use sample statement</Button>
+                              </div>
+                           </div>
+                        )}
+                     </div>
+
+                     <div className="px-6 py-3 border-t border-white/[0.06] bg-[#0B0C0E]">
+                        <span className="text-[11px] text-zinc-600 font-medium flex items-center gap-1.5">
+                           <Lock className="w-3 h-3" /> Local processing • AES-256
+                        </span>
+                     </div>
+                 </Card>
+
+                 {/* Checks Card (Span 4) */}
+                 <Card className="md:col-span-4 bg-[#0B0C0E] border-white/[0.04]">
+                     <div className="px-6 py-5 border-b border-white/[0.04]">
+                        <span className="text-[14px] font-semibold text-zinc-400">Checks</span>
+                     </div>
+                     <div className="p-6">
+                        <ul className="space-y-5">
+                           {[
+                              "Validated extraction (clean ledger columns)",
+                              "Opening/closing balance validation",
+                              "Categorization with confidence scoring"
+                           ].map((item, i) => (
+                              <li key={i} className="flex items-start gap-3">
+                                 <div className="mt-1.5 w-1.5 h-1.5 rounded-full bg-[#9B87FF]" />
+                                 <span className="text-[13px] text-zinc-500 leading-relaxed">{item}</span>
+                              </li>
+                           ))}
+                        </ul>
+                     </div>
+                 </Card>
+
+              </div>
+           </div>
+        ) : (
+           /* --- STATE: DASHBOARD --- */
+           <div className="animate-enter space-y-6">
+              
+              {/* Dashboard Header */}
+              <div className="flex items-center justify-between pb-4 border-b border-white/[0.06]">
+                 <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-[10px] bg-white/5 flex items-center justify-center border border-white/10">
+                       <FileCheck className="w-5 h-5 text-zinc-400" />
                     </div>
-                  </div>
-
-                  <Tabs defaultValue="transactions" className="mt-5">
-                    <TabsList className="bg-white/5 border border-white/10 rounded-xl">
-                      <TabsTrigger
-                        value="transactions"
-                        className="rounded-lg data-[state=active]:bg-white data-[state=active]:text-zinc-950"
-                      >
-                        Transactions
-                      </TabsTrigger>
-                      <TabsTrigger
-                        value="findings"
-                        className="rounded-lg data-[state=active]:bg-white data-[state=active]:text-zinc-950"
-                      >
-                        Findings
-                      </TabsTrigger>
-                    </TabsList>
-
-                    <TabsContent value="transactions" className="mt-4">
-                      <div className="overflow-hidden rounded-2xl border border-white/10">
-                        <div className="grid grid-cols-12 bg-zinc-950/40 px-4 py-3 text-xs text-zinc-400 font-semibold uppercase tracking-wider">
-                          <div className="col-span-2">Date</div>
-                          <div className="col-span-4">Description</div>
-                          <div className="col-span-2 text-right">Debit</div>
-                          <div className="col-span-2 text-right">Credit</div>
-                          <div className="col-span-2 text-right">Balance</div>
+                    <div>
+                       <h2 className="text-[16px] font-bold text-white leading-tight">{analysisResult?.organizationName}</h2>
+                       <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-[12px] text-zinc-500 font-mono">{fileName}</span>
+                          <Badge variant="outline">{analysisResult?.currency}</Badge>
+                       </div>
+                    </div>
+                    
+                    {/* Metrics Wrapper */}
+                    <div className="h-8 w-[1px] bg-white/10 mx-2" />
+                    <div className="flex gap-2">
+                        {/* Transaction Count Indicator */}
+                        <div className="flex items-center gap-2 px-3 py-1.5 bg-white/5 rounded-lg border border-white/5">
+                            <Hash className="w-3.5 h-3.5 text-zinc-500" />
+                            <div className="flex flex-col leading-none">
+                                <span className="text-[10px] text-zinc-500 font-bold uppercase">Records</span>
+                                <span className="text-sm font-mono text-white">{txns.length}</span>
+                            </div>
                         </div>
 
-                        <div className="divide-y divide-white/10 bg-white/[0.03]">
-                          {txns.map((t, idx) => (
-                            <div
-                              key={idx}
-                              className={cn(
-                                "w-full text-left px-4 py-3 grid grid-cols-12 gap-3 items-center hover:bg-white/5 transition group",
-                                selectedTxn === t ? "bg-white/5" : ""
-                              )}
-                              onClick={() => {
-                                setSelectedTxn(t);
-                                setSelectedPage(t.evidence.page);
-                              }}
-                            >
-                              <div className="col-span-2">
-                                <div className="text-sm text-zinc-200 font-mono">{t.date}</div>
-                                <div className="mt-1">{<FlagPill flag={t.flag} />}</div>
-                              </div>
-
-                              <div className="col-span-4 min-w-0">
-                                <div className="text-sm text-zinc-200 truncate" title={t.description}>{t.description}</div>
-                                <div className="mt-1 flex flex-wrap items-center gap-2">
-                                  <Badge
-                                    variant="outline"
-                                    className="rounded-full border-white/10 bg-white/5 text-zinc-300"
-                                  >
-                                    {t.category}
-                                  </Badge>
-                                  {t.ruleId && (
-                                     <Badge variant="outline" className="rounded-full border-blue-500/20 bg-blue-500/10 text-blue-300 text-[10px] px-1.5 py-0 h-4">
-                                       {t.ruleId.split('_')[0]}
-                                     </Badge>
-                                  )}
-                                </div>
-                              </div>
-
-                              <div className="col-span-2 text-right">
-                                <div className="text-sm text-zinc-200 tabular-nums font-mono text-rose-300">
-                                  {t.debit ? `${formatMoney(t.debit)}` : "—"}
-                                </div>
-                              </div>
-
-                              <div className="col-span-2 text-right">
-                                <div className="text-sm text-zinc-200 tabular-nums font-mono text-emerald-300">
-                                  {t.credit ? `${formatMoney(t.credit)}` : "—"}
-                                </div>
-                              </div>
-
-                              <div className="col-span-2 text-right">
-                                <div className="text-sm text-zinc-200 tabular-nums font-mono font-bold">
-                                  {formatMoney(t.balance)}
-                                </div>
-                                <div className="mt-1 flex justify-end">
-                                  <ConfidenceBar value={t.confidence} />
-                                </div>
-                              </div>
+                        {/* Processing Time Indicator (NEW) */}
+                        <div className="flex items-center gap-2 px-3 py-1.5 bg-white/5 rounded-lg border border-white/5">
+                            <Clock className="w-3.5 h-3.5 text-zinc-500" />
+                            <div className="flex flex-col leading-none">
+                                <span className="text-[10px] text-zinc-500 font-bold uppercase">Time</span>
+                                <span className="text-sm font-mono text-white">{formatTime(processingTime)}</span>
                             </div>
-                          ))}
                         </div>
-                      </div>
-                    </TabsContent>
+                    </div>
 
-                    <TabsContent value="findings" className="mt-4">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <Card className="rounded-2xl border-white/10 bg-white/5">
-                          <CardContent className="p-5">
-                            <div className="flex items-start justify-between">
-                              <div>
-                                <div className="text-sm font-semibold text-white">High-risk</div>
-                                <div className="mt-1 text-xs text-zinc-400">
-                                  Items that may affect reporting accuracy.
-                                </div>
-                              </div>
-                              <Badge
-                                variant="outline"
-                                className="rounded-full border-rose-200/30 bg-rose-500/10 text-rose-100"
-                              >
-                                <AlertTriangle className="mr-1 h-3.5 w-3.5" />
-                                {summary.anomalies}
-                              </Badge>
-                            </div>
-                            <div className="mt-4 space-y-2">
-                              {txns
-                                .filter((t) => t.flag === "anomaly")
-                                .map((t, i) => (
-                                  <div
-                                    key={i}
-                                    className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-left hover:bg-white/10 transition"
-                                  >
-                                    <div className="text-sm text-zinc-200 truncate">{t.description}</div>
-                                  </div>
-                                ))}
-                            </div>
-                          </CardContent>
-                        </Card>
+                 </div>
+                 <div className="flex gap-3">
+                    <Button variant="outline" size="sm" onClick={() => setHasFile(false)}>Reset</Button>
+                    <Button variant="primary" size="sm" onClick={() => generateExcel(analysisResult!.transactions, analysisResult!.reconciliation_warnings, analysisResult!.reconciliation_failed, analysisResult!.currency, analysisResult!.organizationName, analysisResult!.bankName)}>
+                       Export Report
+                    </Button>
+                 </div>
+              </div>
 
-                        <Card className="rounded-2xl border-white/10 bg-white/5">
-                          <CardContent className="p-5">
-                            <div className="flex items-start justify-between">
-                              <div>
-                                <div className="text-sm font-semibold text-white">Needs review</div>
-                                <div className="mt-1 text-xs text-zinc-400">
-                                  Low confidence or classification uncertainties.
-                                </div>
-                              </div>
-                              <Badge
-                                variant="outline"
-                                className="rounded-full border-amber-200/30 bg-amber-500/10 text-amber-100"
-                              >
-                                <Info className="mr-1 h-3.5 w-3.5" />
-                                {summary.reviews}
-                              </Badge>
-                            </div>
-                            <div className="mt-4 space-y-2">
-                              {txns
-                                .filter((t) => t.flag === "review")
-                                .map((t, i) => (
-                                  <div
-                                    key={i}
-                                    className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-left hover:bg-white/10 transition"
-                                  >
-                                    <div className="text-sm text-zinc-200 truncate">{t.description}</div>
-                                    <div className="mt-1 text-xs text-zinc-500">
-                                      Category: {t.category}
-                                    </div>
-                                  </div>
-                                ))}
-                            </div>
-                          </CardContent>
-                        </Card>
-                      </div>
-                    </TabsContent>
-                  </Tabs>
-                </CardHeader>
-              </Card>
-            </div>
-          </div>
+              {/* Metrics Row - Added Opening Balance */}
+              <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+                 {[
+                    { label: "Opening Balance", val: formatMoney(summary.opening, summary.currency), color: "text-zinc-400" },
+                    { label: "Closing Balance", val: formatMoney(summary.closing, summary.currency), color: "text-white" },
+                    { label: "Total Inflow", val: formatMoney(summary.totalCredits, summary.currency), color: "text-[#3CDCAB]" },
+                    { label: "Total Outflow", val: formatMoney(summary.totalDebits, summary.currency), color: "text-zinc-300" },
+                    { label: "Check Status", val: summary.anomalies > 0 ? "Failed" : "Passed", color: summary.anomalies > 0 ? "text-[#FF5A78]" : "text-[#3CDCAB]", isStatus: true }
+                 ].map((m, i) => (
+                    <Card key={i} className="p-5 flex flex-col justify-between h-[110px]">
+                       <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">{m.label}</span>
+                       <div className="flex items-end justify-between">
+                          <span className={cn("text-[18px] lg:text-[20px] font-bold font-mono tracking-tight truncate", m.color)}>{m.val}</span>
+                          {m.isStatus && (
+                             m.val === "Passed" 
+                                ? <CheckCircle2 className="w-5 h-5 text-[#3CDCAB]" /> 
+                                : <AlertTriangle className="w-5 h-5 text-[#FF5A78]" />
+                          )}
+                       </div>
+                    </Card>
+                 ))}
+              </div>
+
+              {/* Main Content Grid */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-[600px]">
+                 
+                 {/* Transaction Table (Span 2) */}
+                 <Card className="lg:col-span-2 flex flex-col overflow-hidden">
+                    <div className="px-5 py-4 border-b border-white/[0.06] flex items-center justify-between">
+                       <div className="flex items-center gap-2">
+                          <LayoutDashboard className="w-4 h-4 text-zinc-500" />
+                          <span className="text-[13px] font-semibold text-zinc-300">Transaction Ledger</span>
+                       </div>
+                       <div className="relative w-56">
+                          <Search className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-zinc-500" />
+                          <Input 
+                             placeholder="Search..." 
+                             className="pl-8 h-8 text-xs bg-[#0B0C0E] border-white/10"
+                             value={searchTerm}
+                             onChange={(e) => setSearchTerm(e.target.value)}
+                          />
+                       </div>
+                    </div>
+                    <div className="flex-1 overflow-auto">
+                       <table className="w-full text-left border-collapse">
+                          <thead className="bg-[#111318] sticky top-0 z-10 text-[10px] font-bold text-zinc-500 uppercase tracking-wider font-mono">
+                             <tr>
+                                <th className="px-5 py-3 border-b border-white/[0.06]">Date</th>
+                                <th className="px-5 py-3 border-b border-white/[0.06] w-2/5">Description</th>
+                                <th className="px-5 py-3 border-b border-white/[0.06] text-right">Debit</th>
+                                <th className="px-5 py-3 border-b border-white/[0.06] text-right">Credit</th>
+                                <th className="px-5 py-3 border-b border-white/[0.06] text-right">Balance</th>
+                                <th className="px-5 py-3 border-b border-white/[0.06] text-center">Cat</th>
+                             </tr>
+                          </thead>
+                          <tbody className="divide-y divide-white/[0.04] text-[12px] font-mono text-zinc-400">
+                             {filteredTxns.map((t, i) => (
+                                <tr key={i} className="hover:bg-white/[0.02] transition-colors">
+                                   <td className="px-5 py-2.5 whitespace-nowrap">{t.date}</td>
+                                   <td className="px-5 py-2.5">
+                                      <div className="text-zinc-200 truncate max-w-[240px]" title={t.description}>{t.description}</div>
+                                      {t.flag !== 'ok' && (
+                                         <div className="mt-1 flex gap-1">
+                                            {t.flag === 'anomaly' && <Badge variant="danger">Calc Error</Badge>}
+                                            {t.flag === 'review' && <Badge variant="warning">Review</Badge>}
+                                         </div>
+                                      )}
+                                   </td>
+                                   <td className="px-5 py-2.5 text-right">{t.debit ? formatMoney(t.debit, '') : '-'}</td>
+                                   <td className="px-5 py-2.5 text-right text-[#3CDCAB]">{t.credit ? formatMoney(t.credit, '') : '-'}</td>
+                                   <td className="px-5 py-2.5 text-right text-zinc-300 font-medium">{formatMoney(t.balance, '')}</td>
+                                   <td className="px-5 py-2.5 text-center">
+                                      <div className="inline-block px-2 py-0.5 rounded-[4px] bg-white/5 text-[10px] text-zinc-500 truncate max-w-[80px]" title={t.category}>
+                                         {t.category}
+                                      </div>
+                                   </td>
+                                </tr>
+                             ))}
+                          </tbody>
+                       </table>
+                    </div>
+                 </Card>
+
+                 {/* Charts Panel (Span 1) */}
+                 <div className="flex flex-col gap-6">
+                    {/* Allocation Pie Chart */}
+                    <Card className="flex-1 flex flex-col p-5 bg-[#0B0C0E]">
+                       <h3 className="text-[13px] font-semibold text-zinc-400 mb-4">Expense Allocation</h3>
+                       <div className="flex-1 min-h-[180px]">
+                          <ResponsiveContainer width="100%" height="100%">
+                             <PieChart>
+                                <Pie
+                                   data={categoryData}
+                                   innerRadius={60}
+                                   outerRadius={80}
+                                   paddingAngle={4}
+                                   dataKey="value"
+                                   stroke="none"
+                                >
+                                   {categoryData.map((entry, index) => (
+                                      <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                                   ))}
+                                </Pie>
+                                <RechartsTooltip 
+                                   contentStyle={{ backgroundColor: '#111318', borderColor: '#27272a', fontSize: '11px', borderRadius: '8px', color: '#fff' }}
+                                   itemStyle={{ color: '#fff' }}
+                                   formatter={(v: number) => formatMoney(v)}
+                                />
+                             </PieChart>
+                          </ResponsiveContainer>
+                       </div>
+                    </Card>
+
+                    {/* Bar Chart (Replaces Automation) */}
+                    <Card className="flex-1 flex flex-col p-5 bg-[#0B0C0E]">
+                       <h3 className="text-[13px] font-semibold text-zinc-400 mb-4">Category Trends</h3>
+                       <div className="flex-1 min-h-[180px]">
+                          <ResponsiveContainer width="100%" height="100%">
+                             <BarChart data={categoryData} layout="vertical" barCategoryGap={10}>
+                                <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#ffffff08" />
+                                <XAxis type="number" hide />
+                                <YAxis 
+                                  type="category" 
+                                  dataKey="name" 
+                                  width={80}
+                                  tick={{fontSize: 9, fill: '#71717a'}} 
+                                  axisLine={false}
+                                  tickLine={false}
+                                />
+                                <RechartsTooltip
+                                    cursor={{fill: '#ffffff05'}}
+                                    contentStyle={{ backgroundColor: '#111318', borderColor: '#27272a', fontSize: '11px', borderRadius: '8px', color: '#fff' }}
+                                    formatter={(v: number) => formatMoney(v)}
+                                />
+                                <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+                                   {categoryData.map((entry, index) => (
+                                      <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                                   ))}
+                                </Bar>
+                             </BarChart>
+                          </ResponsiveContainer>
+                       </div>
+                    </Card>
+                 </div>
+
+              </div>
+           </div>
         )}
-
-        {/* Footer */}
-        <div className="mt-10 text-center text-xs text-zinc-500">
-          SentinelAI • Evidence-grade financial intelligence • Designed for audit workflows
-        </div>
       </main>
+
+      {/* Minimal Footer */}
+      {!hasFile && (
+         <footer className="fixed bottom-0 w-full py-6 px-6 mx-auto max-w-[1200px] flex justify-between items-center text-[11px] text-zinc-700">
+            <span>LedgerSentinel v2.4</span>
+            <span className="opacity-50 font-medium">© IBRAHIM O.</span>
+         </footer>
+      )}
     </div>
   );
 }

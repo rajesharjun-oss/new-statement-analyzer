@@ -1,30 +1,30 @@
 
 import React from 'react';
-import * as TabsPrimitive from '@radix-ui/react-tabs'; // Assuming we simulate or use simple state if radix not avail.
-// Actually, to avoid deps, I'll build simple controlled components.
 
 export function cn(...classes: (string | undefined | null | false)[]) {
   return classes.filter(Boolean).join(' ');
 }
 
-// Button
-export const Button = React.forwardRef<HTMLButtonElement, React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'default' | 'outline' | 'ghost', size?: 'default' | 'sm' | 'lg' }>(
+// Button - 12px Radius, Primary Accent is soft Purple
+export const Button = React.forwardRef<HTMLButtonElement, React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'default' | 'outline' | 'ghost' | 'primary' | 'danger', size?: 'default' | 'sm' | 'xs' }>(
   ({ className, variant = 'default', size = 'default', ...props }, ref) => {
     const variants = {
-      default: "bg-white text-zinc-950 hover:bg-white/90 shadow-sm",
-      outline: "border border-zinc-200 bg-transparent shadow-sm hover:bg-zinc-100 text-zinc-900 dark:border-white/10 dark:text-white dark:hover:bg-white/10",
-      ghost: "hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-white/10 dark:hover:text-white",
+      default: "bg-white text-black hover:bg-zinc-200 border border-transparent font-semibold shadow-sm",
+      primary: "bg-[#9B87FF] text-[#0E0F12] hover:bg-[#8A76F5] border border-transparent font-bold shadow-[0_4px_12px_rgba(155,135,255,0.15)]",
+      outline: "border border-white/10 bg-transparent text-zinc-300 hover:text-white hover:border-white/20 hover:bg-white/5",
+      ghost: "text-zinc-500 hover:text-zinc-200 hover:bg-white/5",
+      danger: "bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20",
     };
     const sizes = {
-      default: "h-9 px-4 py-2",
-      sm: "h-8 rounded-md px-3 text-xs",
-      lg: "h-10 rounded-md px-8",
+      default: "h-11 px-5 py-2 rounded-[12px] text-[14px]", 
+      sm: "h-9 px-3 rounded-[10px] text-[13px]",
+      xs: "h-7 px-2 rounded-[8px] text-[11px]",
     };
     return (
       <button
         ref={ref}
         className={cn(
-          "inline-flex items-center justify-center rounded-xl text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50",
+          "inline-flex items-center justify-center transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#9B87FF]/50 disabled:pointer-events-none disabled:opacity-50 active:scale-[0.98]",
           variants[variant as keyof typeof variants] || variants.default,
           sizes[size as keyof typeof sizes] || sizes.default,
           className
@@ -36,9 +36,9 @@ export const Button = React.forwardRef<HTMLButtonElement, React.ButtonHTMLAttrib
 );
 Button.displayName = "Button";
 
-// Card
+// Card - Surface #0E0F12, 16px Radius, Very Subtle Border
 export const Card = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(({ className, ...props }, ref) => (
-  <div ref={ref} className={cn("rounded-xl border bg-card text-card-foreground shadow", className)} {...props} />
+  <div ref={ref} className={cn("rounded-[16px] border border-white/[0.08] bg-[#0E0F12] shadow-[0_18px_40px_rgba(0,0,0,0.55)]", className)} {...props} />
 ));
 Card.displayName = "Card";
 
@@ -52,12 +52,12 @@ export const CardContent = React.forwardRef<HTMLDivElement, React.HTMLAttributes
 ));
 CardContent.displayName = "CardContent";
 
-// Input
+// Input - Darker bg, flush style
 export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(({ className, type, ...props }, ref) => (
   <input
     type={type}
     className={cn(
-      "flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/10 dark:placeholder:text-white/40 dark:focus-visible:ring-white/20",
+      "flex h-10 w-full rounded-[10px] border border-white/10 bg-[#070707] px-3 py-2 text-sm text-zinc-100 shadow-none transition-colors placeholder:text-zinc-600 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#9B87FF] disabled:cursor-not-allowed disabled:opacity-50 font-sans",
       className
     )}
     ref={ref}
@@ -66,88 +66,46 @@ export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttribute
 ));
 Input.displayName = "Input";
 
-// Badge
-export const Badge = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement> & { variant?: 'default' | 'secondary' | 'destructive' | 'outline' }>(({ className, variant = "default", ...props }, ref) => {
+// Badge - Pill shape, quiet colors
+export const Badge = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement> & { variant?: 'default' | 'outline' | 'success' | 'warning' | 'danger' | 'purple' }>(({ className, variant = "default", ...props }, ref) => {
+  const variants = {
+    default: "bg-white/5 text-zinc-400 border-transparent",
+    outline: "border-white/10 text-zinc-500",
+    success: "bg-[#3CDCAB]/10 text-[#3CDCAB] border-[#3CDCAB]/20",
+    warning: "bg-[#FFB43C]/10 text-[#FFB43C] border-[#FFB43C]/20",
+    danger: "bg-[#FF5A78]/10 text-[#FF5A78] border-[#FF5A78]/20",
+    purple: "bg-[#9B87FF]/10 text-[#9B87FF] border-[#9B87FF]/20"
+  };
   return (
-    <div ref={ref} className={cn("inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-zinc-950 focus:ring-offset-2", className)} {...props} />
+    <div ref={ref} className={cn("inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-medium border transition-colors", variants[variant as keyof typeof variants], className)} {...props} />
   );
 });
 Badge.displayName = "Badge";
 
 // Separator
 export const Separator = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(({ className, ...props }, ref) => (
-  <div ref={ref} className={cn("shrink-0 bg-zinc-200 dark:bg-white/10 h-[1px] w-full", className)} {...props} />
+  <div ref={ref} className={cn("shrink-0 bg-white/[0.08] h-[1px] w-full", className)} {...props} />
 ));
 Separator.displayName = "Separator";
 
-// Progress
+// Progress - Slim, Purple Accent
 export const Progress = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement> & { value?: number }>(({ className, value, ...props }, ref) => (
-  <div ref={ref} className={cn("relative h-2 w-full overflow-hidden rounded-full bg-zinc-900/20 dark:bg-white/10", className)} {...props}>
-    <div className="h-full w-full flex-1 bg-zinc-900 transition-all dark:bg-white" style={{ transform: `translateX(-${100 - (value || 0)}%)` }} />
+  <div ref={ref} className={cn("relative h-1 w-full overflow-hidden rounded-full bg-white/5", className)} {...props}>
+    <div className="h-full w-full flex-1 bg-[#9B87FF] transition-all duration-500 ease-out" style={{ transform: `translateX(-${100 - (value || 0)}%)` }} />
   </div>
 ));
 Progress.displayName = "Progress";
 
-// Tabs (Simple Implementation)
-interface TabsContextType {
-  value: string;
-  onValueChange: (value: string) => void;
-}
-const TabsContext = React.createContext<TabsContextType | undefined>(undefined);
-
-export const Tabs = ({ defaultValue, value, onValueChange, children, className }: any) => {
-  const [activeTab, setActiveTab] = React.useState(value || defaultValue);
-  const handleTabChange = (val: string) => {
-    setActiveTab(val);
-    onValueChange?.(val);
-  };
-  return (
-    <TabsContext.Provider value={{ value: activeTab, onValueChange: handleTabChange }}>
-      <div className={className}>{children}</div>
-    </TabsContext.Provider>
-  );
-};
-
-export const TabsList = ({ className, children }: any) => (
-  <div className={cn("inline-flex h-9 items-center justify-center rounded-lg bg-zinc-100 p-1 text-zinc-500 dark:bg-white/5 dark:text-zinc-400", className)}>
+// Dropdown
+export const DropdownMenu = ({ children }: any) => <div className="relative inline-block text-left group z-40">{children}</div>;
+export const DropdownMenuTrigger = ({ asChild, children }: any) => <div className="cursor-pointer">{children}</div>;
+export const DropdownMenuContent = ({ className, children }: any) => (
+  <div className={cn("hidden group-hover:block absolute right-0 top-full mt-2 w-56 origin-top-right rounded-[14px] bg-[#111318] border border-white/10 shadow-[0_10px_30px_rgba(0,0,0,0.5)] z-50 p-1.5", className)}>
     {children}
   </div>
 );
-
-export const TabsTrigger = ({ value, className, children }: any) => {
-  const context = React.useContext(TabsContext);
-  const isActive = context?.value === value;
-  return (
-    <button
-      type="button"
-      onClick={() => context?.onValueChange(value)}
-      className={cn(
-        "inline-flex items-center justify-center whitespace-nowrap rounded-md px-3 py-1 text-sm font-medium ring-offset-white transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50",
-        isActive ? "bg-white text-zinc-950 shadow dark:bg-white dark:text-zinc-950" : "hover:text-zinc-900 dark:hover:text-zinc-100",
-        className
-      )}
-    >
-      {children}
-    </button>
-  );
-};
-
-export const TabsContent = ({ value, className, children }: any) => {
-  const context = React.useContext(TabsContext);
-  if (context?.value !== value) return null;
-  return <div className={cn("mt-2 ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 focus-visible:ring-offset-2", className)}>{children}</div>;
-};
-
-// Dropdown (Simple Simulation for Layout)
-export const DropdownMenu = ({ children }: any) => <div className="relative inline-block text-left group">{children}</div>;
-export const DropdownMenuTrigger = ({ asChild, children }: any) => <div className="cursor-pointer">{children}</div>;
-export const DropdownMenuContent = ({ className, children }: any) => (
-  <div className={cn("hidden group-hover:block absolute right-0 z-50 mt-2 w-56 origin-top-right rounded-md bg-white shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none dark:bg-zinc-900 dark:border-white/10", className)}>
-    <div className="py-1">{children}</div>
-  </div>
-);
 export const DropdownMenuItem = ({ children, onClick }: any) => (
-  <button onClick={onClick} className="block w-full text-left px-4 py-2 text-sm text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-white/10">
+  <button onClick={onClick} className="block w-full text-left px-3 py-2 text-[13px] font-medium text-zinc-400 rounded-[8px] hover:bg-white/5 hover:text-white transition-colors">
     {children}
   </button>
 );

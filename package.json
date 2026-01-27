@@ -1,5 +1,5 @@
 {
-  "name": "bank-statement-sentinel",
+  "name": "ledgersentinel",
   "private": true,
   "version": "0.0.0",
   "type": "module",
