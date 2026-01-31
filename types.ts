@@ -1,14 +1,14 @@
+
+
 export type DecisionSource = 'AI' | 'RULE' | 'MEMORY' | 'HUMAN';
 
 export interface Transaction {
   date: string;
   description: string;
   category: string;
-  reference: string;
   debit: number;
   credit: number;
   balance: number;
-  is_reversal: boolean;
   confidence?: number;
   ruleId?: string;
   decision_source?: DecisionSource;
@@ -43,6 +43,11 @@ export enum AppStatus {
 }
 
 export const CATEGORIES = [
+  'Unallocated',
+  
+  // Special
+  'Stock Purchase',
+
   // System
   'Opening Balance',
   'Closing Balance',
@@ -61,6 +66,7 @@ export const CATEGORIES = [
   'Staff Welfare',
   'Salaries & Wages',
   'Staff Training & Development',
+  'Foreign Exam Fees',
 
   // Balance Sheet - Assets
   'Capital Expenditure (CWIP)',
