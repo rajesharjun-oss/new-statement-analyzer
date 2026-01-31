@@ -1,5 +1,7 @@
 
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useMemo, useState, useEffect, useDeferredValue, memo } from "react";
+import { FixedSizeList as List, areEqual } from 'react-window';
+import AutoSizer from "react-virtualized-auto-sizer";
 import {
   ShieldCheck,
   Upload,
@@ -13,7 +15,8 @@ import {
   CheckCircle2,
   AlertTriangle,
   Clock,
-  Hash
+  Hash,
+  Briefcase
 } from "lucide-react";
 import { 
   PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip,
@@ -58,6 +61,35 @@ function StatusPill({ state }: { state: 'idle' | 'busy' | 'ready' }) {
   return <Badge variant="success">System Ready</Badge>;
 }
 
+// OPTIMIZATION: Extracted Row Component
+const TransactionRow = memo(({ index, style, data }: { index: number; style: React.CSSProperties; data: Txn[] }) => {
+  const t = data[index];
+  return (
+    <div style={style} className="flex items-center text-[12px] font-mono text-zinc-400 hover:bg-white/[0.02] border-b border-white/[0.04] transition-colors">
+        <div className="w-[12%] px-5 py-2.5 whitespace-nowrap overflow-hidden text-ellipsis">{t.date}</div>
+        <div className="w-[40%] px-5 py-2.5">
+           <div className="text-zinc-200 truncate max-w-[95%]" title={t.description}>{t.description}</div>
+           {t.flag !== 'ok' && (
+              <div className="mt-1 flex gap-1">
+                 {t.flag === 'anomaly' && <Badge variant="danger">Calc Error</Badge>}
+                 {t.flag === 'review' && <Badge variant="warning">Review</Badge>}
+              </div>
+           )}
+        </div>
+        <div className="w-[13%] px-5 py-2.5 text-right overflow-hidden text-ellipsis">{t.debit ? formatMoney(t.debit, '') : '-'}</div>
+        <div className="w-[13%] px-5 py-2.5 text-right text-[#3CDCAB] overflow-hidden text-ellipsis">{t.credit ? formatMoney(t.credit, '') : '-'}</div>
+        <div className="w-[12%] px-5 py-2.5 text-right text-zinc-300 font-medium overflow-hidden text-ellipsis">{formatMoney(t.balance, '')}</div>
+        <div className="w-[10%] px-5 py-2.5 text-center overflow-hidden">
+           <div className="inline-block px-2 py-0.5 rounded-[4px] bg-white/5 text-[10px] text-zinc-500 truncate max-w-[100%]" title={t.category}>
+              {t.category}
+           </div>
+        </div>
+    </div>
+  );
+}, areEqual);
+
+TransactionRow.displayName = "TransactionRow";
+
 export default function App() {
   const [hasFile, setHasFile] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -65,6 +97,7 @@ export default function App() {
   const [fileName, setFileName] = useState("");
   const [processingTime, setProcessingTime] = useState(0);
   const [searchTerm, setSearchTerm] = useState("");
+  const deferredSearchTerm = useDeferredValue(searchTerm);
   
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -103,8 +136,9 @@ export default function App() {
   }, [analysisResult]);
 
   const filteredTxns = useMemo(() => {
-    if (!searchTerm) return txns;
-    const lower = searchTerm.toLowerCase();
+    if (!deferredSearchTerm) return txns;
+    
+    const lower = deferredSearchTerm.toLowerCase();
     return txns.filter(t => 
       t.description.toLowerCase().includes(lower) || 
       t.category.toLowerCase().includes(lower) ||
@@ -112,13 +146,12 @@ export default function App() {
       t.debit.toString().includes(lower) ||
       t.credit.toString().includes(lower)
     );
-  }, [txns, searchTerm]);
+  }, [txns, deferredSearchTerm]);
 
   const summary = useMemo(() => {
     if (!analysisResult) return { opening: 0, closing: 0, totalDebits: 0, totalCredits: 0, anomalies: 0, reviews: 0, currency: "USD" };
     
-    // Logic: If we have an explicit Opening Balance row, use it. Otherwise calculate backwards.
-    // Assuming transactions are roughly chronological or we simply take the first row's implied opening.
+    // Find the first Balance B/F row or take the first calculation
     const opening = txns.length > 0 
       ? (txns[0].balance + (txns[0].debit || 0) - (txns[0].credit || 0))
       : 0;
@@ -131,14 +164,27 @@ export default function App() {
     return { opening, closing, totalDebits, totalCredits, anomalies, reviews, currency: analysisResult.currency };
   }, [txns, analysisResult]);
 
+  // CHART DATA: STRICTLY EXPENSES
   const categoryData = useMemo(() => {
     if (!txns.length) return [];
     const categoryMap: Record<string, number> = {};
+    
     txns.forEach(t => {
-      if ((t.debit || 0) !== 0) {
-        categoryMap[t.category] = (categoryMap[t.category] || 0) + (t.debit || 0);
-      }
+      // 1. Must be a Debit
+      if ((t.debit || 0) <= 0) return;
+
+      // 2. Exclude non-expense categories
+      const ignoredCategories = [
+        'Opening Balance',
+        'Closing Balance',
+        'Inter-Account / Treasury Transfer', // Movement
+        'Unallocated'
+      ];
+      if (ignoredCategories.includes(t.category)) return;
+
+      categoryMap[t.category] = (categoryMap[t.category] || 0) + t.debit;
     });
+
     return Object.entries(categoryMap)
       .map(([name, value]) => ({ name, value }))
       .sort((a, b) => b.value - a.value)
@@ -369,7 +415,7 @@ export default function App() {
                             </div>
                         </div>
 
-                        {/* Processing Time Indicator (NEW) */}
+                        {/* Processing Time Indicator */}
                         <div className="flex items-center gap-2 px-3 py-1.5 bg-white/5 rounded-lg border border-white/5">
                             <Clock className="w-3.5 h-3.5 text-zinc-500" />
                             <div className="flex flex-col leading-none">
@@ -416,7 +462,7 @@ export default function App() {
                  
                  {/* Transaction Table (Span 2) */}
                  <Card className="lg:col-span-2 flex flex-col overflow-hidden">
-                    <div className="px-5 py-4 border-b border-white/[0.06] flex items-center justify-between">
+                    <div className="px-5 py-4 border-b border-white/[0.06] flex items-center justify-between shrink-0">
                        <div className="flex items-center gap-2">
                           <LayoutDashboard className="w-4 h-4 text-zinc-500" />
                           <span className="text-[13px] font-semibold text-zinc-300">Transaction Ledger</span>
@@ -431,43 +477,33 @@ export default function App() {
                           />
                        </div>
                     </div>
-                    <div className="flex-1 overflow-auto">
-                       <table className="w-full text-left border-collapse">
-                          <thead className="bg-[#111318] sticky top-0 z-10 text-[10px] font-bold text-zinc-500 uppercase tracking-wider font-mono">
-                             <tr>
-                                <th className="px-5 py-3 border-b border-white/[0.06]">Date</th>
-                                <th className="px-5 py-3 border-b border-white/[0.06] w-2/5">Description</th>
-                                <th className="px-5 py-3 border-b border-white/[0.06] text-right">Debit</th>
-                                <th className="px-5 py-3 border-b border-white/[0.06] text-right">Credit</th>
-                                <th className="px-5 py-3 border-b border-white/[0.06] text-right">Balance</th>
-                                <th className="px-5 py-3 border-b border-white/[0.06] text-center">Cat</th>
-                             </tr>
-                          </thead>
-                          <tbody className="divide-y divide-white/[0.04] text-[12px] font-mono text-zinc-400">
-                             {filteredTxns.map((t, i) => (
-                                <tr key={i} className="hover:bg-white/[0.02] transition-colors">
-                                   <td className="px-5 py-2.5 whitespace-nowrap">{t.date}</td>
-                                   <td className="px-5 py-2.5">
-                                      <div className="text-zinc-200 truncate max-w-[240px]" title={t.description}>{t.description}</div>
-                                      {t.flag !== 'ok' && (
-                                         <div className="mt-1 flex gap-1">
-                                            {t.flag === 'anomaly' && <Badge variant="danger">Calc Error</Badge>}
-                                            {t.flag === 'review' && <Badge variant="warning">Review</Badge>}
-                                         </div>
-                                      )}
-                                   </td>
-                                   <td className="px-5 py-2.5 text-right">{t.debit ? formatMoney(t.debit, '') : '-'}</td>
-                                   <td className="px-5 py-2.5 text-right text-[#3CDCAB]">{t.credit ? formatMoney(t.credit, '') : '-'}</td>
-                                   <td className="px-5 py-2.5 text-right text-zinc-300 font-medium">{formatMoney(t.balance, '')}</td>
-                                   <td className="px-5 py-2.5 text-center">
-                                      <div className="inline-block px-2 py-0.5 rounded-[4px] bg-white/5 text-[10px] text-zinc-500 truncate max-w-[80px]" title={t.category}>
-                                         {t.category}
-                                      </div>
-                                   </td>
-                                </tr>
-                             ))}
-                          </tbody>
-                       </table>
+                    {/* OPTIMIZATION: Virtualized List Replacement */}
+                    <div className="flex-1 w-full">
+                       {/* Header Row (Static) */}
+                       <div className="flex items-center bg-[#111318] text-[10px] font-bold text-zinc-500 uppercase tracking-wider font-mono border-b border-white/[0.06]">
+                            <div className="w-[12%] px-5 py-3">Date</div>
+                            <div className="w-[40%] px-5 py-3">Description</div>
+                            <div className="w-[13%] px-5 py-3 text-right">Debit</div>
+                            <div className="w-[13%] px-5 py-3 text-right">Credit</div>
+                            <div className="w-[12%] px-5 py-3 text-right">Balance</div>
+                            <div className="w-[10%] px-5 py-3 text-center">Cat</div>
+                       </div>
+                       
+                       <div className="flex-1 h-[calc(100%-40px)] w-full">
+                           <AutoSizer>
+                               {({ height, width }) => (
+                                   <List
+                                       height={height}
+                                       itemCount={filteredTxns.length}
+                                       itemSize={50} // Fixed height for rows
+                                       width={width}
+                                       itemData={filteredTxns}
+                                   >
+                                       {TransactionRow}
+                                   </List>
+                               )}
+                           </AutoSizer>
+                       </div>
                     </div>
                  </Card>
 
@@ -475,7 +511,7 @@ export default function App() {
                  <div className="flex flex-col gap-6">
                     {/* Allocation Pie Chart */}
                     <Card className="flex-1 flex flex-col p-5 bg-[#0B0C0E]">
-                       <h3 className="text-[13px] font-semibold text-zinc-400 mb-4">Expense Allocation</h3>
+                       <h3 className="text-[13px] font-semibold text-zinc-400 mb-4">Operating Expenses</h3>
                        <div className="flex-1 min-h-[180px]">
                           <ResponsiveContainer width="100%" height="100%">
                              <PieChart>
@@ -503,7 +539,7 @@ export default function App() {
 
                     {/* Bar Chart (Replaces Automation) */}
                     <Card className="flex-1 flex flex-col p-5 bg-[#0B0C0E]">
-                       <h3 className="text-[13px] font-semibold text-zinc-400 mb-4">Category Trends</h3>
+                       <h3 className="text-[13px] font-semibold text-zinc-400 mb-4">Expense Categories</h3>
                        <div className="flex-1 min-h-[180px]">
                           <ResponsiveContainer width="100%" height="100%">
                              <BarChart data={categoryData} layout="vertical" barCategoryGap={10}>
