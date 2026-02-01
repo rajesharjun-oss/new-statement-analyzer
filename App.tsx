@@ -67,10 +67,10 @@ const TransactionRow = memo(({ index, style, data }: { index: number; style: Rea
   return (
     <div style={style} className="flex items-center text-[12px] font-mono text-zinc-400 hover:bg-white/[0.02] border-b border-white/[0.04] transition-colors">
         <div className="w-[12%] px-5 py-2.5 whitespace-nowrap overflow-hidden text-ellipsis">{t.date}</div>
-        <div className="w-[40%] px-5 py-2.5">
+        <div className="w-[40%] px-5 py-2.5 flex flex-col justify-center">
            <div className="text-zinc-200 truncate max-w-[95%]" title={t.description}>{t.description}</div>
            {t.flag !== 'ok' && (
-              <div className="mt-1 flex gap-1">
+              <div className="mt-1.5 flex gap-1">
                  {t.flag === 'anomaly' && <Badge variant="danger">Calc Error</Badge>}
                  {t.flag === 'review' && <Badge variant="warning">Review</Badge>}
               </div>
@@ -116,15 +116,22 @@ export default function App() {
 
   const txns: Txn[] = useMemo(() => {
     if (!analysisResult) return [];
+    
+    // Create a Set of error indices for O(1) lookup
+    const errorSet = new Set(analysisResult.error_indices || []);
+
     return analysisResult.transactions.map((t, i) => {
       const confidence = t.confidence !== undefined 
         ? t.confidence 
         : (t.category === "Review Required" || t.category === "Unallocated" ? 0.5 : 0.85);
       
       let flag: "ok" | "review" | "anomaly" = "ok";
-      if (t.category === "Review Required") flag = "review";
-      else if (confidence < 0.7) flag = "review";
-      if (analysisResult.reconciliation_failed && i === analysisResult.transactions.length -1) flag = "anomaly"; 
+      
+      if (errorSet.has(i)) {
+          flag = "anomaly";
+      } else if (t.category === "Review Required" || confidence < 0.7) {
+          flag = "review";
+      }
       
       return {
         ...t,
@@ -246,6 +253,13 @@ export default function App() {
     }
   };
 
+  // Determine Loading Status Message
+  const loadingStatus = useMemo(() => {
+    if (processingTime < 3) return "Extracting transaction logic...";
+    if (processingTime < 10) return "Analyzing ledger patterns...";
+    return "Batch processing large file (this may take a moment)...";
+  }, [processingTime]);
+
   return (
     <div className="min-h-screen font-sans text-zinc-300">
       <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} onSave={handleSaveSettings} currentKey={userApiKey} />
@@ -296,6 +310,12 @@ export default function App() {
                  <p className="text-zinc-500 text-[14px]">
                     Import a statement to extract, reconcile, and categorize transactions with traceable evidence.
                  </p>
+                 {error && (
+                    <div className="mt-4 p-3 bg-red-900/20 border border-red-500/20 rounded-lg flex items-center gap-3">
+                       <AlertTriangle className="w-5 h-5 text-red-400" />
+                       <span className="text-sm text-red-200">{error}</span>
+                    </div>
+                 )}
               </div>
 
               {/* Main Grid */}
@@ -337,8 +357,8 @@ export default function App() {
                               </div>
 
                               <div className="space-y-2">
-                                <Progress value={processingTime > 3 ? 75 : 25} />
-                                <p className="text-xs text-zinc-500">Extracting transaction logic...</p>
+                                <Progress value={processingTime > 3 ? (processingTime > 15 ? 90 : 75) : 25} />
+                                <p className="text-xs text-zinc-500 animate-pulse">{loadingStatus}</p>
                               </div>
                            </div>
                         ) : (
@@ -478,31 +498,33 @@ export default function App() {
                        </div>
                     </div>
                     {/* OPTIMIZATION: Virtualized List Replacement */}
-                    <div className="flex-1 w-full">
-                       {/* Header Row (Static) */}
-                       <div className="flex items-center bg-[#111318] text-[10px] font-bold text-zinc-500 uppercase tracking-wider font-mono border-b border-white/[0.06]">
-                            <div className="w-[12%] px-5 py-3">Date</div>
-                            <div className="w-[40%] px-5 py-3">Description</div>
-                            <div className="w-[13%] px-5 py-3 text-right">Debit</div>
-                            <div className="w-[13%] px-5 py-3 text-right">Credit</div>
-                            <div className="w-[12%] px-5 py-3 text-right">Balance</div>
-                            <div className="w-[10%] px-5 py-3 text-center">Cat</div>
-                       </div>
-                       
-                       <div className="flex-1 h-[calc(100%-40px)] w-full">
-                           <AutoSizer>
-                               {({ height, width }) => (
-                                   <List
-                                       height={height}
-                                       itemCount={filteredTxns.length}
-                                       itemSize={50} // Fixed height for rows
-                                       width={width}
-                                       itemData={filteredTxns}
-                                   >
-                                       {TransactionRow}
-                                   </List>
-                               )}
-                           </AutoSizer>
+                    <div className="flex-1 w-full overflow-hidden">
+                       <div className="min-w-[1000px] h-full flex flex-col">
+                            {/* Header Row (Static) */}
+                           <div className="flex items-center bg-[#111318] text-[10px] font-bold text-zinc-500 uppercase tracking-wider font-mono border-b border-white/[0.06] shrink-0">
+                                <div className="w-[12%] px-5 py-3">Date</div>
+                                <div className="w-[40%] px-5 py-3">Description</div>
+                                <div className="w-[13%] px-5 py-3 text-right">Debit</div>
+                                <div className="w-[13%] px-5 py-3 text-right">Credit</div>
+                                <div className="w-[12%] px-5 py-3 text-right">Balance</div>
+                                <div className="w-[10%] px-5 py-3 text-center">Cat</div>
+                           </div>
+                           
+                           <div className="flex-1 w-full">
+                               <AutoSizer>
+                                   {({ height, width }) => (
+                                       <List
+                                           height={height}
+                                           itemCount={filteredTxns.length}
+                                           itemSize={64} 
+                                           width={width}
+                                           itemData={filteredTxns}
+                                       >
+                                           {TransactionRow}
+                                       </List>
+                                   )}
+                               </AutoSizer>
+                           </div>
                        </div>
                     </div>
                  </Card>
