@@ -1,5 +1,4 @@
 
-
 export type DecisionSource = 'AI' | 'RULE' | 'MEMORY' | 'HUMAN';
 
 export interface Transaction {
@@ -12,6 +11,7 @@ export interface Transaction {
   confidence?: number;
   ruleId?: string;
   decision_source?: DecisionSource;
+  is_reversal?: boolean;
 }
 
 export interface AnalysisStatistics {
@@ -28,6 +28,7 @@ export interface AnalysisStatistics {
 export interface AnalysisResult {
   reconciliation_failed: boolean;
   reconciliation_warnings: string[];
+  error_indices: number[]; // Indices of rows that failed math check
   currency: string;
   transactions: Transaction[];
   organizationName: string;

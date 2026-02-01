@@ -45,7 +45,8 @@ const RULES: Rule[] = [
     id: "R011_BANK_CHARGES_CORE",
     priority: 11,
     // Explicitly catching NIP/TRF charges to prevent them falling to Transfer logic
-    description_regex: /SMS\s*CHARGE|SMS\b|COMMISSION|COMM\b|TRANSFER\s*CHARGE|BANK\s*CHARGE|MAINTENANCE\s*FEE|NIP\s*CHG|NIP\s*FEE|TRF\s*CHG|TRF\s*FEE|UBR\s*CHG/i,
+    // Updated to include Account Maintenance variations
+    description_regex: /SMS\s*CHARGE|SMS\b|COMMISSION|COMM\b|TRANSFER\s*CHARGE|BANK\s*CHARGE|MAINTENANCE\s*(?:FEE|CHG|CHARGE)|ACCT\s*MAINT|ACCOUNT\s*MAINT|AMF\b|NIP\s*CHG|NIP\s*FEE|TRF\s*CHG|TRF\s*FEE|UBR\s*CHG/i,
     side: "debit",
     category: "Bank Charges",
     confidence: 1.0
@@ -123,7 +124,9 @@ const RULES: Rule[] = [
   {
     id: "R041_TRANSPORT_VEHICLE",
     priority: 41,
-    description_regex: /VEHICLE|TINT|REGISTRATION|LICENSE|VEHICLE\s*PAPERS|FUEL\b|DIESEL\b/i,
+    // REMOVED generic "REGISTRATION" to avoid conflict with Exam/Admin registration
+    // Added specific vehicle context for registration
+    description_regex: /VEHICLE|TINT|VEHICLE\s*REG|CAR\s*REG|LICENSE|VEHICLE\s*PAPERS|FUEL\b|DIESEL\b/i,
     side: "debit",
     category: "Transport & Logistics",
     confidence: 1.0
@@ -131,7 +134,8 @@ const RULES: Rule[] = [
   {
     id: "R042_REPAIRS_MAINTENANCE",
     priority: 42,
-    description_regex: /REPAIR|MAINTENANCE\s*(?!FEE)|SERVICING|PLUMBING|ELECTRICAL|CARPENTRY/i,
+    // Excluded Fee/Charge/Account contexts to avoid Bank Charge collisions
+    description_regex: /REPAIR|MAINTENANCE\s*(?!FEE|CHG|CHARGE|ACCT|ACCOUNT)|SERVICING|PLUMBING|ELECTRICAL|CARPENTRY/i,
     side: "debit",
     category: "Repairs & Maintenance",
     confidence: 0.9
@@ -147,7 +151,8 @@ const RULES: Rule[] = [
   {
     id: "R050_EXAM_GENERIC_PASSTHROUGH",
     priority: 50,
-    description_regex: /\bEXAM\b|EXAM\s*FEE|REGISTRATION\s*(EXAM)/i,
+    // ADDED "REGISTRATION FORM", "ADMISSION", "APPLICATION"
+    description_regex: /\bEXAM\b|EXAM\s*FEE|REGISTRATION\s*(?:EXAM|FORM|FEE)|ADMISSION|APPLICATION\s*FORM|COMMON\s*ENTRANCE/i,
     side: "both",
     category: "Student Exam Fees (Pass-Through)",
     confidence: 0.95
@@ -171,7 +176,8 @@ const RULES: Rule[] = [
   {
     id: "R070_ADMINISTRATIVE_EXPENSES",
     priority: 70,
-    description_regex: /MISCELLANEOUS|MISC\b|OFFICE\s*EXP|STATIONERY|PRINTING|COURIER|NEWSPAPER|SUBSCRIPTION|INTERNET|DATA\s*BUNDLE|AIRTIME/i,
+    // ADDED generic "REGISTRATION" here as fallback (e.g. CAC, Business name)
+    description_regex: /MISCELLANEOUS|MISC\b|OFFICE\s*EXP|STATIONERY|PRINTING|COURIER|NEWSPAPER|SUBSCRIPTION|REGISTRATION\b|INTERNET|DATA\s*BUNDLE|AIRTIME/i,
     side: "debit",
     category: "Administrative Expenses",
     confidence: 0.95
@@ -206,8 +212,10 @@ export const categorizeTransaction = (t: Transaction): Transaction => {
   const isDebit = (t.debit || 0) !== 0;
   const debitAmount = t.debit || 0;
 
-  // Default assumption: It's an AI prediction unless a rule overrides it
-  updated.decision_source = 'AI';
+  // 0. CHECK REVERSALS (New Flagging Logic)
+  if (/REVERSAL|REV\b|RET\b|ERR\b/i.test(normDesc) || /REV\s*TRF/i.test(normDesc)) {
+    updated.is_reversal = true;
+  }
 
   // 1. AMOUNT-BASED CLASSIFICATION
   const isFeeAmount = 
@@ -227,7 +235,8 @@ export const categorizeTransaction = (t: Transaction): Transaction => {
      }
   }
 
-  // 2. RULE ENGINE EXECUTION
+  // 2. RULE ENGINE EXECUTION (Highest Priority)
+  // We still run strict rules because AI can miss accounting nuances (e.g., VAT vs WHT)
   for (const rule of SORTED_RULES) {
     if (rule.side === 'debit' && !isDebit) continue;
     if (rule.side === 'credit' && !isCredit) continue;
@@ -244,12 +253,26 @@ export const categorizeTransaction = (t: Transaction): Transaction => {
     }
   }
 
-  // 3. HEURISTICS & FALLBACKS (Strictly limiting 'Review Required' and Blind Guesses)
+  // 3. AI PREDICTION CHECK
+  // If the AI (from Gemini) already provided a plausible category, we accept it.
+  // We check if t.category is valid and not "Unallocated"
+  if (t.category && t.category !== "Unallocated") {
+     updated.category = t.category;
+     updated.confidence = 0.85; // AI confidence
+     updated.decision_source = 'AI';
+     return updated;
+  }
+
+  // 4. HEURISTICS & FALLBACKS (Last Resort)
   if (!updated.category || updated.category === "Unallocated") {
       
       // A. Catch-all for Bank Charges (Keywords that might have been missed)
       // Added LEVY, DUTY to ensure EMTL/Stamp Duty fallbacks are caught
-      if (isDebit && /(?:CHG|COMM|FEE|VAT|TAX|MOBL|SMS|MAINT|LEVY|DUTY)/.test(normDesc)) {
+      // EXCLUSION: Ensure FEES for Exams, Schools, Tuition, Legal, Consultancy are NOT captured here.
+      const bankChargeKeywords = /(?:CHG|COMM|FEE|VAT|TAX|MOBL|SMS|MAINT|LEVY|DUTY)/;
+      const nonBankContexts = /(?:SCHOOL|TUITION|EXAM|CLASS|LESSON|TRAINING|COURSE|SEMINAR|LEGAL|LAWYER|CONSULT|AUDIT|PROFESSIONAL|RETAINER|MEMBER|LICENSE|SUBSCRIPTION)/;
+
+      if (isDebit && bankChargeKeywords.test(normDesc) && !nonBankContexts.test(normDesc)) {
           updated.category = "Bank Charges";
           updated.confidence = 0.8;
           updated.decision_source = 'RULE';
