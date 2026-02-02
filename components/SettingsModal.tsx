@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { X, Key, Save, Check, ExternalLink } from 'lucide-react';
 
@@ -43,19 +44,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
         <div className="p-6 space-y-6">
           <div>
             <label className="block text-sm font-semibold text-slate-900 mb-2">
-              Gemini API Key
+              Gemini API Keys
             </label>
             <div className="relative">
               <input
                 type="password"
                 value={key}
                 onChange={(e) => setKey(e.target.value)}
-                placeholder="AIzaSy..."
+                placeholder="Key1, Key2, Key3 (comma separated for load balancing)"
                 className="w-full pl-4 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all text-sm font-mono text-slate-900 placeholder:text-slate-400"
               />
             </div>
             <p className="mt-3 text-xs text-slate-500 leading-relaxed">
-              Your API key is used directly to authenticate requests with Google's servers. It is stored locally in your browser and is never transmitted to our backend.
+              Your API keys are used directly to authenticate requests with Google's servers. Providing multiple keys enables <b>Parallel Load Balancing</b> for faster processing. They are stored locally and never transmitted to our backend.
             </p>
             <a 
               href="https://aistudio.google.com/app/apikey" 
@@ -63,7 +64,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
               rel="noreferrer"
               className="inline-flex items-center gap-1 mt-3 text-xs font-semibold text-blue-600 hover:text-blue-800"
             >
-              Generate a key in Google AI Studio <ExternalLink className="w-3 h-3" />
+              Generate keys in Google AI Studio <ExternalLink className="w-3 h-3" />
             </a>
           </div>
 
