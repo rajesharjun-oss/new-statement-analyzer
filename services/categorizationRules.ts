@@ -18,9 +18,17 @@ const RULES: Rule[] = [
   {
     id: "R001_OPENING_BALANCE",
     priority: 1,
-    description_regex: /OPENING\s+BAL/i,
+    description_regex: /OPENING\s+BAL|BROUGHT\s+FORWARD|B\/F\b/i,
     side: "both",
     category: "Opening Balance",
+    confidence: 1.0
+  },
+  {
+    id: "R002_CLOSING_BALANCE",
+    priority: 2,
+    description_regex: /CLOSING\s+BAL|CARRIED\s+FORWARD|C\/F\b|C\/D\b/i,
+    side: "both",
+    category: "Closing Balance",
     confidence: 1.0
   },
   // INFLOWS (High Priority)
