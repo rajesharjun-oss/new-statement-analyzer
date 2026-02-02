@@ -1,7 +1,7 @@
 
 import React, { useMemo, useState, useEffect, useDeferredValue, memo } from "react";
-import { FixedSizeList as List, areEqual } from 'react-window';
-import AutoSizer from "react-virtualized-auto-sizer";
+import * as ReactWindow from 'react-window';
+import * as AutoSizerPkg from "react-virtualized-auto-sizer";
 import {
   ShieldCheck,
   Upload,
@@ -28,6 +28,13 @@ import { SettingsModal } from './components/SettingsModal';
 import { analyzeBankStatement } from './services/geminiService';
 import { generateExcel } from './services/excelService';
 import { AnalysisResult, Transaction, DecisionSource } from './types';
+
+// Handle ESM/CJS interop for React Window
+const List = (ReactWindow as any).FixedSizeList || (ReactWindow as any).default?.FixedSizeList;
+const areEqual = (ReactWindow as any).areEqual || (ReactWindow as any).default?.areEqual;
+
+// Handle ESM/CJS interop for AutoSizer
+const AutoSizer = (AutoSizerPkg as any).default || (AutoSizerPkg as any);
 
 // Extended type for internal UI state
 type Txn = Transaction & {
@@ -512,7 +519,7 @@ export default function App() {
                            
                            <div className="flex-1 w-full">
                                <AutoSizer>
-                                   {({ height, width }) => (
+                                   {({ height, width }: { height: number, width: number }) => (
                                        <List
                                            height={height}
                                            itemCount={filteredTxns.length}
