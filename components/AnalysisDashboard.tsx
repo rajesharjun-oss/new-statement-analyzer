@@ -1,4 +1,3 @@
-
 import React, { useMemo } from 'react';
 import { AnalysisResult, Transaction } from '../types';
 import { 
@@ -27,11 +26,6 @@ const COLORS = [
 
 export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ data }) => {
   const { transactions, reconciliation_failed, reconciliation_warnings, currency = 'USD', organizationName, bankName } = data;
-
-  // Calculate Record Count (Excluding Balance rows)
-  const recordCount = useMemo(() => {
-    return transactions.filter(t => t.category !== 'Opening Balance' && t.category !== 'Closing Balance').length;
-  }, [transactions]);
 
   const summary = useMemo(() => {
     const totalDebits = transactions.reduce((sum, t) => sum + (t.debit || 0), 0);
@@ -154,14 +148,14 @@ export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ data }) =>
            <div className="flex justify-between items-start mb-4">
             <div>
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Volume</p>
-              <h3 className="text-3xl font-bold text-slate-900 mt-1 tracking-tight">{recordCount}</h3>
+              <h3 className="text-3xl font-bold text-slate-900 mt-1 tracking-tight">{transactions.length}</h3>
             </div>
              <div className="p-2 bg-blue-50 rounded-lg group-hover:bg-blue-100 transition-colors">
               <Activity className="w-5 h-5 text-blue-600" />
             </div>
           </div>
            <div className="flex items-center text-xs text-slate-500">
-             <span className="font-medium text-slate-700">Activity records</span>
+             <span className="font-medium text-slate-700">Transactions analyzed</span>
           </div>
         </div>
       </div>
@@ -275,7 +269,7 @@ export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ data }) =>
       <div className="bg-white rounded-2xl border border-slate-100 shadow-[0_8px_30px_rgb(0,0,0,0.04)] overflow-hidden">
         <div className="p-6 border-b border-slate-100 bg-white flex justify-between items-center">
           <h3 className="text-lg font-bold text-slate-900">Transaction Ledger</h3>
-          <span className="text-xs font-medium text-slate-400 uppercase tracking-widest">{recordCount} ACTIVITY RECORDS</span>
+          <span className="text-xs font-medium text-slate-400 uppercase tracking-widest">{transactions.length} ENTRIES</span>
         </div>
         <div className="overflow-x-auto scrollbar-thin">
           <table className="w-full text-left text-sm text-slate-600">
