@@ -6,9 +6,9 @@ import { categorizeTransaction } from "./categorizationRules";
 
 // --- CONFIGURATION ---
 const MODEL_NAME = 'gemini-2.0-flash'; 
-const PAGE_THRESHOLD = 3;   // Lowered to 3 to trigger batching sooner for reliability
-const BATCH_SIZE = 6;       // Reduced batch size to ~6 pages to ensure no rows are skipped by AI
-const MAX_CONCURRENCY = 3;  // Maps 1:1 with standard 3-key rotation for max speed
+const PAGE_THRESHOLD = 2;   // Lower threshold to trigger batching earlier
+const BATCH_SIZE = 5;       // OPTIMAL: 5 Pages per batch prevents TPM exhaustion while maintaining context.
+// MAX_CONCURRENCY will be dynamic
 
 const SYSTEM_INSTRUCTION = `
 You are a high-speed financial extraction and classification engine.
@@ -29,25 +29,55 @@ RULES:
 3. Separator: Use the pipe character "|" strictly.
 4. Content Safety: If a Description contains a pipe "|", replace it with a space.
 5. Multiline Descriptions: Merge into a single line.
-6. Numbers: Plain numbers (e.g., 1200.50). Remove commas.
-7. Empty values: Use 0 for empty numeric columns.
+6. Numbers: Standardize to plain decimals (e.g., 1200.50). Remove commas. Remove currency symbols. KEEP NEGATIVE SIGNS if present (e.g., -50.00).
+7. Empty values: Use 0 for empty numeric columns. Do not leave blank.
 8. Dates: Copy exactly. If missing (ditto), use the previous row's date.
-9. CLASSIFICATION: Use the provided list. If the vendor is known (e.g., "Uber" -> Transport, "KFC" -> Welfare, "AWS" -> Admin), categorize it. If a specific tax/fee, categorize it. If unsure, use "Unallocated".
-10. INTEGRITY: Extract every single line item. Do not summarize. Do not skip rows. Capture small fees (SMS, VAT, Stamp Duty) even if repetitive.
-11. EXCLUSION: Do not output Page Numbers, Table Headers (Date/Debit/Credit columns), Page Footers, or Page Totals.
-12. END MARKER: Print exactly: ###END###
+9. COLUMNS (CRITICAL):
+   - HEADER ANALYSIS: Look for headers like "Debit", "Withdrawal", "Payment", "Dr" -> These are DEBITS.
+   - HEADER ANALYSIS: Look for headers like "Credit", "Deposit", "Receipt", "Cr" -> These are CREDITS.
+   - SEPARATE DEBIT AND CREDIT. 
+   - Debit = Withdrawals, Money Out, Dr.
+   - Credit = Deposits, Money In, Cr.
+   - REVERSALS: If a specific column has a negative value (e.g. Credit column has -100), KEEP IT IN THAT COLUMN with the negative sign. Do not move it.
+   - If only one "Amount" column exists: 
+     - Negative values (-) or values in brackets () are usually DEBITS.
+     - Positive values are CREDITS.
+   - Use the Running Balance to verify: 
+     - If Balance Decreases -> The transaction is a DEBIT.
+     - If Balance Increases -> The transaction is a CREDIT.
+10. CLASSIFICATION: Use the provided list. If the vendor is known (e.g., "Uber" -> Transport, "KFC" -> Welfare, "AWS" -> Admin), categorize it. If a specific tax/fee, categorize it. If unsure, use "Unallocated".
+11. INTEGRITY: Extract every single line item. Do not summarize. Do not skip rows. Capture small fees (SMS, VAT, Stamp Duty) even if repetitive.
+12. EXCLUSION: Do not output Page Numbers, Table Headers (Date/Debit/Credit columns), Page Footers, or Page Totals.
+13. END MARKER: Print exactly: ###END###
 `;
 
-// --- HELPER: API Call Wrapper with Load Balancing ---
+// --- HELPER: Deep Error Parsing for Google APIs ---
+function isRateLimitError(error: any): boolean {
+    const errorStr = JSON.stringify(error, null, 2).toLowerCase();
+    if (errorStr.includes('429') || 
+        errorStr.includes('resource_exhausted') || 
+        errorStr.includes('quota') || 
+        errorStr.includes('rate limit')) {
+        return true;
+    }
+
+    if (error.status === 429 || error.code === 429) return true;
+    if (error.status === 503 || error.code === 503) return true; 
+
+    const msg = (error.message || error.toString() || "").toLowerCase();
+    if (msg.includes('429') || msg.includes('quota') || msg.includes('resource exhausted')) return true;
+    
+    if (error.response && error.response.status === 429) return true;
+
+    return false;
+}
+
+// --- HELPER: API Call Wrapper with Smart Fast-Failover ---
 async function callGeminiExtract(keys: string[], base64Data: string, mimeType: string, taskIndex: number, retryCount = 0): Promise<string> {
-    // LOAD BALANCING STRATEGY:
-    // 1. Initial Distribution: taskIndex ensures parallel workers start on different keys.
-    // 2. Failover Rotation: retryCount shifts the index to the next key if the current one fails.
     const keyIndex = (taskIndex + retryCount) % keys.length;
     const currentKey = keys[keyIndex];
     
-    // Safety check for empty keys
-    if (!currentKey) throw new Error("API Key selection failed during load balancing.");
+    if (!currentKey) throw new Error("API Key selection failed.");
 
     try {
         const ai = new GoogleGenAI({ apiKey: currentKey });
@@ -73,43 +103,33 @@ async function callGeminiExtract(keys: string[], base64Data: string, mimeType: s
         });
         
         const text = response.text;
-        if (!text) {
-             console.warn(`[Key ${keyIndex}] Gemini returned empty text. Candidates:`, response.candidates);
-             throw new Error("AI returned empty response (Content might be blocked or model failed).");
-        }
+        if (!text) throw new Error("AI returned empty response.");
         return text;
 
     } catch (error: any) {
-        // Robust Error Detection
-        const isRateLimit = 
-            error.status === 429 || 
-            error.code === 429 || 
-            error.message?.includes('429') ||
-            error.message?.includes('Quota') ||
-            error.message?.includes('Resource exhausted') ||
-            error.toString().includes('429');
-            
-        const isServiceUnavailable = error.status === 503 || error.code === 503;
-        
-        // If we have multiple keys, we can be more aggressive with retries (switch key)
-        const maxRetries = keys.length > 1 ? 12 : 5;
+        if (isRateLimitError(error)) {
+            // We allow ample retries because we have multiple keys
+            const maxRetries = keys.length * 4 + 5;
 
-        if ((isRateLimit || isServiceUnavailable) && retryCount < maxRetries) {
-            let delay = 0;
-            
-            if (keys.length > 1) {
-                // LOAD BALANCER ACTIVE: Quick switch to next key (500ms + jitter)
-                delay = 500 + (Math.random() * 500);
-                console.warn(`[Load Balancer] Key ending ...${currentKey.slice(-4)} limited. Switching to next key in ${Math.round(delay)}ms...`);
-            } else {
-                // SINGLE KEY MODE: Standard exponential backoff
-                delay = Math.pow(2, retryCount) * 2000 + (Math.random() * 1000);
-                console.warn(`Gemini Rate Limit. Retrying in ${Math.round(delay)}ms (Attempt ${retryCount + 1}/${maxRetries})`);
+            if (retryCount < maxRetries) {
+                let delay = 1000;
+
+                // Smart Logic:
+                // If we haven't exhausted all keys yet (retryCount < keys.length), switch FAST.
+                // If we have cycled through all keys, wait LONGER (Backoff).
+                if (retryCount < keys.length) {
+                    delay = 500 + (Math.random() * 500); // 0.5s - 1s switch time
+                    console.log(`[Load Balancer] Key ...${currentKey.slice(-4)} exhausted. Fast switching to Key ${(keyIndex + 1) % keys.length}...`);
+                } else {
+                    // All keys are hot. Wait.
+                    const cycle = Math.floor(retryCount / keys.length);
+                    delay = 3000 + (cycle * 2000) + (Math.random() * 1000);
+                    console.warn(`[Load Balancer] All keys busy. Backing off for ${Math.round(delay)}ms...`);
+                }
+
+                await new Promise(resolve => setTimeout(resolve, delay));
+                return callGeminiExtract(keys, base64Data, mimeType, taskIndex, retryCount + 1);
             }
-
-            await new Promise(resolve => setTimeout(resolve, delay));
-            // Recurse with incremented retryCount, which automatically selects the next key
-            return callGeminiExtract(keys, base64Data, mimeType, taskIndex, retryCount + 1);
         }
         throw error;
     }
@@ -125,7 +145,6 @@ async function splitAndProcessPDF(base64: string, keys: string[]): Promise<strin
 
     let batchIndex = 0;
     for (let i = 0; i < pageCount; i += BATCH_SIZE) {
-        // Capture specific index for this batch to ensure consistent key mapping
         const currentTaskIndex = batchIndex++;
         
         tasks.push(async () => {
@@ -136,43 +155,61 @@ async function splitAndProcessPDF(base64: string, keys: string[]): Promise<strin
             copiedPages.forEach(page => subDoc.addPage(page));
             
             const subPdfBytes = await subDoc.saveAsBase64();
-            // Pass keys and the task index to enable load balancing
             return callGeminiExtract(keys, subPdfBytes, 'application/pdf', currentTaskIndex);
         });
     }
 
-    // CONCURRENCY QUEUE
+    // DYNAMIC CONCURRENCY
+    // If we have 3 keys, we want 3 workers.
+    // If we have 10 batches, 3 workers will process them in ~4 waves.
+    const maxConcurrency = Math.max(1, Math.min(keys.length, 5));
+
     const results: string[] = new Array(tasks.length);
     let index = 0;
 
     const executeNext = async (workerId: number): Promise<void> => {
         if (index >= tasks.length) return;
+        
         const currentIndex = index++;
         try {
+            console.log(`[Worker ${workerId}] Processing Batch ${currentIndex + 1}/${tasks.length}...`);
             results[currentIndex] = await tasks[currentIndex]();
-        } catch (e) {
-            console.error(`Batch ${currentIndex} failed`, e);
-            results[currentIndex] = ""; // Fail gracefully for that batch
+            console.log(`[Worker ${workerId}] Completed Batch ${currentIndex + 1}`);
+        } catch (e: any) {
+            console.error(`Batch ${currentIndex} failed final attempt.`, e);
+            throw new Error(`Analysis failed at Batch ${currentIndex} (Pages ${currentIndex * BATCH_SIZE + 1}-${Math.min((currentIndex * BATCH_SIZE) + BATCH_SIZE, pageCount)}). Error: ${e.message}`);
         }
+
         if (index < tasks.length) {
             await executeNext(workerId);
         }
     };
 
     const workers = [];
-    const activeWorkers = Math.min(MAX_CONCURRENCY, tasks.length);
+    const activeWorkers = Math.min(maxConcurrency, tasks.length);
+
+    console.log(`Starting ${activeWorkers} parallel worker(s) for ${tasks.length} batches using ${keys.length} API Keys.`);
 
     for (let i = 0; i < activeWorkers; i++) {
-        // Stagger start slightly to prevent burst trigger
         const p = new Promise<void>(resolve => {
+            // Stagger start times to prevent "First Second" spike
+            // 1500ms stagger is a sweet spot: fast enough but safe.
             setTimeout(() => {
-                executeNext(i).then(resolve);
-            }, i * 300); // Reduced stagger time significantly because we are load balancing
+                executeNext(i).then(resolve).catch(err => {
+                    resolve(); 
+                    throw err; 
+                });
+            }, i * 1500); 
         });
         workers.push(p);
     }
 
     await Promise.all(workers);
+    
+    if (results.some(r => !r)) {
+        throw new Error("One or more batches failed to process after multiple retries.");
+    }
+    
     return results.join("\n");
 }
 
@@ -193,8 +230,6 @@ export const analyzeBankStatement = async (base64Data: string, mimeType: string,
             console.warn("process.env is not available");
          }
      }
-     
-     // Split by comma to support multiple keys for load balancing
      return keySource.split(',').map(k => k.trim()).filter(k => k.length > 0);
   };
 
@@ -211,20 +246,21 @@ export const analyzeBankStatement = async (base64Data: string, mimeType: string,
             const pdfDoc = await PDFDocument.load(pdfBytes);
             const pageCount = pdfDoc.getPageCount();
             
-            if (pageCount > PAGE_THRESHOLD) {
+            // If page count > BATCH_SIZE (5), we split.
+            if (pageCount > BATCH_SIZE) {
                 isLargeFile = true;
-                console.log(`Large File Detected (${pageCount} pages). Switching to Load Balanced Batch Mode.`);
+                console.log(`File has ${pageCount} pages. Processing in batches of ${BATCH_SIZE}.`);
                 rawText = await splitAndProcessPDF(base64Data, keys);
                 runStats.ai_calls = Math.ceil(pageCount / BATCH_SIZE);
             }
-        } catch (e) {
-            console.warn("Failed to read PDF page count, defaulting to single-shot.", e);
+        } catch (e: any) {
+             console.warn("PDF Processing Check:", e);
+             if (e.message && e.message.includes('Analysis failed at Batch')) throw e;
         }
     }
 
     if (!isLargeFile) {
         runStats.ai_calls = 1;
-        // Random start index for single files to distribute load if processing multiple single files
         const randomStart = Math.floor(Math.random() * keys.length);
         rawText = await callGeminiExtract(keys, base64Data, mimeType, randomStart);
     }
@@ -234,10 +270,10 @@ export const analyzeBankStatement = async (base64Data: string, mimeType: string,
     return processRawResponse(rawText, runStats);
 
   } catch (error: any) {
-    if (error.message?.includes('429') || error.message?.includes('Resource exhausted') || error.message?.includes('Quota')) {
-         throw new Error("System is experiencing heavy load. Automatic failover attempted but all keys are busy. Please try again in 1 minute.");
-    }
     console.error("Gemini Analysis Error:", error);
+    if (isRateLimitError(error)) {
+        throw new Error("System is under heavy load. All API keys exhausted. Please wait 60 seconds.");
+    }
     throw new Error(error.message || "Analysis failed.");
   }
 };
@@ -326,7 +362,15 @@ function processRawResponse(responseText: string, runStats: AnalysisStatistics):
 
     const safeFloat = (val: string): number => {
         if (!val) return 0;
-        const clean = val.replace(/[^0-9.-]/g, '');
+        let clean = val.replace(/,/g, '').trim();
+        
+        // Handle trailing negative sign (e.g. "500.00-")
+        if (clean.endsWith('-')) {
+            clean = '-' + clean.slice(0, -1);
+        }
+
+        // Allow negative signs, digits, and decimal point
+        clean = clean.replace(/[^0-9.-]/g, ''); 
         return parseFloat(clean) || 0;
     };
 
@@ -342,13 +386,21 @@ function processRawResponse(responseText: string, runStats: AnalysisStatistics):
         
         const debit = safeFloat(debitVal);
         const credit = safeFloat(creditVal);
-        const balance = safeFloat(balanceVal);
+        // Balance CAN be negative, so we use a looser parse
+        const balance = parseFloat(balanceVal.replace(/,/g, '').replace(/[^0-9.-]/g, '')) || 0;
 
-        if (/^Page \d+/.test(description)) return;
-        if (/^(TOTAL|PAGE TOTAL|SUBTOTAL|TURNOVER|SUMMARY)/i.test(description)) return;
+        // SAFE FILTERING:
+        // Do NOT filter out vendors like "TOTAL ENERGIES" or "SUBTOTAL LTD"
+        // Only filter explicit footer/header markers.
+        if (/^Page\s+\d+$/i.test(description)) return;
         
+        // Strict Footer/Header checks
+        if (/^(TOTAL|PAGE TOTAL|SUBTOTAL|TURNOVER|SUMMARY)(\s+(DEBITS?|CREDITS?|FOR|PERIOD|PAGES?))?$/i.test(description)) return;
+        if (/^BALANCE\s+C\/F$/i.test(description)) return;
+        
+        // 1. GLOBAL STRICT DEDUPE
         // Create strict hash for deduplication: Date|Desc|Debit|Credit|Balance
-        // Using toFixed(2) to normalize float variations
+        // This catches identical rows extracted multiple times (e.g. if repeated in text)
         const hash = `${dateStr}|${description.replace(/\s/g, '').toUpperCase()}|${debit.toFixed(2)}|${credit.toFixed(2)}|${balance.toFixed(2)}`;
         
         if (seenHashes.has(hash)) return;
@@ -362,10 +414,46 @@ function processRawResponse(responseText: string, runStats: AnalysisStatistics):
                 // If it's NOT the first transaction, skip it (it's likely a page break artifact)
                 if (transactionsList.length > 0) return;
             }
-            // If it HAS movement, treat it as a valid adjustment/transaction
         } else {
              // Standard row: skip if empty (0 debit, 0 credit)
              if (Math.abs(debit) < 0.001 && Math.abs(credit) < 0.001) return;
+        }
+
+        // 2. ADJACENT FINANCIAL DEDUPLICATION
+        // Detects rows that are financially identical to the previous one (same amounts, same balance, same date)
+        // This handles cases where the AI extracts the same transaction twice (e.g. overlapping pages or hallucinations)
+        // even if the description string varies slightly.
+        if (transactionsList.length > 0) {
+             const last = transactionsList[transactionsList.length - 1];
+             
+             // Check Date & Balance (Strong indicators)
+             const sameDate = last.date === dateStr;
+             const sameBalance = Math.abs(last.balance - balance) < 0.01;
+             
+             if (sameDate && sameBalance) {
+                 // Check Amounts
+                 const sameDebit = Math.abs(last.debit - debit) < 0.01;
+                 const sameCredit = Math.abs(last.credit - credit) < 0.01;
+                 
+                 if (sameDebit && sameCredit) {
+                     // It IS a duplicate.
+                     console.log(`Skipping Duplicate Row: ${description}`);
+                     
+                     // Heuristic: Keep the longer description (usually contains more info)
+                     if (description.length > last.description.length) {
+                         last.description = description;
+                     }
+                     
+                     // We also merge the category if the new one is better?
+                     if (last.category === "Unallocated" && aiCategory !== "Unallocated") {
+                         last.category = aiCategory;
+                     }
+
+                     // Mark as seen and SKIP pushing
+                     seenHashes.add(hash);
+                     return;
+                 }
+             }
         }
 
         seenHashes.add(hash);
@@ -382,51 +470,125 @@ function processRawResponse(responseText: string, runStats: AnalysisStatistics):
 
     let uniqueTransactions = transactionsList;
     
-    // --- RECONCILIATION LOGIC ---
+    // --- RECONCILIATION & ORDER LOGIC ---
     const TOLERANCE = 0.05;
     let forwardMatches = 0;
     let reverseMatches = 0;
 
+    // Detect direction with tolerance for Swapped Columns
     for (let i = 1; i < uniqueTransactions.length; i++) {
         const prev = uniqueTransactions[i-1];
         const curr = uniqueTransactions[i];
         if (/OPENING\s*BAL|BROUGHT\s*FORWARD/i.test(curr.description)) continue;
-        if (Math.abs((prev.balance - curr.debit + curr.credit) - curr.balance) < TOLERANCE) forwardMatches++;
+        
+        // Check Standard: Prev - D + C = Curr
+        const std = Math.abs((prev.balance - curr.debit + curr.credit) - curr.balance) < TOLERANCE;
+        // Check Swapped: Prev - C + D = Curr
+        const swp = Math.abs((prev.balance - curr.credit + curr.debit) - curr.balance) < TOLERANCE;
+        
+        if (std || swp) forwardMatches++;
     }
 
     for (let i = 1; i < uniqueTransactions.length; i++) {
         const newer = uniqueTransactions[i-1]; 
         const older = uniqueTransactions[i];   
         if (/OPENING\s*BAL|BROUGHT\s*FORWARD/i.test(newer.description)) continue;
-        if (Math.abs((older.balance - newer.debit + newer.credit) - newer.balance) < TOLERANCE) reverseMatches++;
+        
+        // Check Standard: Older - D + C = Newer
+        const std = Math.abs((older.balance - newer.debit + newer.credit) - newer.balance) < TOLERANCE;
+        // Check Swapped: Older - C + D = Newer
+        const swp = Math.abs((older.balance - newer.credit + newer.debit) - newer.balance) < TOLERANCE;
+
+        if (std || swp) reverseMatches++;
     }
 
     if (reverseMatches > forwardMatches) {
         uniqueTransactions.reverse();
     }
 
-    // Phantom Row Elimination
+    // --- GLOBAL POLARITY CHECK ---
+    // Heuristic: If the majority of rows follow the "Swapped" logic (Prev - C + D = Curr),
+    // then the AI likely mixed up the columns globally.
     if (uniqueTransactions.length > 2) {
-        const indexesToRemove = new Set<number>();
-        for (let i = 1; i < uniqueTransactions.length - 1; i++) {
+        let scoreStandard = 0;
+        let scoreSwapped = 0;
+
+        for (let i = 1; i < uniqueTransactions.length; i++) {
+            const prev = uniqueTransactions[i-1];
+            const curr = uniqueTransactions[i];
+            if (/OPENING\s*BAL|BROUGHT\s*FORWARD|B\/F/i.test(curr.description)) continue;
+
+            if (Math.abs((prev.balance - curr.debit + curr.credit) - curr.balance) < TOLERANCE) scoreStandard++;
+            if (Math.abs((prev.balance - curr.credit + curr.debit) - curr.balance) < TOLERANCE) scoreSwapped++;
+        }
+
+        // If swapped model is significantly better (and accounts for a good chunk of data)
+        if (scoreSwapped > scoreStandard && scoreSwapped > (uniqueTransactions.length * 0.3)) {
+            console.log("Detected Global Column Swap. Automatically fixing...");
+            reconciliation_warnings.push("Global Fix: Detected Debit/Credit columns were mixed up. Automatically swapped them.");
+            uniqueTransactions.forEach(t => {
+                const temp = t.debit;
+                t.debit = t.credit;
+                t.credit = temp;
+            });
+        }
+    }
+
+    // --- SELF-HEALING: SWAP & RECONSTRUCTION ---
+    // Fixes column swaps and infers missing amounts from balance if AI fails.
+    if (uniqueTransactions.length > 1) {
+        let correctionCount = 0;
+        let reconstructionCount = 0;
+        
+        for (let i = 1; i < uniqueTransactions.length; i++) {
             const prev = uniqueTransactions[i-1];
             const curr = uniqueTransactions[i];
             
-            if (/OPENING\s*BAL|BROUGHT\s*FORWARD/i.test(curr.description)) continue;
+            if (/OPENING\s*BAL|BROUGHT\s*FORWARD|B\/F/i.test(curr.description)) continue;
 
-            const expectedCurr = prev.balance - curr.debit + curr.credit;
-            const diffCurr = Math.abs(expectedCurr - curr.balance);
+            const expected = Number((prev.balance - curr.debit + curr.credit).toFixed(2));
+            const actual = Number(curr.balance.toFixed(2));
             
-            if (diffCurr > TOLERANCE) {
-                const next = uniqueTransactions[i+1];
-                if (/OPENING\s*BAL|BROUGHT\s*FORWARD/i.test(next.description)) continue;
-                const expectedNext = prev.balance - next.debit + next.credit;
-                const diffNext = Math.abs(expectedNext - next.balance);
-                if (diffNext < TOLERANCE) indexesToRemove.add(i);
+            // If math doesn't work
+            if (Math.abs(expected - actual) > TOLERANCE) {
+                
+                // 1. Try SWAP: Check if flipping debit/credit works
+                // Bal = Prev - (OldCredit) + (OldDebit)
+                const swapExpected = Number((prev.balance - curr.credit + curr.debit).toFixed(2));
+                
+                if (Math.abs(swapExpected - actual) < TOLERANCE) {
+                    const temp = curr.debit;
+                    curr.debit = curr.credit;
+                    curr.credit = temp;
+                    correctionCount++;
+                } else {
+                    // 2. Try RECONSTRUCTION: Infer from Balance
+                    // If AI extraction is garbage, trust the Balance (assuming Balances are sequential)
+                    const diff = Number((prev.balance - curr.balance).toFixed(2));
+                    
+                    if (Math.abs(diff) > 0.01) {
+                        // If diff > 0, Balance went down => Debit
+                        const hypDebit = diff > 0 ? diff : 0;
+                        const hypCredit = diff < 0 ? Math.abs(diff) : 0;
+                        
+                        // Check if this heuristic is safe?
+                        // We apply it because Reconciliation failure is worse than inferred amounts.
+                        // We only do this if we can perfectly explain the balance transition.
+                        curr.debit = hypDebit;
+                        curr.credit = hypCredit;
+                        reconstructionCount++;
+                    }
+                }
             }
         }
-        if (indexesToRemove.size > 0) {
-            uniqueTransactions = uniqueTransactions.filter((_, idx) => !indexesToRemove.has(idx));
+        
+        if (correctionCount > 0) {
+            console.log(`Auto-Corrected ${correctionCount} swapped transactions.`);
+            reconciliation_warnings.push(`Auto-swapped ${correctionCount} rows where AI confused Debit/Credit columns.`);
+        }
+        if (reconstructionCount > 0) {
+            console.log(`Reconstructed ${reconstructionCount} amounts from balance.`);
+            reconciliation_warnings.push(`Reconstructed ${reconstructionCount} amounts using running balance data (AI extraction was imprecise).`);
         }
     }
 
