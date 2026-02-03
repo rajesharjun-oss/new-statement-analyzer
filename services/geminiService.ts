@@ -7,7 +7,7 @@ import { categorizeTransaction } from "./categorizationRules";
 // --- CONFIGURATION ---
 const MODEL_NAME = 'gemini-2.0-flash'; 
 const PAGE_THRESHOLD = 2;   // Lower threshold to trigger batching earlier
-const BATCH_SIZE = 5;       // OPTIMAL: 5 Pages per batch prevents TPM exhaustion while maintaining context.
+const BATCH_SIZE = 2;       // OPTIMAL: Reduced to 2 for higher parallelism and accuracy.
 // MAX_CONCURRENCY will be dynamic
 
 const SYSTEM_INSTRUCTION = `
@@ -29,7 +29,8 @@ RULES:
 3. Separator: Use the pipe character "|" strictly.
 4. Content Safety: If a Description contains a pipe "|", replace it with a space.
 5. Multiline Descriptions: Merge into a single line.
-6. Numbers: Standardize to plain decimals (e.g., 1200.50). Remove commas. Remove currency symbols. KEEP NEGATIVE SIGNS if present (e.g., -50.00).
+6. Numbers: Standardize to plain decimals (e.g., 1200.50). Remove commas. Remove currency symbols. 
+   - CRITICAL: IF A NUMBER HAS A NEGATIVE SIGN OR BRACKETS (e.g. -50.00 or (50.00)), KEEP IT NEGATIVE.
 7. Empty values: Use 0 for empty numeric columns. Do not leave blank.
 8. Dates: Copy exactly. If missing (ditto), use the previous row's date.
 9. COLUMNS (CRITICAL):
@@ -38,13 +39,14 @@ RULES:
    - SEPARATE DEBIT AND CREDIT. 
    - Debit = Withdrawals, Money Out, Dr.
    - Credit = Deposits, Money In, Cr.
-   - REVERSALS: If a specific column has a negative value (e.g. Credit column has -100), KEEP IT IN THAT COLUMN with the negative sign. Do not move it.
+   - REVERSALS: If a specific column has a negative value (e.g. Credit column has -100 or (100)), KEEP IT IN THAT COLUMN with the negative sign. Do not move it.
    - If only one "Amount" column exists: 
      - Negative values (-) or values in brackets () are usually DEBITS.
      - Positive values are CREDITS.
-   - Use the Running Balance to verify: 
-     - If Balance Decreases -> The transaction is a DEBIT.
-     - If Balance Increases -> The transaction is a CREDIT.
+   - LOGIC CHECK (MANDATORY):
+     - Formula: PreviousBalance - Debit + Credit = CurrentBalance
+     - If a Debit is NEGATIVE (-100), it ADDS to the balance.
+     - If a Credit is NEGATIVE (-100), it SUBTRACTS from the balance.
 10. CLASSIFICATION: Use the provided list. If the vendor is known (e.g., "Uber" -> Transport, "KFC" -> Welfare, "AWS" -> Admin), categorize it. If a specific tax/fee, categorize it. If unsure, use "Unallocated".
 11. INTEGRITY: Extract every single line item. Do not summarize. Do not skip rows. Capture small fees (SMS, VAT, Stamp Duty) even if repetitive.
 12. EXCLUSION: Do not output Page Numbers, Table Headers (Date/Debit/Credit columns), Page Footers, or Page Totals.
@@ -118,7 +120,7 @@ async function callGeminiExtract(keys: string[], base64Data: string, mimeType: s
                 // If we haven't exhausted all keys yet (retryCount < keys.length), switch FAST.
                 // If we have cycled through all keys, wait LONGER (Backoff).
                 if (retryCount < keys.length) {
-                    delay = 500 + (Math.random() * 500); // 0.5s - 1s switch time
+                    delay = 200 + (Math.random() * 200); // Super fast switch
                     console.log(`[Load Balancer] Key ...${currentKey.slice(-4)} exhausted. Fast switching to Key ${(keyIndex + 1) % keys.length}...`);
                 } else {
                     // All keys are hot. Wait.
@@ -161,8 +163,7 @@ async function splitAndProcessPDF(base64: string, keys: string[]): Promise<strin
 
     // DYNAMIC CONCURRENCY
     // If we have 3 keys, we want 3 workers.
-    // If we have 10 batches, 3 workers will process them in ~4 waves.
-    const maxConcurrency = Math.max(1, Math.min(keys.length, 5));
+    const maxConcurrency = Math.max(1, Math.min(keys.length, 6));
 
     const results: string[] = new Array(tasks.length);
     let index = 0;
@@ -192,14 +193,11 @@ async function splitAndProcessPDF(base64: string, keys: string[]): Promise<strin
 
     for (let i = 0; i < activeWorkers; i++) {
         const p = new Promise<void>(resolve => {
-            // Stagger start times to prevent "First Second" spike
-            // 1500ms stagger is a sweet spot: fast enough but safe.
-            setTimeout(() => {
-                executeNext(i).then(resolve).catch(err => {
-                    resolve(); 
-                    throw err; 
-                });
-            }, i * 1500); 
+            // REMOVED: Large stagger delay. Now start almost immediately.
+            executeNext(i).then(resolve).catch(err => {
+                resolve(); 
+                throw err; 
+            });
         });
         workers.push(p);
     }
@@ -246,7 +244,7 @@ export const analyzeBankStatement = async (base64Data: string, mimeType: string,
             const pdfDoc = await PDFDocument.load(pdfBytes);
             const pageCount = pdfDoc.getPageCount();
             
-            // If page count > BATCH_SIZE (5), we split.
+            // If page count > BATCH_SIZE, we split.
             if (pageCount > BATCH_SIZE) {
                 isLargeFile = true;
                 console.log(`File has ${pageCount} pages. Processing in batches of ${BATCH_SIZE}.`);
@@ -362,16 +360,27 @@ function processRawResponse(responseText: string, runStats: AnalysisStatistics):
 
     const safeFloat = (val: string): number => {
         if (!val) return 0;
+        // Normalize: remove commas, trim
         let clean = val.replace(/,/g, '').trim();
         
-        // Handle trailing negative sign (e.g. "500.00-")
+        // Check for (Value) format
+        if (/^\(.*\)$/.test(clean)) {
+            // Remove brackets and prepend -
+            clean = '-' + clean.replace(/[()]/g, '').trim();
+        }
+        
+        // Check for Value- format
         if (clean.endsWith('-')) {
-            clean = '-' + clean.slice(0, -1);
+            clean = '-' + clean.slice(0, -1).trim();
         }
 
-        // Allow negative signs, digits, and decimal point
-        clean = clean.replace(/[^0-9.-]/g, ''); 
-        return parseFloat(clean) || 0;
+        // Standardize: Remove all non-numeric chars except . and -
+        // Ensure only the first negative sign is kept if multiple exist (unlikely but safe)
+        const isNegative = clean.includes('-');
+        const numbers = clean.replace(/[^0-9.]/g, '');
+        
+        const floatVal = parseFloat(numbers) || 0;
+        return isNegative ? -floatVal : floatVal;
     };
 
     rawRows.forEach((row: string[]) => {
@@ -386,8 +395,15 @@ function processRawResponse(responseText: string, runStats: AnalysisStatistics):
         
         const debit = safeFloat(debitVal);
         const credit = safeFloat(creditVal);
-        // Balance CAN be negative, so we use a looser parse
-        const balance = parseFloat(balanceVal.replace(/,/g, '').replace(/[^0-9.-]/g, '')) || 0;
+        const balance = safeFloat(balanceVal);
+
+        // 1.5. REVERSAL DETECTION
+        // If a column has a negative value, keep it there. 
+        // We do NOT normalize it to the other column because the PDF explicitly put it there.
+        let is_reversal = false;
+        if (debit < 0 || credit < 0) {
+            is_reversal = true;
+        }
 
         // SAFE FILTERING:
         // Do NOT filter out vendors like "TOTAL ENERGIES" or "SUBTOTAL LTD"
@@ -400,7 +416,6 @@ function processRawResponse(responseText: string, runStats: AnalysisStatistics):
         
         // 1. GLOBAL STRICT DEDUPE
         // Create strict hash for deduplication: Date|Desc|Debit|Credit|Balance
-        // This catches identical rows extracted multiple times (e.g. if repeated in text)
         const hash = `${dateStr}|${description.replace(/\s/g, '').toUpperCase()}|${debit.toFixed(2)}|${credit.toFixed(2)}|${balance.toFixed(2)}`;
         
         if (seenHashes.has(hash)) return;
@@ -420,9 +435,6 @@ function processRawResponse(responseText: string, runStats: AnalysisStatistics):
         }
 
         // 2. ADJACENT FINANCIAL DEDUPLICATION
-        // Detects rows that are financially identical to the previous one (same amounts, same balance, same date)
-        // This handles cases where the AI extracts the same transaction twice (e.g. overlapping pages or hallucinations)
-        // even if the description string varies slightly.
         if (transactionsList.length > 0) {
              const last = transactionsList[transactionsList.length - 1];
              
@@ -439,17 +451,12 @@ function processRawResponse(responseText: string, runStats: AnalysisStatistics):
                      // It IS a duplicate.
                      console.log(`Skipping Duplicate Row: ${description}`);
                      
-                     // Heuristic: Keep the longer description (usually contains more info)
                      if (description.length > last.description.length) {
                          last.description = description;
                      }
-                     
-                     // We also merge the category if the new one is better?
                      if (last.category === "Unallocated" && aiCategory !== "Unallocated") {
                          last.category = aiCategory;
                      }
-
-                     // Mark as seen and SKIP pushing
                      seenHashes.add(hash);
                      return;
                  }
@@ -464,14 +471,61 @@ function processRawResponse(responseText: string, runStats: AnalysisStatistics):
             debit,
             credit,
             balance,
-            is_reversal: false
+            is_reversal
         });
     });
 
     let uniqueTransactions = transactionsList;
+
+    // --- DIRECTION SANITY CHECK ---
+    // Before full reconciliation, fix obvious direction errors based on Balance movement.
+    // This is the source of truth: Balance Delta cannot lie.
+    if (uniqueTransactions.length > 1) {
+        for (let i = 1; i < uniqueTransactions.length; i++) {
+            const prev = uniqueTransactions[i-1];
+            const curr = uniqueTransactions[i];
+            
+            // Skip non-mathematical rows (Opening Balance)
+            if (/OPENING\s*BAL|BROUGHT\s*FORWARD|B\/F/i.test(curr.description)) continue;
+
+            const balDiff = Number((curr.balance - prev.balance).toFixed(2));
+            
+            // Case 1: Balance INCREASED (Money In / Credit)
+            // Expectation: Credit > 0 OR Debit < 0 (Reversal)
+            // If we have a POSITIVE Debit, it's a column error.
+            if (balDiff > 0.01) {
+                // If we purely have a POSITIVE Debit (which would decrease balance)
+                if (curr.debit > 0 && curr.credit === 0) {
+                    // Verification: If we swap, does it match?
+                    // New Calculation: Prev + NewCredit (OldDebit) =? Curr
+                    if (Math.abs(prev.balance + curr.debit - curr.balance) < 0.1) {
+                        console.log(`Sanity Swap (Row ${i}): Balance increased by ${balDiff}, but found Debit. Moving Debit to Credit.`);
+                        curr.credit = curr.debit;
+                        curr.debit = 0;
+                    }
+                }
+            }
+            
+            // Case 2: Balance DECREASED (Money Out / Debit)
+            // Expectation: Debit > 0 OR Credit < 0 (Reversal)
+            // If we have a POSITIVE Credit, it's a column error.
+            if (balDiff < -0.01) {
+                 // If we purely have a POSITIVE Credit (which would increase balance)
+                if (curr.credit > 0 && curr.debit === 0) {
+                    // Verification: If we swap, does it match?
+                    // New Calculation: Prev - NewDebit (OldCredit) =? Curr
+                    if (Math.abs(prev.balance - curr.credit - curr.balance) < 0.1) {
+                        console.log(`Sanity Swap (Row ${i}): Balance decreased by ${balDiff}, but found Credit. Moving Credit to Debit.`);
+                        curr.debit = curr.credit;
+                        curr.credit = 0;
+                    }
+                }
+            }
+        }
+    }
     
     // --- RECONCILIATION & ORDER LOGIC ---
-    const TOLERANCE = 0.05;
+    const TOLERANCE = 0.15; // Increased to 0.15 to better tolerate minor PDF extraction noise
     let forwardMatches = 0;
     let reverseMatches = 0;
 
