@@ -1,3 +1,4 @@
+
 import React, { useMemo } from 'react';
 import { AnalysisResult, Transaction } from '../types';
 import { 
@@ -311,7 +312,9 @@ export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ data }) =>
                   </td>
                   <td className="px-8 py-4 text-right tabular-nums">
                     {t.credit ? (
-                      <span className="text-emerald-600 font-medium">+{t.credit.toFixed(2)}</span>
+                      <span className={t.credit < 0 ? "text-slate-600 font-medium" : "text-emerald-600 font-medium"}>
+                         {t.credit > 0 ? "+" : ""}{t.credit.toFixed(2)}
+                      </span>
                     ) : (
                       <span className="text-slate-200">-</span>
                     )}

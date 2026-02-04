@@ -1,7 +1,7 @@
 
 import React, { useMemo, useState, useEffect, useDeferredValue, memo } from "react";
-import * as ReactWindow from 'react-window';
-import * as AutoSizerPkg from "react-virtualized-auto-sizer";
+import { FixedSizeList as List, areEqual } from 'react-window';
+import AutoSizer from "react-virtualized-auto-sizer";
 import {
   ShieldCheck,
   Upload,
@@ -28,13 +28,6 @@ import { SettingsModal } from './components/SettingsModal';
 import { analyzeBankStatement } from './services/geminiService';
 import { generateExcel } from './services/excelService';
 import { AnalysisResult, Transaction, DecisionSource } from './types';
-
-// Handle ESM/CJS interop for React Window
-const List = (ReactWindow as any).FixedSizeList || (ReactWindow as any).default?.FixedSizeList;
-const areEqual = (ReactWindow as any).areEqual || (ReactWindow as any).default?.areEqual;
-
-// Handle ESM/CJS interop for AutoSizer
-const AutoSizer = (AutoSizerPkg as any).default || (AutoSizerPkg as any);
 
 // Extended type for internal UI state
 type Txn = Transaction & {
@@ -84,7 +77,9 @@ const TransactionRow = memo(({ index, style, data }: { index: number; style: Rea
            )}
         </div>
         <div className="w-[13%] px-5 py-2.5 text-right overflow-hidden text-ellipsis">{t.debit ? formatMoney(t.debit, '') : '-'}</div>
-        <div className="w-[13%] px-5 py-2.5 text-right text-[#3CDCAB] overflow-hidden text-ellipsis">{t.credit ? formatMoney(t.credit, '') : '-'}</div>
+        <div className={`w-[13%] px-5 py-2.5 text-right overflow-hidden text-ellipsis ${t.credit > 0 ? 'text-[#3CDCAB]' : 'text-zinc-400'}`}>
+          {t.credit ? formatMoney(t.credit, '') : '-'}
+        </div>
         <div className="w-[12%] px-5 py-2.5 text-right text-zinc-300 font-medium overflow-hidden text-ellipsis">{formatMoney(t.balance, '')}</div>
         <div className="w-[10%] px-5 py-2.5 text-center overflow-hidden">
            <div className="inline-block px-2 py-0.5 rounded-[4px] bg-white/5 text-[10px] text-zinc-500 truncate max-w-[100%]" title={t.category}>
@@ -519,7 +514,7 @@ export default function App() {
                            
                            <div className="flex-1 w-full">
                                <AutoSizer>
-                                   {({ height, width }: { height: number, width: number }) => (
+                                   {({ height, width }) => (
                                        <List
                                            height={height}
                                            itemCount={filteredTxns.length}
