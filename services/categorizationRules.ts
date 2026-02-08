@@ -1,4 +1,3 @@
-
 import { Transaction } from '../types';
 
 // --- CONFIGURATION: Accounting Grade Classifier Spec ---
@@ -18,7 +17,8 @@ const RULES: Rule[] = [
   {
     id: "R001_OPENING_BALANCE",
     priority: 1,
-    description_regex: /OPENING\s+BAL/i,
+    // Expanded to catch B/F, BROUGHT FORWARD to handle page breaks
+    description_regex: /OPENING\s+BAL|BAL\s*B\/F|BALANCE\s*BROUGHT|B\/F\b|BROUGHT\s*FORWARD/i,
     side: "both",
     category: "Opening Balance",
     confidence: 1.0

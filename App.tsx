@@ -64,6 +64,8 @@ function StatusPill({ state }: { state: 'idle' | 'busy' | 'ready' }) {
 // OPTIMIZATION: Extracted Row Component
 const TransactionRow = memo(({ index, style, data }: { index: number; style: React.CSSProperties; data: Txn[] }) => {
   const t = data[index];
+  if (!t) return null;
+  
   return (
     <div style={style} className="flex items-center text-[12px] font-mono text-zinc-400 hover:bg-white/[0.02] border-b border-white/[0.04] transition-colors">
         <div className="w-[12%] px-5 py-2.5 whitespace-nowrap overflow-hidden text-ellipsis">{t.date}</div>
@@ -158,19 +160,33 @@ export default function App() {
   }, [txns, deferredSearchTerm]);
 
   const summary = useMemo(() => {
-    if (!analysisResult) return { opening: 0, closing: 0, totalDebits: 0, totalCredits: 0, anomalies: 0, reviews: 0, currency: "USD" };
+    if (!analysisResult) return { opening: 0, closing: 0, totalDebits: 0, totalCredits: 0, anomalies: 0, reviews: 0, currency: "USD", checkStatus: "Passed" };
     
-    // Find the first Balance B/F row or take the first calculation
-    const opening = txns.length > 0 
-      ? (txns[0].balance + (txns[0].debit || 0) - (txns[0].credit || 0))
-      : 0;
-      
-    const closing = txns[txns.length - 1]?.balance ?? 0;
+    const first = txns[0];
+    const last = txns[txns.length - 1];
+    
+    const calculatedOpening = first ? (first.balance + (first.debit || 0) - (first.credit || 0)) : 0;
+    const closing = last ? last.balance : 0;
+    
     const totalDebits = txns.reduce((a, t) => a + (t.debit ?? 0), 0);
     const totalCredits = txns.reduce((a, t) => a + (t.credit ?? 0), 0);
-    const anomalies = txns.filter((t) => t.flag === "anomaly").length;
-    const reviews = txns.filter((t) => t.flag === "review").length;
-    return { opening, closing, totalDebits, totalCredits, anomalies, reviews, currency: analysisResult.currency };
+    
+    // Use the backend's definitive flag for status
+    let checkStatus = "Passed";
+    if (analysisResult.reconciliation_failed || txns.length === 0) {
+        checkStatus = "Failed";
+    }
+
+    return { 
+        opening: calculatedOpening, 
+        closing, 
+        totalDebits, 
+        totalCredits, 
+        anomalies: analysisResult.error_indices?.length || 0, 
+        reviews: txns.filter((t) => t.flag === "review").length, 
+        currency: analysisResult.currency,
+        checkStatus
+    };
   }, [txns, analysisResult]);
 
   // CHART DATA: STRICTLY EXPENSES
@@ -257,9 +273,9 @@ export default function App() {
 
   // Determine Loading Status Message
   const loadingStatus = useMemo(() => {
-    if (processingTime < 3) return "Extracting transaction logic...";
-    if (processingTime < 10) return "Analyzing ledger patterns...";
-    return "Batch processing large file (this may take a moment)...";
+    if (processingTime < 2) return "Extracting text coordinates...";
+    if (processingTime < 5) return "Mapping financial columns...";
+    return "Validating balances...";
   }, [processingTime]);
 
   return (
@@ -463,7 +479,7 @@ export default function App() {
                     { label: "Closing Balance", val: formatMoney(summary.closing, summary.currency), color: "text-white" },
                     { label: "Total Inflow", val: formatMoney(summary.totalCredits, summary.currency), color: "text-[#3CDCAB]" },
                     { label: "Total Outflow", val: formatMoney(summary.totalDebits, summary.currency), color: "text-zinc-300" },
-                    { label: "Check Status", val: summary.anomalies > 0 ? "Failed" : "Passed", color: summary.anomalies > 0 ? "text-[#FF5A78]" : "text-[#3CDCAB]", isStatus: true }
+                    { label: "Check Status", val: summary.checkStatus, color: summary.checkStatus === "Failed" ? "text-[#FF5A78]" : "text-[#3CDCAB]", isStatus: true }
                  ].map((m, i) => (
                     <Card key={i} className="p-5 flex flex-col justify-between h-[110px]">
                        <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">{m.label}</span>
@@ -478,6 +494,21 @@ export default function App() {
                     </Card>
                  ))}
               </div>
+
+               {/* RECONCILIATION WARNINGS DISPLAY */}
+               {analysisResult?.reconciliation_failed && (
+                  <div className="bg-[#FF5A78]/5 border border-[#FF5A78]/20 rounded-xl p-4 flex flex-col gap-2">
+                     <div className="flex items-center gap-2 text-[#FF5A78]">
+                        <AlertTriangle className="w-5 h-5" />
+                        <h3 className="font-bold text-sm">Reconciliation Failed</h3>
+                     </div>
+                     <ul className="list-disc list-inside text-xs text-red-200/80 font-mono space-y-1 ml-1 max-h-32 overflow-y-auto">
+                        {analysisResult.reconciliation_warnings.map((w, i) => (
+                           <li key={i}>{w}</li>
+                        ))}
+                     </ul>
+                  </div>
+               )}
 
               {/* Main Content Grid */}
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-[600px]">
@@ -501,9 +532,9 @@ export default function App() {
                     </div>
                     {/* OPTIMIZATION: Virtualized List Replacement */}
                     <div className="flex-1 w-full overflow-hidden">
-                       <div className="min-w-[1000px] h-full flex flex-col">
+                       <div className="h-full w-full flex flex-col overflow-x-auto">
                             {/* Header Row (Static) */}
-                           <div className="flex items-center bg-[#111318] text-[10px] font-bold text-zinc-500 uppercase tracking-wider font-mono border-b border-white/[0.06] shrink-0">
+                           <div className="min-w-[700px] flex items-center bg-[#111318] text-[10px] font-bold text-zinc-500 uppercase tracking-wider font-mono border-b border-white/[0.06] shrink-0">
                                 <div className="w-[12%] px-5 py-3">Date</div>
                                 <div className="w-[40%] px-5 py-3">Description</div>
                                 <div className="w-[13%] px-5 py-3 text-right">Debit</div>
@@ -512,7 +543,7 @@ export default function App() {
                                 <div className="w-[10%] px-5 py-3 text-center">Cat</div>
                            </div>
                            
-                           <div className="flex-1 w-full">
+                           <div className="flex-1 w-full min-w-[700px]">
                                <AutoSizer>
                                    {({ height, width }) => (
                                        <List

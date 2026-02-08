@@ -18,7 +18,8 @@
     "@radix-ui/react-tabs": "^1.1.13",
     "react-window": "1.8.10",
     "react-virtualized-auto-sizer": "1.0.24",
-    "pdf-lib": "1.17.1"
+    "pdf-lib": "1.17.1",
+    "pdfjs-dist": "3.11.174"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
