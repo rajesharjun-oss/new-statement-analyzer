@@ -9,22 +9,24 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react": "^19.2.3",
-    "react-dom": "^19.2.3",
     "@google/genai": "^1.37.0",
-    "xlsx": "1.2.0",
-    "recharts": "^3.6.0",
+    "@radix-ui/react-tabs": "^1.0.4",
     "lucide-react": "^0.562.0",
-    "@radix-ui/react-tabs": "^1.1.13",
-    "react-window": "1.8.10",
-    "react-virtualized-auto-sizer": "1.0.24",
-    "pdf-lib": "1.17.1",
-    "pdfjs-dist": "3.11.174"
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^3.11.174",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-virtualized-auto-sizer": "^1.0.24",
+    "react-window": "^1.8.10",
+    "recharts": "^2.10.3",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "@types/node": "^22.14.0",
-    "@vitejs/plugin-react": "^5.0.0",
-    "typescript": "~5.8.2",
-    "vite": "^6.2.0"
+    "@types/node": "^20.10.0",
+    "@types/react": "^18.2.43",
+    "@types/react-dom": "^18.2.17",
+    "@vitejs/plugin-react": "^4.2.0",
+    "typescript": "^5.2.2",
+    "vite": "^5.0.0"
   }
 }
