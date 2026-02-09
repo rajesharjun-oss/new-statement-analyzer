@@ -6,9 +6,9 @@ import { Transaction } from '../types';
 const XLSX = (XLSX_PKG as any).utils ? XLSX_PKG : (XLSX_PKG as any).default;
 
 export const generateExcel = (
-  transactions: Transaction[], 
-  warnings: string[], 
-  reconciliationFailed: boolean, 
+  transactions: Transaction[],
+  warnings: string[],
+  reconciliationFailed: boolean,
   currency: string,
   organizationName: string,
   bankName: string
@@ -28,7 +28,7 @@ export const generateExcel = (
     const range = XLSX.utils.decode_range(ws['!ref']);
     for (let R = range.s.r; R <= range.e.r; ++R) {
       for (let C = range.s.c; C <= range.e.c; ++C) {
-        const cell_address = XLSX.utils.encode_cell({r: R, c: C});
+        const cell_address = XLSX.utils.encode_cell({ r: R, c: C });
         if (!ws[cell_address]) continue;
         if (!ws[cell_address].s) ws[cell_address].s = {};
         ws[cell_address].s.border = borderStyle;
@@ -37,16 +37,35 @@ export const generateExcel = (
   };
 
   // 1. Transactions Sheet
-  const tableData = transactions.map(t => ({
-    Date: t.date,
-    Description: t.description,
-    Category: t.category,
-    Debit: t.debit || 0,
-    Credit: t.credit || 0,
-    Balance: t.balance || 0
-  }));
+  const tableData = transactions.map(t => {
+    let notes = t.decision_source || "";
+    if (t.ruleId) notes += ` (${t.ruleId})`;
+    if (t.is_reversal) notes = `[REVERSAL] ${notes}`;
+
+    return {
+      Date: t.date,
+      Description: t.description,
+      Category: t.category,
+      Debit: t.debit || 0,
+      Credit: t.credit || 0,
+      Balance: t.balance || 0,
+      Notes: notes
+    };
+  });
 
   const wsTransactions = XLSX.utils.json_to_sheet(tableData);
+
+  // Set column widths for better readability
+  wsTransactions['!cols'] = [
+    { wch: 12 }, // Date
+    { wch: 50 }, // Description
+    { wch: 25 }, // Category
+    { wch: 12 }, // Debit
+    { wch: 12 }, // Credit
+    { wch: 15 }, // Balance
+    { wch: 25 }  // Notes
+  ];
+
   applyBorders(wsTransactions);
   XLSX.utils.book_append_sheet(wb, wsTransactions, "Transactions");
 
