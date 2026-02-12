@@ -1,0 +1,15 @@
+FOUND ECOBANK STATEMENT: 190cb33d-d970-48a5-9016-91999032a290.pdf
+--------------------------------------------------
+Detected 53 transactions.
+Metadata: {'account_name': 'THE 16 PLUS SCHOOL LIMITED Date 01-Jul-2025', 'statement_period': None, 'statement_total_debit': 14726571.85, 'statement_total_credit': 15367823.99, 'opening_balance': None, 'closing_balance': None, 'bank': 'ecobank', '_debug': {'columns_detected': {'Remarks': '-inf to 242.8', 'TransDate': '242.8 to 344.0', 'Debit': '344.0 to 431.4', 'Credit': '431.4 to 491.5', 'Balance': '491.5 to inf'}, 'first_3_transactions': [{'date': '31-May-2025', 'debit': 50.0, 'credit': 0.0, 'reference': '31-May-2025', 'branch': '', 'remarks': 'REFNO:A01ECTS251530007 2505311'}, {'date': '31-May-2025', 'debit': 500000.0, 'credit': 0.0, 'reference': '31-May-2025', 'branch': '', 'remarks': 'REFNO:A01ECTS251530007 2505311'}, {'date': '31-May-2025', 'debit': 3.75, 'credit': 0.0, 'reference': '31-May-2025', 'branch': '', 'remarks': 'REFNO:A01ECTS251530007 2505311'}]}}
+Column Cuts: {'Remarks': '-inf to 242.8', 'TransDate': '242.8 to 344.0', 'Debit': '344.0 to 431.4', 'Credit': '431.4 to 491.5', 'Balance': '491.5 to inf'}
+
+First 5 Transactions:
+1. Date: 31-May-2025 | Desc: 31-May-2025 REFNO:A01ECTS25153... | Dr: 50.0 | Cr: 0.0
+2. Date: 31-May-2025 | Desc: 31-May-2025 REFNO:A01ECTS25153... | Dr: 500000.0 | Cr: 0.0
+3. Date: 31-May-2025 | Desc: 31-May-2025 REFNO:A01ECTS25153... | Dr: 3.75 | Cr: 0.0
+4. Date: 31-May-2025 | Desc: 31-May-2025 REFNO:A01ECTS25153... | Dr: 50.0 | Cr: 0.0
+5. Date: 31-May-2025 | Desc: 31-May-2025 REFNO:A01ECTS25153... | Dr: 500000.0 | Cr: 0.0
+
+Recalculated Cuts for P1:
+{'Remarks': (-inf, 242.83350000000002), 'TransDate': (242.83350000000002, 344.00600000000003), 'Debit': (344.00600000000003, 431.4105), 'Credit': (431.4105, 491.5325), 'Balance': (491.5325, inf)}

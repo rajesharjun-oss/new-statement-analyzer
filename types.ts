@@ -33,6 +33,7 @@ export interface AnalysisResult {
   transactions: Transaction[];
   organizationName: string;
   bankName: string;
+  downloadUrl?: string;
   stats?: AnalysisStatistics;
 }
 
@@ -45,7 +46,7 @@ export enum AppStatus {
 
 export const CATEGORIES = [
   'Unallocated',
-  
+
   // Special
   'Stock Purchase',
 

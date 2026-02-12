@@ -1,17 +1,12 @@
 import { Transaction } from '../types';
-import * as pdfjsLib from 'pdfjs-dist';
-
-// Configure worker for Vite usage
-// We'll rely on the user having copied the worker or Vite handling it.
-// Alternatively, we can use a CDN for the worker in dev mode.
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+import * as pdfjsLib from 'pdfjs-dist/build/pdf';
 
 interface TextItem {
     str: string;
     x: number;
-    y: number; // PDF usually has (0,0) at bottom-left
-    h: number; // height
-    w: number; // width
+    y: number;
+    h: number;
+    w: number;
 }
 
 interface Row {
@@ -19,265 +14,334 @@ interface Row {
     items: TextItem[];
 }
 
-interface ColumnMap {
-    debitX: { min: number, max: number } | null;
-    creditX: { min: number, max: number } | null;
-    balanceX: { min: number, max: number } | null;
+interface ColumnDefinition {
+    id: string; // 'date' | 'description' | 'debit' | 'credit' | 'balance' | 'amount' | 'unknown'
+    xMin: number;
+    xMax: number;
+    center: number;
 }
 
-const Y_TOLERANCE = 5; // pixels
-const X_TOLERANCE = 10; // pixels for column alignment
+const Y_TOLERANCE = 4;
+const MIN_COLUMN_GAP = 15;
 
-export const extractTransactionsFromPdf = async (arrayBuffer: ArrayBuffer): Promise<Transaction[]> => {
-    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
-    const pdf = await loadingTask.promise;
-    const allTransactions: Transaction[] = [];
+export const runBatch = async (arrayBuffer: ArrayBuffer): Promise<{ transactions: Transaction[], metadata: any }> => {
+    if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+    }
 
-    let currentTransaction: Transaction | null = null;
-    // let columnMap: ColumnMap = { debitX: null, creditX: null, balanceX: null }; 
-    // We might need to detect mapping per page or globally? Usually global.
-    // Let's detect on first page and reuse? Or detect per page.
+    try {
+        const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+        const pdf = await loadingTask.promise;
+        console.log(`DEBUG: PDF Loaded. Pages: ${pdf.numPages}`);
+        const allTransactions: Transaction[] = [];
 
-    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-        const page = await pdf.getPage(pageNum);
-        const content = await page.getTextContent();
+        for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+            const page = await pdf.getPage(pageNum);
+            const content = await page.getTextContent();
 
-        // 1. EXTRACT & NORMALIZE ITEMS
-        const items: TextItem[] = content.items.map((item: any) => ({
-            str: item.str,
-            x: item.transform[4],
-            y: item.transform[5],
-            h: item.height,
-            w: item.width
-        }));
+            if (content.items.length === 0) {
+                console.warn(`DEBUG: Page ${pageNum} returned no text content.`);
+                continue;
+            }
 
-        // 2. GROUP INTO ROWS
-        // Sort: Top to Bottom (Y desc), Left to Right (X asc)
-        items.sort((a, b) => {
-            if (Math.abs(a.y - b.y) < Y_TOLERANCE) return a.x - b.x;
-            return b.y - a.y;
-        });
+            console.log(`DEBUG: Page ${pageNum} Item Count: ${content.items.length}`);
+            const sampleText = content.items.slice(0, 5).map((i: any) => i.str).join(" | ");
+            console.log(`DEBUG: Page ${pageNum} Sample: ${sampleText}`);
 
-        const rows: Row[] = [];
-        if (items.length > 0) {
+            const viewport = page.getViewport({ scale: 1.0 });
+            const pageWidth = Math.ceil(viewport.width);
+
+            const items: TextItem[] = content.items.map((item: any) => ({
+                str: item.str,
+                x: item.transform[4],
+                y: item.transform[5],
+                h: item.height,
+                w: item.width
+            })).filter(i => i.str.trim().length > 0);
+
+            if (items.length === 0) continue;
+
+            items.sort((a, b) => b.y - a.y);
+            const rows: Row[] = [];
             let currentRow: Row = { y: items[0].y, items: [items[0]] };
+
             for (let i = 1; i < items.length; i++) {
                 const item = items[i];
                 if (Math.abs(item.y - currentRow.y) < Y_TOLERANCE) {
                     currentRow.items.push(item);
                 } else {
+                    currentRow.items.sort((a, b) => a.x - b.x);
                     rows.push(currentRow);
                     currentRow = { y: item.y, items: [item] };
                 }
             }
+            currentRow.items.sort((a, b) => a.x - b.x);
             rows.push(currentRow);
+
+            console.log(`DEBUG: Page ${pageNum} Rows Formed: ${rows.length}`);
+
+            const columns = detectColumns(rows, pageWidth);
+            console.log(`DEBUG: Page ${pageNum} Columns Detected:`, columns);
+
+            const pageTxns = processRowsToTransactions(rows, columns);
+            console.log(`DEBUG: Page ${pageNum} Transactions Found: ${pageTxns.length}`);
+            allTransactions.push(...pageTxns);
         }
 
-        // 3. DETECT COLUMN HEADERS (Per Page)
-        // We look for a row containing "Date", "Debit", "Credit", "Balance"
-        const pageColMap = detectColumnMap(rows);
+        return { transactions: allTransactions, metadata: { totalDebit: 0, totalCredit: 0 } };
+    } catch (e) {
+        console.error("DEBUG: runBatch Error:", e);
+        return { transactions: [], metadata: { totalDebit: 0, totalCredit: 0 } };
+    }
+};
 
-        const dateRegex = /^(\d{1,2}[-/\s]*(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC|[0-1]?\d)[-/\s]*\d{2,4})/i;
+const detectColumns = (rows: Row[], pageWidth: number): ColumnDefinition[] => {
+    const histogramLen = Math.ceil(pageWidth) + 10;
+    const busy = new Uint8Array(histogramLen).fill(0);
 
-        // 4. PROCESS ROWS
-        for (const row of rows) {
-            const rowText = row.items.map(i => i.str).join(' ').trim();
+    rows.forEach(row => {
+        row.items.forEach(item => {
+            const start = Math.max(0, Math.floor(item.x));
+            const end = Math.min(histogramLen - 1, Math.floor(item.x + item.w));
+            for (let k = start; k < end; k++) busy[k] = 1;
+        });
+    });
 
-            // Filter Headers/Footers
-            if (isHeaderOrFooter(rowText)) continue;
+    const columns: ColumnDefinition[] = [];
+    let inBlock = false;
+    let blockStart = 0;
 
-            // Check for Date (Start of Transaction)
-            const match = rowText.match(dateRegex);
-
-            if (match) {
-                // New Transaction
-                if (currentTransaction) {
-                    allTransactions.push(currentTransaction);
-                }
-
-                const dateStr = match[1];
-
-                // Text Extraction Logic
-                // We need to parse amounts based on X columns if available, or fall back to heuristics
-                const parsed = parseRowContent(row, dateStr.length, pageColMap);
-
-                currentTransaction = {
-                    date: normalizeDate(dateStr),
-                    description: parsed.description,
-                    category: "Unallocated",
-                    debit: parsed.debit,
-                    credit: parsed.credit,
-                    balance: parsed.balance,
-                    is_reversal: false
-                };
-            } else {
-                // Continuation Line
-                if (currentTransaction) {
-                    // Avoid merging page numbers
-                    if (!isLikelyPageNumber(rowText)) {
-                        // Start of description logic:
-                        // If the text starts far to the right, it might be a value we missed?
-                        // We assume it's description text.
-                        currentTransaction.description += " " + rowText;
-                    }
-                }
+    for (let i = 0; i < histogramLen; i++) {
+        if (busy[i] === 1) {
+            if (!inBlock) {
+                inBlock = true;
+                blockStart = i;
+            }
+        } else {
+            if (inBlock) {
+                inBlock = false;
+                columns.push({
+                    id: 'unknown',
+                    xMin: blockStart,
+                    xMax: i,
+                    center: blockStart + (i - blockStart) / 2
+                });
             }
         }
     }
 
-    // Push final transaction
-    if (currentTransaction) {
-        allTransactions.push(currentTransaction);
+    const viableColumns = columns.filter(c => (c.xMax - c.xMin) > 10);
+
+    let headerRow: Row | null = null;
+    let maxMatches = 0;
+
+    const signatures: Record<string, RegExp> = {
+        'date': /DATE|DT|TIME/i,
+        'description': /DESC|PARTICULARS|DETAILS|NARRATION|TRANSACTION|REMARKS|MEMO/i,
+        'debit': /DEBIT|WITHDRAWAL|DR|WK|OUT/i,
+        'credit': /CREDIT|DEPOSIT|CR|IN/i,
+        'balance': /BALANCE|BAL/i,
+        'amount': /AMOUNT|VALUE/i
+    };
+
+    for (const row of rows) {
+        const txt = row.items.map(i => i.str).join(' ').toUpperCase();
+        let matches = 0;
+        if (signatures.date.test(txt)) matches++;
+        if (signatures.description.test(txt)) matches++;
+        if (signatures.balance.test(txt)) matches++;
+
+        if (matches > maxMatches) {
+            maxMatches = matches;
+            headerRow = row;
+        }
     }
 
-    return allTransactions;
+    if (headerRow) {
+        headerRow.items.forEach(item => {
+            const center = item.x + item.w / 2;
+            const txt = item.str.toUpperCase();
+
+            const col = viableColumns.find(c => center >= c.xMin && center <= c.xMax);
+            if (col) {
+                if (signatures.date.test(txt)) col.id = 'date';
+                else if (signatures.description.test(txt)) col.id = 'description';
+                else if (signatures.debit.test(txt)) col.id = 'debit';
+                else if (signatures.credit.test(txt)) col.id = 'credit';
+                else if (signatures.balance.test(txt)) col.id = 'balance';
+                else if (signatures.amount.test(txt)) col.id = 'amount';
+            }
+        });
+    } else {
+        if (viableColumns.length >= 2) {
+            viableColumns[0].id = 'date';
+            viableColumns[viableColumns.length - 1].id = 'balance';
+
+            let widestIdx = -1;
+            let maxW = 0;
+            viableColumns.forEach((c, idx) => {
+                if (c.id === 'unknown') {
+                    const w = c.xMax - c.xMin;
+                    if (w > maxW) { maxW = w; widestIdx = idx; }
+                }
+            });
+            if (widestIdx !== -1) viableColumns[widestIdx].id = 'description';
+        }
+    }
+
+    const hasDate = viableColumns.some(c => c.id === 'date');
+    const hasMoney = viableColumns.some(c => c.id === 'debit' || c.id === 'credit' || c.id === 'balance' || c.id === 'amount');
+
+    if (!hasDate || !hasMoney) {
+        viableColumns.sort((a, b) => a.xMin - b.xMin);
+        if (viableColumns.length > 0) viableColumns[0].id = 'date';
+        if (viableColumns.length > 1) viableColumns[viableColumns.length - 1].id = 'balance';
+
+        let widestIdx = -1;
+        let maxW = 0;
+
+        for (let i = 1; i < viableColumns.length - 1; i++) {
+            const w = viableColumns[i].xMax - viableColumns[i].xMin;
+            if (w > maxW) {
+                maxW = w;
+                widestIdx = i;
+            }
+        }
+
+        if (widestIdx !== -1) {
+            viableColumns[widestIdx].id = 'description';
+            const moneyCols = viableColumns.filter((c, idx) => idx > widestIdx && idx < viableColumns.length - 1);
+            if (moneyCols.length === 2) {
+                moneyCols[0].id = 'debit';
+                moneyCols[1].id = 'credit';
+            } else if (moneyCols.length === 1) {
+                moneyCols[0].id = 'amount';
+            }
+        }
+    }
+
+    console.log("Final Columns:", viableColumns);
+    return viableColumns;
 };
 
-// --- HELPERS ---
+const processRowsToTransactions = (rows: Row[], columns: ColumnDefinition[]): Transaction[] => {
+    const results: Transaction[] = [];
+    let currentTxn: Transaction | null = null;
 
-const isHeaderOrFooter = (text: string): boolean => {
-    const t = text.toUpperCase();
-    return (
-        t.includes("TRANS. DATE") ||
-        t === "DATE" ||
-        t === "VALUE DATE" ||
-        t.includes("STATEMENT PERIOD") ||
-        t.includes("OPENING BALANCE") && !t.includes("|") || // Simple check
-        t === "B/F" || t === "C/F" ||
-        (t.includes("DEBIT") && t.includes("CREDIT") && t.includes("BALANCE"))
+    const cd = {
+        date: columns.find(c => c.id === 'date'),
+        desc: columns.find(c => c.id === 'description'),
+        debit: columns.find(c => c.id === 'debit'),
+        credit: columns.find(c => c.id === 'credit'),
+        bal: columns.find(c => c.id === 'balance'),
+        amount: columns.find(c => c.id === 'amount')
+    };
+
+    const dateRegex = new RegExp(
+        "^(" +
+        "\\d{1,2}[-/\\.]\\w{3}[-/\\.]\\d{2,4}|" +
+        "\\d{1,2}[-/\\.]\\d{2}[-/\\.]\\d{2,4}|" +
+        "(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[\\s\\.,-]+\\d{1,2}(?:st|nd|rd|th)?[\\s\\.,-]+(?:\\d{2,4})?|" +
+        "\\d{1,2}[\\s\\.,-]+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[\\s\\.,-]+(?:\\d{2,4})?" +
+        ")", "i"
     );
+
+    rows.forEach(row => {
+        let rowDate = "";
+        let rowDescParts: string[] = [];
+        let rowDebit = 0;
+        let rowCredit = 0;
+        let rowBal = 0;
+        let foundMoney = false;
+
+        row.items.forEach(item => {
+            const cx = item.x + item.w / 2;
+            const text = item.str.trim();
+            if (!text) return;
+
+            if (cd.date && cx >= cd.date.xMin && cx <= cd.date.xMax) {
+                rowDate = text;
+            } else if (cd.debit && cx >= cd.debit.xMin && cx <= cd.debit.xMax) {
+                const val = parseMoney(text);
+                if (val !== null) { rowDebit = Math.abs(val); foundMoney = true; }
+            } else if (cd.credit && cx >= cd.credit.xMin && cx <= cd.credit.xMax) {
+                const val = parseMoney(text);
+                if (val !== null) { rowCredit = Math.abs(val); foundMoney = true; }
+            } else if (cd.bal && cx >= cd.bal.xMin && cx <= cd.bal.xMax) {
+                const val = parseMoney(text);
+                if (val !== null) { rowBal = val; }
+            } else if (cd.amount && cx >= cd.amount.xMin && cx <= cd.amount.xMax) {
+                const val = parseMoney(text);
+                if (val !== null) {
+                    if (val < 0) {
+                        rowDebit = Math.abs(val);
+                    } else {
+                        rowCredit = val;
+                    }
+                    foundMoney = true;
+                }
+            } else if (cd.desc && cx >= cd.desc.xMin && cx <= cd.desc.xMax) {
+                rowDescParts.push(text);
+            } else {
+                if (parseMoney(text) === null) rowDescParts.push(text);
+            }
+        });
+
+        const rowDesc = rowDescParts.join(" ").trim();
+        const hasDate = dateRegex.test(rowDate);
+        const hasAmount = foundMoney && (rowDebit > 0 || rowCredit > 0);
+
+        if (hasDate && hasAmount) {
+            if (currentTxn) results.push(currentTxn);
+
+            currentTxn = {
+                date: normalizeDate(rowDate),
+                description: rowDesc,
+                category: "Unallocated",
+                debit: rowDebit,
+                credit: rowCredit,
+                balance: rowBal,
+                is_reversal: false
+            };
+        } else {
+            if (currentTxn && !hasDate) {
+                if (rowDesc) {
+                    currentTxn.description += " " + rowDesc;
+                }
+            }
+        }
+    });
+
+    if (currentTxn) results.push(currentTxn);
+    return results;
 };
 
-const isLikelyPageNumber = (text: string): boolean => {
-    return /^Page\s+\d+\s+of\s+\d+$/i.test(text.trim()) || /^\d+\s*\/\s*\d+$/.test(text.trim());
+const parseMoney = (str: string): number | null => {
+    if (!str) return null;
+    if (!/[\d\.,]+/.test(str)) return null;
+
+    const isNegative = /^\(.*\)$/.test(str.trim()) || str.includes('-');
+    const clean = str.replace(/,/g, '').replace(/[^\d\.]/g, '');
+
+    let num = parseFloat(clean);
+    if (isNaN(num)) return null;
+
+    if (isNegative) num = -num;
+    return num;
 };
 
 const normalizeDate = (raw: string): string => {
-    return raw.replace(/\//g, '-').toUpperCase();
-};
-
-const detectColumnMap = (rows: Row[]): ColumnMap => {
-    const map: ColumnMap = { debitX: null, creditX: null, balanceX: null };
-
-    // Scan first 10 rows for header keywords
-    for (let i = 0; i < Math.min(rows.length, 20); i++) {
-        const row = rows[i];
-        const text = row.items.map(it => it.str).join(' ').toUpperCase();
-
-        if (text.includes("DEBIT") || text.includes("CREDIT") || text.includes("WITHDRAWAL") || text.includes("DEPOSIT")) {
-            // This is likely a header row. Let's find specific items.
-            row.items.forEach(item => {
-                const val = item.str.toUpperCase();
-                if (val.includes("DEBIT") || val.includes("WITHDRAWAL")) {
-                    map.debitX = { min: item.x - 20, max: item.x + item.w + 20 };
-                }
-                else if (val.includes("CREDIT") || val.includes("DEPOSIT")) {
-                    map.creditX = { min: item.x - 20, max: item.x + item.w + 20 };
-                }
-                else if (val.includes("BALANCE")) {
-                    map.balanceX = { min: item.x - 20, max: item.x + item.w + 20 };
-                }
-            });
-        }
-    }
-    return map;
-};
-
-const parseRowContent = (row: Row, dateLen: number, colMap: ColumnMap) => {
-    let descriptionParts: string[] = [];
-    let debit = 0;
-    let credit = 0;
-    let balance = 0;
-
-    // Helper: Clean number string
-    const cleanNum = (s: string) => parseFloat(s.replace(/,/g, ''));
-    const isNum = (s: string) => !isNaN(cleanNum(s)) && /[\d\.]+/.test(s.replace(/,/g, ''));
-
-    // 1. COLUMN-BASED PARSING (Preferred)
-    // If we have detected headers, use them to snap items to columns.
-    const hasColumns = colMap.debitX || colMap.creditX || colMap.balanceX;
-
-    if (hasColumns) {
-        for (let i = 0; i < row.items.length; i++) {
-            const item = row.items[i];
-            const valStr = item.str.trim();
-            if (!valStr) continue;
-
-            // Skip Date (Item 0 usually, or by regex match if we want to be safe)
-            if (i === 0 && /^[\d\w\-\/]+$/.test(valStr)) continue;
-
-            // Check match
-            const x = item.x; // Left edge
-            // Use mid-point for better alignment check?
-            const mid = x + (item.w / 2);
-
-            let assigned = false;
-
-            if (isNum(valStr)) {
-                const val = cleanNum(valStr);
-
-                if (colMap.debitX && mid >= colMap.debitX.min && mid <= colMap.debitX.max) {
-                    debit = val; assigned = true;
-                } else if (colMap.creditX && mid >= colMap.creditX.min && mid <= colMap.creditX.max) {
-                    credit = val; assigned = true;
-                } else if (colMap.balanceX && mid >= colMap.balanceX.min && mid <= colMap.balanceX.max) {
-                    balance = val; assigned = true;
-                }
-            }
-
-            if (!assigned) {
-                // If it's not a number in a value column, it's description
-                // But avoid adding the date again if we skipped it
-                descriptionParts.push(valStr);
-            }
-        }
-    }
-    // 2. HEURISTIC PARSING (Fallback)
-    // If no columns detected, assume standard format: Date | Description | ... | Value | Balance
-    else {
-        // Collect all items except the first (Date)
-        const items = row.items.slice(1);
-        const numberTokens: number[] = [];
-
-        // Scan from right to left to find numbers (Balance, Amount)
-        // This relies on the fact that Description is usuall on the left, Numbers on the right.
-        let rightIndex = items.length - 1;
-        while (rightIndex >= 0) {
-            const txt = items[rightIndex].str.trim();
-            if (isNum(txt)) {
-                numberTokens.unshift(cleanNum(txt));
-                rightIndex--;
-            } else {
-                // Hit non-number (Description), stop scanning for numbers
-                break;
-            }
-        }
-
-        // Everything to the left of rightIndex is Description
-        for (let i = 0; i <= rightIndex; i++) {
-            descriptionParts.push(items[i].str.trim());
-        }
-
-        // Assign numbers
-        if (numberTokens.length >= 2) {
-            // [Amount, Balance]
-            balance = numberTokens[numberTokens.length - 1]; // Last is Balance
-            const amount = numberTokens[numberTokens.length - 2];
-            // Guess Debit/Credit? 
-            // Default to Debit if we can't tell? Or checks signs?
-            // User requested deterministic. 
-            // Without headers, we can't deterministically know Dr/Cr.
-            // Let's assume Debit for now as it's common for expenses.
-            debit = amount;
-        } else if (numberTokens.length === 1) {
-            balance = numberTokens[0];
-        }
+    if (/^\d{1,2}[-/\.]\w{3}[-/\.]\d{2,4}$/i.test(raw)) {
+        return raw.replace(/[\/\.]/g, '-');
     }
 
-    return {
-        description: descriptionParts.join(' '),
-        debit,
-        credit,
-        balance
-    };
+    const d = new Date(raw);
+    if (!isNaN(d.getTime())) {
+        const day = d.getDate().toString().padStart(2, '0');
+        const month = d.toLocaleString('default', { month: 'short' });
+        const year = d.getFullYear();
+        return `${day}-${month}-${year}`;
+    }
+
+    return raw.replace(/[\/\.]/g, '-');
 };

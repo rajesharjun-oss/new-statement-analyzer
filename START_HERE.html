@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bank Statement Analyzer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 800px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 2em;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1.1em;
+        }
+
+        .upload-area {
+            border: 3px dashed #667eea;
+            border-radius: 15px;
+            padding: 40px;
+            text-align: center;
+            background: #f8f9ff;
+            margin-bottom: 30px;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+
+        .upload-area:hover {
+            background: #eef1ff;
+            border-color: #764ba2;
+        }
+
+        .upload-area.dragover {
+            background: #e3e7ff;
+            border-color: #5a67d8;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .bank-select {
+            margin: 20px 0;
+            text-align: center;
+        }
+
+        select {
+            padding: 12px 20px;
+            font-size: 16px;
+            border: 2px solid #667eea;
+            border-radius: 8px;
+            background: white;
+            cursor: pointer;
+            min-width: 250px;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 18px;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: transform 0.2s;
+            margin-top: 20px;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 10px;
+            display: none;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .status.loading {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+
+        .results {
+            margin-top: 30px;
+            display: none;
+        }
+
+        .result-item {
+            padding: 15px;
+            background: #f8f9ff;
+            border-radius: 10px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .result-label {
+            font-weight: 600;
+            color: #555;
+        }
+
+        .result-value {
+            font-size: 1.1em;
+            color: #333;
+        }
+
+        .download-btn {
+            background: #28a745;
+            padding: 12px 30px;
+            margin-top: 20px;
+            width: 100%;
+            font-size: 16px;
+        }
+
+        .download-btn:hover {
+            background: #218838;
+        }
+
+        .emoji {
+            font-size: 3em;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>💼 Bank Statement Analyzer</h1>
+        <p class="subtitle">Upload your PDF bank statement to get started</p>
+
+        <div class="upload-area" id="uploadArea">
+            <div class="emoji">📄</div>
+            <h2>Click to upload or drag & drop</h2>
+            <p>PDF files only</p>
+            <input type="file" id="fileInput" accept=".pdf">
+        </div>
+
+        <div class="bank-select">
+            <label for="bankSelect" style="margin-right: 10px; font-weight: 600;">Bank:</label>
+            <select id="bankSelect">
+                <option value="auto">Auto-Detect</option>
+                <option value="gtbank">GTBank</option>
+                <option value="ecobank">Ecobank</option>
+                <option value="accessbank">Access Bank</option>
+                <option value="firstbank">First Bank</option>
+                <option value="zenith">Zenith Bank</option>
+                <option value="uba">UBA</option>
+            </select>
+        </div>
+
+        <button id="analyzeBtn" disabled>Analyze Statement</button>
+
+        <div class="status" id="status"></div>
+
+        <div class="results" id="results"></div>
+    </div>
+
+    <script>
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const analyzeBtn = document.getElementById('analyzeBtn');
+        const bankSelect = document.getElementById('bankSelect');
+        const status = document.getElementById('status');
+        const results = document.getElementById('results');
+
+        let selectedFile = null;
+
+        // Click to upload
+        uploadArea.addEventListener('click', () => fileInput.click());
+
+        // Drag and drop
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0 && files[0].type === 'application/pdf') {
+                selectedFile = files[0];
+                updateUploadArea();
+            }
+        });
+
+        // File input change
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                selectedFile = e.target.files[0];
+                updateUploadArea();
+            }
+        });
+
+        function updateUploadArea() {
+            uploadArea.innerHTML = `
+                <div class="emoji">✅</div>
+                <h2>${selectedFile.name}</h2>
+                <p>Click to change file</p>
+            `;
+            analyzeBtn.disabled = false;
+        }
+
+        // Analyze button
+        analyzeBtn.addEventListener('click', async () => {
+            if (!selectedFile) return;
+
+            analyzeBtn.disabled = true;
+            showStatus('loading', '⏳ Analyzing your statement...');
+            results.style.display = 'none';
+
+            const formData = new FormData();
+            formData.append('file', selectedFile);
+            formData.append('bank', bankSelect.value);
+
+            try {
+                const response = await fetch('http://localhost:8000/analyze', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Analysis failed');
+                }
+
+                const data = await response.json();
+                showResults(data);
+                showStatus('success', '✅ Analysis complete!');
+                analyzeBtn.disabled = false;
+
+            } catch (error) {
+                showStatus('error', `❌ Error: ${error.message}`);
+                analyzeBtn.disabled = false;
+            }
+        });
+
+        function showStatus(type, message) {
+            status.className = `status ${type}`;
+            status.textContent = message;
+            status.style.display = 'block';
+        }
+
+        function showResults(data) {
+            const summary = data.summary;
+
+            results.innerHTML = `
+                <h2 style="margin-bottom: 20px;">📊 Analysis Results</h2>
+                
+                <div class="result-item">
+                    <span class="result-label">Account Name:</span>
+                    <span class="result-value">${summary.accountName || 'N/A'}</span>
+                </div>
+                
+                <div class="result-item">
+                    <span class="result-label">Period:</span>
+                    <span class="result-value">${summary.period}</span>
+                </div>
+                
+                <div class="result-item">
+                    <span class="result-label">Total Transactions:</span>
+                    <span class="result-value">${summary.transactionCount}</span>
+                </div>
+                
+                <div class="result-item">
+                    <span class="result-label">Total Debit:</span>
+                    <span class="result-value">₦${summary.totalDebit.toLocaleString('en-NG', { minimumFractionDigits: 2 })}</span>
+                </div>
+                
+                <div class="result-item">
+                    <span class="result-label">Total Credit:</span>
+                    <span class="result-value">₦${summary.totalCredit.toLocaleString('en-NG', { minimumFractionDigits: 2 })}</span>
+                </div>
+                
+                <div class="result-item">
+                    <span class="result-label">Validation:</span>
+                    <span class="result-value">${summary.totalsMatch ? '✅ Match' : '⚠️ ' + summary.validationStatus}</span>
+                </div>
+                
+                ${summary.debit_diff !== null ? `
+                <div class="result-item">
+                    <span class="result-label">Debit Difference:</span>
+                    <span class="result-value">₦${summary.debit_diff.toFixed(2)}</span>
+                </div>
+                ` : ''}
+                
+                ${summary.credit_diff !== null ? `
+                <div class="result-item">
+                    <span class="result-label">Credit Difference:</span>
+                    <span class="result-value">₦${summary.credit_diff.toFixed(2)}</span>
+                </div>
+                ` : ''}
+                
+                <button class="download-btn" onclick="window.location.href='${data.downloadUrl}'">
+                    📥 Download Excel Report
+                </button>
+            `;
+
+            results.style.display = 'block';
+        }
+    </script>
+</body>
+
+</html>

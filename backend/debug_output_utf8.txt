@@ -1,0 +1,65 @@
+﻿DEBUG: Loaded pdf_extractor from: C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\pdf_extractor.py
+DEBUG: Source of detect_ecobank_columns snippet (partial):
+def detect_ecobank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
+    """
+    Robust Ecobank column detection.
+    Only locks onto the true table header (not Account Summary).
+    Uses right/left edges to form safer boundaries for right-aligned numeric columns.
+    """
+    if not words:
+        return None
+
+    # --- 1) Find a header band that contains MANY header tokens together ---
+    header_terms = {
+        "TransDate": r"(?:Trans(?:action)?\s*Date|Trans\.?\s*Date|Date\b)",
+        "ValueDate": r"(?:Value\s*Date)",
+        "Remarks": r"(?:Description|Narration|Remarks?)",
+        "Debit": r"(?:Debit|Withdrawal)",
+        "Credit": r"(?:Credit|Deposit)",
+        "Balance": r"(?:Balance)"
+    }
+
+    # collect candidate tops where any header term appears
+    tops = [w["top"] for w in words if any(re.search(rx, w["text"], re.I) for rx in header_terms.values())]
+    if not tops:
+        return None
+
+    # group by approximate top and score each band by h
+Searching for Ecobank statements in temp_uploads...
+DEBUG: Page 0 words count: 147
+DEBUG: Entering detect_ecobank_columns
+DEBUG: TransDate raw width: 347.843 - 324.00600000000003 = 23.83699999999999
+DEBUG: ECOBANK HEADER TOP: 430.7
+DEBUG: ECOBANK CUTS: {'Remarks': (-inf, 252.8), 'TransDate': (252.8, 404.0), 'Debit': (404.0, 431.4), 'Credit': (431.4, 491.5), 'Balance': (491.5, inf)}
+DEBUG: Generic detect result: {'Remarks': (-inf, 252.83350000000002), 'TransDate': (252.83350000000002, 404.00600000000003), 'Debit': (404.00600000000003, 431.4105), 'Credit': (431.4105, 491.5325), 'Balance': (491.5325, inf)}
+DEBUG: Header detected on page 1
+DEBUG: FOUND CUTS: {'Remarks': (-inf, 252.83350000000002), 'TransDate': (252.83350000000002, 404.00600000000003), 'Debit': (404.00600000000003, 431.4105), 'Credit': (431.4105, 491.5325), 'Balance': (491.5325, inf)}
+DEBUG: Detected columns: {'Remarks': '-inf to 252.8', 'TransDate': '252.8 to 404.0', 'Debit': '404.0 to 431.4', 'Credit': '431.4 to 491.5', 'Balance': '491.5 to inf'}
+DEBUG: Skipped noise row: {'Remarks': 'Account Summary', 'TransDate': '', 'Debit': '', 'Credit': '', 'Balance': ''}
+DEBUG: Skipped noise row: {'Remarks': 'Currency', 'TransDate': 'NGN', 'Debit': '', 'Credit': '', 'Balance': ''}
+DEBUG: Skipped noise row: {'Remarks': '01-Jun-2025 OPENING BALANCE', 'TransDate': '01-Jun-2025 0.00', 'Debit': '', 'Credit': '0.00', 'Balance': '4,513,380.72'}
+DEBUG: kept tail row page 1: {'Remarks': '25053117P16L:operations,THE', 'TransDate': '16', 'Debit': '', 'Credit': '', 'Balance': ''}
+DEBUG: kept tail row page 1: {'Remarks': '25053117P16L:operations,THE', 'TransDate': '16', 'Debit': '', 'Credit': '', 'Balance': ''}
+DEBUG: kept tail row page 1: {'Remarks': '25053117P16L:operations,THE', 'TransDate': '16', 'Debit': '', 'Credit': '', 'Balance': ''}
+DEBUG: kept tail row page 3: {'Remarks': '250607180ZDZ:Operations,THE', 'TransDate': '16', 'Debit': '', 'Credit': '', 'Balance': ''}
+DEBUG: kept tail row page 3: {'Remarks': '250607180ZDZ:Operations,THE', 'TransDate': '16', 'Debit': '', 'Credit': '', 'Balance': ''}
+DEBUG: kept tail row page 3: {'Remarks': '250607180ZDZ:Operations,THE', 'TransDate': '16', 'Debit': '', 'Credit': '', 'Balance': ''}
+DEBUG: kept tail row page 4: {'Remarks': 'IBIDUN/NIP TRANSFER TO THE', 'TransDate': '16', 'Debit': '', 'Credit': '', 'Balance': ''}
+DEBUG: kept tail row page 6: {'Remarks': '250618187Q4P:operations,THE', 'TransDate': '16', 'Debit': '', 'Credit': '', 'Balance': ''}
+DEBUG: kept tail row page 6: {'Remarks': '250618187Q4P:operations,THE', 'TransDate': '16', 'Debit': '', 'Credit': '', 'Balance': ''}
+DEBUG: kept tail row page 7: {'Remarks': '250618187Q4P:operations,THE', 'TransDate': '16', 'Debit': '', 'Credit': '', 'Balance': ''}
+DEBUG: kept tail row page 7: {'Remarks': 'DEPOSIT FT', 'TransDate': '', 'Debit': '', 'Credit': '13', 'Balance': '7'}
+DEBUG: kept tail row page 7: {'Remarks': 'SMTENGDTMZHJPQPE IFO THE', 'TransDate': '16', 'Debit': '', 'Credit': '', 'Balance': ''}
+DEBUG: kept tail row page 7: {'Remarks': 'ELECTRONIC MONEY TRANSFER', 'TransDate': '', 'Debit': '', 'Credit': '', 'Balance': '7'}
+DEBUG: kept tail row page 7: {'Remarks': 'FROM NWANWENE UCHEBENU', 'TransDate': '', 'Debit': '', 'Credit': '', 'Balance': '7'}
+DEBUG: kept tail row page 7: {'Remarks': '25062318OLV5:June Sal and Ops,', 'TransDate': '', 'Debit': '', 'Credit': '', 'Balance': '7'}
+DEBUG: kept tail row page 9: {'Remarks': '25063018SL96:operations,THE', 'TransDate': '16', 'Debit': '', 'Credit': '', 'Balance': ''}
+DEBUG: kept tail row page 9: {'Remarks': '25063018SL96:operations,THE', 'TransDate': '16', 'Debit': '', 'Credit': '', 'Balance': ''}
+DEBUG: kept tail row page 9: {'Remarks': '25063018SL96:operations,THE', 'TransDate': '16', 'Debit': '', 'Credit': '', 'Balance': ''}
+DEBUG: Total rows before merge: 359
+DEBUG: Total transactions after merge: 0
+DEBUG: Entering detect_ecobank_columns
+DEBUG: TransDate raw width: 347.843 - 324.00600000000003 = 23.83699999999999
+DEBUG: ECOBANK HEADER TOP: 430.7
+DEBUG: ECOBANK CUTS: {'Remarks': (-inf, 252.8), 'TransDate': (252.8, 404.0), 'Debit': (404.0, 431.4), 'Credit': (431.4, 491.5), 'Balance': (491.5, inf)}
+Debug info written to ecobank_debug_utf8.txt
