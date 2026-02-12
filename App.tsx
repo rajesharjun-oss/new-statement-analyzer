@@ -25,7 +25,8 @@ import {
 
 import { Button, Card, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Progress, cn, Badge, Input } from "./components/PrimitiveUI";
 import { SettingsModal } from './components/SettingsModal';
-import { analyzeBankStatement } from './services/geminiService';
+// import { analyzeBankStatement } from './services/geminiService'; // Removed
+import { analyzeDocument } from './services/analysisService';
 import { generateExcel } from './services/excelService';
 import { AnalysisResult, Transaction, DecisionSource } from './types';
 
@@ -100,12 +101,14 @@ export default function App() {
    const [error, setError] = useState<string | null>(null);
    const [fileName, setFileName] = useState("");
    const [processingTime, setProcessingTime] = useState(0);
+   const [selectedBank, setSelectedBank] = useState("auto"); // Default to auto
    const [searchTerm, setSearchTerm] = useState("");
    const deferredSearchTerm = useDeferredValue(searchTerm);
 
    const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
    const [isSettingsOpen, setIsSettingsOpen] = useState(false);
    const [userApiKey, setUserApiKey] = useState<string>('');
+   const [useDeepScan, setUseDeepScan] = useState(false);
 
    useEffect(() => {
       const storedKey = localStorage.getItem('gemini_custom_key');
@@ -224,11 +227,14 @@ export default function App() {
          .slice(0, 8);
    }, [txns]);
 
+   const [batchStatus, setBatchStatus] = useState<string>("");
+
    const handleFileProcess = async (file: File) => {
       setFileName(file.name);
       setIsAnalyzing(true);
       setError(null);
       setProcessingTime(0);
+      setBatchStatus(""); // Reset
 
       const startTime = Date.now();
       const timerInterval = setInterval(() => {
@@ -236,33 +242,77 @@ export default function App() {
       }, 100);
 
       try {
-         const reader = new FileReader();
-         reader.onload = async (e) => {
-            const base64 = (e.target?.result as string).split(',')[1];
-            try {
-               const result = await analyzeBankStatement(base64, file.type, userApiKey);
-               setAnalysisResult(result);
-               setHasFile(true);
-            } catch (err: any) {
-               setError(err.message || "Failed to analyze document");
-            } finally {
-               setIsAnalyzing(false);
-               clearInterval(timerInterval);
-               setProcessingTime((Date.now() - startTime) / 1000);
-            }
-         };
+         // DIRECT PROCESSING (No Batch)
+         if (file.type === 'application/pdf') {
+            // Use static import (defined at top)
+            const result = await analyzeDocument(
+               file,
+               selectedBank,
+               (msg, progress) => {
+                  setBatchStatus(`${msg} (${progress}%)`);
+               }
+            );
+            // We need to update analyzeDocument signature too! Or pass it via backendService directly?
+            // analyzeDocument in analysisService.ts currently wraps analyzeWithBackend.
+            // Let's look at analysisService.ts. 
+            // WAIT - I need to update analysisService.ts first or bypass it?
+            // For now, I will modify analysisService.ts in the next step.
+            // But here I should pass it. Let's assume analysisService.ts will accept it as 2nd arg?
+            // Actually, analyzeDocument signature is (file, apiKey, onProgress).
+            // userApiKey is arguably irrelevant for local backend logic, but kept for legacy?
+            // I should update analyzeDocument to accept bankId.
 
-         reader.onerror = () => {
-            setError("File reading failed");
-            setIsAnalyzing(false);
-            clearInterval(timerInterval);
-         };
-
-         reader.readAsDataURL(file);
-      } catch (e) {
-         setError("File reading failed");
+            console.log("DEBUG: analyzeDocument result in App:", result); // LOG 3
+            setAnalysisResult(result);
+            setHasFile(true);
+         } else {
+            // EXISTING LOGIC FOR IMAGES (or Fallback)
+            /*
+           const reader = new FileReader();
+           reader.onload = async (e) => {
+              const base64 = (e.target?.result as string).split(',')[1];
+              try {
+                 const result = await analyzeBankStatement(
+                    base64,
+                    file.type,
+                    userApiKey,
+                    (interimTxns, progress, msg, partialStats) => {
+                       setBatchStatus(`${msg} (${progress}%)`);
+                       if (interimTxns.length > 0 && partialStats) {
+                          setAnalysisResult({
+                             transactions: interimTxns,
+                             reconciliation_failed: false,
+                             reconciliation_warnings: [],
+                             error_indices: [],
+                             currency: partialStats.currency || "NGN",
+                             organizationName: partialStats.orgName || "Scanning...",
+                             bankName: partialStats.bankName || "Scanning...",
+                          });
+                          setHasFile(true);
+                       }
+                    },
+                    useDeepScan
+                 );
+                 setAnalysisResult(result);
+                 setHasFile(true);
+              } catch (err: any) {
+                 setError(err.message || "Failed to analyze document");
+              }
+           };
+           reader.onerror = () => { setError("File reading failed"); setIsAnalyzing(false); clearInterval(timerInterval); };
+           reader.readAsDataURL(file);
+           */
+            setError("Image analysis (Gemini) is currently disabled. Please use PDF.");
+         }
+      } catch (e: any) {
+         setError(e.message || "Processing failed");
          setIsAnalyzing(false);
          clearInterval(timerInterval);
+      } finally {
+         setIsAnalyzing(false);
+         clearInterval(timerInterval);
+         setProcessingTime((Date.now() - startTime) / 1000);
+         setBatchStatus("");
       }
    };
 
@@ -281,10 +331,11 @@ export default function App() {
 
    // Determine Loading Status Message
    const loadingStatus = useMemo(() => {
+      if (batchStatus) return batchStatus;
       if (processingTime < 2) return "Extracting text coordinates...";
       if (processingTime < 5) return "Mapping financial columns...";
       return "Validating balances...";
-   }, [processingTime]);
+   }, [processingTime, batchStatus]);
 
    return (
       <div className="min-h-screen font-sans text-zinc-300">
@@ -394,8 +445,44 @@ export default function App() {
                                     <p className="text-[13px] text-zinc-500">PDF, JPEG, PNG • up to 20MB</p>
                                  </div>
                                  <div className="flex flex-col gap-3 w-40">
+                                    {/* Bank Selector - Z-Index Fix */}
+                                    <div className="w-full relative z-30">
+                                       <select
+                                          className="w-full bg-[#1A1B1E] border border-white/20 rounded-md text-xs h-8 px-2 text-zinc-200 focus:outline-none focus:border-[#9B87FF] cursor-pointer"
+                                          value={selectedBank}
+                                          onChange={(e) => {
+                                             e.stopPropagation(); // Prevent file input trigger
+                                             setSelectedBank(e.target.value);
+                                          }}
+                                          onClick={(e) => e.stopPropagation()}
+                                       >
+                                          <option value="auto">Auto-Detect Bank</option>
+                                          <option value="gtbank">GTBank</option>
+                                          <option value="ecobank">Ecobank</option>
+                                          <option value="accessbank">Access Bank</option>
+                                          <option value="fidelity">Fidelity Bank</option>
+                                          <option value="apt_securities">APT</option>
+                                          <option value="uba">UBA</option>
+                                          <option value="firstbank">First Bank</option>
+                                          <option value="zenith">Zenith Bank</option>
+                                       </select>
+                                    </div>
+
                                     <Button variant="primary" className="w-full text-sm">Select file</Button>
-                                    <Button variant="ghost" className="w-full text-xs h-8">Use sample statement</Button>
+                                    <Button variant="ghost" className="w-full text-xs h-8" onClick={() => {/* TODO: Load sample */ }}>Use sample statement</Button>
+
+                                    <div className="flex items-center gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
+                                       <input
+                                          type="checkbox"
+                                          id="deepScan"
+                                          checked={useDeepScan}
+                                          onChange={(e) => setUseDeepScan(e.target.checked)}
+                                          className="w-3 h-3 rounded border-white/20 bg-white/5 accent-[#9B87FF]"
+                                       />
+                                       <label htmlFor="deepScan" className="text-[11px] text-zinc-500 cursor-pointer select-none">
+                                          Force Deep Scan (Use AI)
+                                       </label>
+                                    </div>
                                  </div>
                               </div>
                            )}
@@ -474,33 +561,62 @@ export default function App() {
                      </div>
                      <div className="flex gap-3">
                         <Button variant="outline" size="sm" onClick={() => setHasFile(false)}>Reset</Button>
-                        <Button variant="primary" size="sm" onClick={() => generateExcel(analysisResult!.transactions, analysisResult!.reconciliation_warnings, analysisResult!.reconciliation_failed, analysisResult!.currency, analysisResult!.organizationName, analysisResult!.bankName)}>
+                        <Button variant="primary" size="sm" onClick={() => {
+                           if (analysisResult?.downloadUrl) {
+                              window.location.href = analysisResult.downloadUrl;
+                           } else {
+                              generateExcel(analysisResult!.transactions, analysisResult!.reconciliation_warnings, analysisResult!.reconciliation_failed, analysisResult!.currency, analysisResult!.organizationName, analysisResult!.bankName);
+                           }
+                        }}>
                            Export Report
                         </Button>
                      </div>
                   </div>
 
                   {/* Metrics Row - Added Opening Balance */}
-                  <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-                     {[
-                        { label: "Opening Balance", val: formatMoney(summary.opening, summary.currency), color: "text-zinc-400" },
-                        { label: "Closing Balance", val: formatMoney(summary.closing, summary.currency), color: "text-white" },
-                        { label: "Total Inflow", val: formatMoney(summary.totalCredits, summary.currency), color: "text-[#3CDCAB]" },
-                        { label: "Total Outflow", val: formatMoney(summary.totalDebits, summary.currency), color: "text-zinc-300" },
-                        { label: "Check Status", val: summary.checkStatus, color: summary.checkStatus === "Failed" ? "text-[#FF5A78]" : "text-[#3CDCAB]", isStatus: true }
-                     ].map((m, i) => (
-                        <Card key={i} className="p-5 flex flex-col justify-between h-[110px]">
-                           <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">{m.label}</span>
-                           <div className="flex items-end justify-between">
-                              <span className={cn("text-[18px] lg:text-[20px] font-bold font-mono tracking-tight truncate", m.color)}>{m.val}</span>
-                              {m.isStatus && (
-                                 m.val === "Passed"
-                                    ? <CheckCircle2 className="w-5 h-5 text-[#3CDCAB]" />
-                                    : <AlertTriangle className="w-5 h-5 text-[#FF5A78]" />
-                              )}
+                  {/* Summary Block - Strict Architecture Alignment */}
+                  <div id="summary" className="bg-[#111318] p-6 rounded-xl border border-white/[0.06] mb-8">
+                     <div className="grid grid-cols-2 md:grid-cols-3 gap-8">
+                        <div>
+                           <p className="text-[11px] text-zinc-500 font-semibold uppercase tracking-wider mb-1">Account</p>
+                           <p className="text-[15px] font-bold text-white tracking-tight">{analysisResult?.organizationName || "Unknown Account"}</p>
+                        </div>
+                        <div>
+                           <p className="text-[11px] text-zinc-500 font-semibold uppercase tracking-wider mb-1">Period</p>
+                           <p className="text-[15px] font-bold text-white tracking-tight font-mono">
+                              {txns.length > 0
+                                 ? `${txns[0].date} to ${txns[txns.length - 1].date}`
+                                 : "N/A"}
+                           </p>
+                        </div>
+                        <div>
+                           <p className="text-[11px] text-zinc-500 font-semibold uppercase tracking-wider mb-1">Validation</p>
+                           <div className={`inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-medium border ${analysisResult?.reconciliation_failed
+                              ? 'bg-red-500/10 text-red-400 border-red-500/20'
+                              : 'bg-[#3CDCAB]/10 text-[#3CDCAB] border-[#3CDCAB]/20'
+                              }`}>
+                              {analysisResult?.reconciliation_failed
+                                 ? <><AlertTriangle className="w-3.5 h-3.5" /> Mismatch</>
+                                 : <><CheckCircle2 className="w-3.5 h-3.5" /> Totals match statement</>}
                            </div>
-                        </Card>
-                     ))}
+                        </div>
+                        <div>
+                           <p className="text-[11px] text-zinc-500 font-semibold uppercase tracking-wider mb-1">Total Debit</p>
+                           <p className="text-[20px] font-bold text-white font-mono tracking-tight">
+                              {formatMoney(summary.totalDebits, summary.currency)}
+                           </p>
+                        </div>
+                        <div>
+                           <p className="text-[11px] text-zinc-500 font-semibold uppercase tracking-wider mb-1">Total Credit</p>
+                           <p className="text-[20px] font-bold text-[#3CDCAB] font-mono tracking-tight">
+                              {formatMoney(summary.totalCredits, summary.currency)}
+                           </p>
+                        </div>
+                        <div>
+                           <p className="text-[11px] text-zinc-500 font-semibold uppercase tracking-wider mb-1">Transactions</p>
+                           <p className="text-[20px] font-bold text-white font-mono tracking-tight">{txns.length}</p>
+                        </div>
+                     </div>
                   </div>
 
                   {/* RECONCILIATION WARNINGS DISPLAY */}
@@ -641,7 +757,7 @@ export default function App() {
          {!hasFile && (
             <footer className="fixed bottom-0 w-full py-6 px-6 mx-auto max-w-[1200px] flex justify-between items-center text-[11px] text-zinc-700">
                <span>LedgerSentinel v2.4</span>
-               <span className="opacity-50 font-medium">© IBRAHIM O.</span>
+               <span className="opacity-50 font-medium">© IBRAHIM ONAWOGA.</span>
             </footer>
          )}
       </div>

@@ -1,0 +1,143 @@
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Form
+from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+import os
+import uuid
+from pathlib import Path
+
+# Load environment variables from .env file
+load_dotenv()
+
+from pdf_extractor import extract_transactions
+from validation import validate_totals
+from categorization import categorize_transactions
+from excel_generator import generate_excel
+
+app = FastAPI()
+
+# CORS for local development
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+UPLOAD_DIR = Path("temp_uploads")
+DOWNLOAD_DIR = Path("temp_downloads")
+UPLOAD_DIR.mkdir(exist_ok=True)
+DOWNLOAD_DIR.mkdir(exist_ok=True)
+
+def num(x):
+    """Safely convert to float, handling strings with commas"""
+    try:
+        return float(str(x).replace(",", ""))
+    except:
+        return 0.0
+
+@app.post("/analyze")
+async def analyze_statement(
+    request: Request,
+    file: UploadFile = File(...),
+    bank: str = Form("auto")  # auto, gtbank, accessbank, firstbank, zenith, uba, etc.
+):
+    """
+    Main endpoint: accepts PDF, returns summary + download URL
+    
+    Parameters:
+    - file: PDF bank statement
+    - bank: Optional bank identifier (auto, gtbank, accessbank, firstbank, zenith, uba)
+           Defaults to 'auto' for automatic detection
+    """
+    if not (file.filename or "").lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+
+    file_id = str(uuid.uuid4())
+    pdf_path = UPLOAD_DIR / f"{file_id}.pdf"
+    excel_path = DOWNLOAD_DIR / f"statement-analysis-{file_id}.xlsx"
+
+    success = False
+    try:
+        content = await file.read()
+        pdf_path.write_bytes(content)
+
+        # Step 1: Extract transactions (deterministic, with bank-specific handling)
+        transactions, metadata = extract_transactions(pdf_path, bank_identifier=bank.lower())
+
+        # Step 2: Validate totals
+        validation_result = validate_totals(transactions, metadata)
+
+        # Step 3: Categorize (rules + AI fallback)
+        categorized_transactions = categorize_transactions(transactions)
+
+        # Step 4: Generate Excel
+        generate_excel(categorized_transactions, validation_result, excel_path)
+
+        # Build summary with numeric safety
+        total_debit = sum(num(t.get("debit")) for t in categorized_transactions)
+        total_credit = sum(num(t.get("credit")) for t in categorized_transactions)
+
+        # Robust period handling
+        dates = [t.get("date") for t in categorized_transactions if t.get("date")]
+        period = metadata.get("statement_period") or (f"{dates[0]} to {dates[-1]}" if dates else "N/A")
+
+        # Absolute download URL
+        download_url = str(request.base_url).rstrip("/") + f"/download/{file_id}"
+
+        summary = {
+            "accountName": metadata.get("account_name", "Detected Organization"),
+            "period": period,
+            "totalDebit": total_debit,
+            "totalCredit": total_credit,
+            "transactionCount": len(categorized_transactions),
+            "validationStatus": validation_result.get("status", "Unknown"),
+            "totalsMatch": validation_result.get("totals_match", None),
+            "statementTotalDebit": validation_result.get("statement_total_debit", None),
+            "statementTotalCredit": validation_result.get("statement_total_credit", None),
+            "extractedTotalDebit": validation_result.get("extracted_total_debit", None),
+            "extractedTotalCredit": validation_result.get("extracted_total_credit", None),
+            "debit_diff": validation_result.get("debit_diff", None),
+            "credit_diff": validation_result.get("credit_diff", None),
+            "bank": bank.lower()
+        }
+
+        success = True
+        return {
+            "file_id": file_id, 
+            "summary": summary, 
+            "downloadUrl": download_url,
+            "transactions": categorized_transactions
+        }
+
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"ERROR in /analyze: {error_details}")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}\n\nFull error:\n{error_details}")
+
+    finally:
+        # Keep PDF during debugging; delete later if you want
+        if success and pdf_path.exists():
+            pdf_path.unlink()
+
+@app.get("/download/{file_id}")
+async def download_excel(file_id: str):
+    """
+    Download endpoint for generated Excel file
+    """
+    excel_path = DOWNLOAD_DIR / f"statement-analysis-{file_id}.xlsx"
+    
+    if not excel_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    return FileResponse(
+        path=excel_path,
+        filename=f"statement-analysis.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
