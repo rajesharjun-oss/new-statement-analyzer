@@ -218,14 +218,16 @@ def categorize_transactions(transactions: List[Dict]) -> List[Dict]:
             unallocated_indices.append(i)
             
     # AI fallback for unallocated (batch processing)
+    # Only try if we have an API key AND it looks like we extracted something valid
+    # (heuristic: don't waste quota on 1-2 garbage rows if possible, or do?)
     if unallocated_indices and os.getenv('OPENAI_API_KEY'):
         try:
             unallocated = [transactions[i] for i in unallocated_indices]
-            # Verify we have items to categorize
             if unallocated:
                 categorize_with_ai(unallocated)
         except Exception as e:
-            print(f"AI categorization failed: {e}")
+            # LOG and CONTINUE. Do not crash the app.
+            print(f"AI categorization skipped/failed (Quota or Error): {e}")
             
     return transactions
 

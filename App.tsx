@@ -465,6 +465,9 @@ export default function App() {
                                           <option value="uba">UBA</option>
                                           <option value="firstbank">First Bank</option>
                                           <option value="zenith">Zenith Bank</option>
+                                          <option value="wema">Wema Bank</option>
+                                          <option value="providus">Providus Bank</option>
+                                          <option value="fcmb">FCMB</option>
                                        </select>
                                     </div>
 

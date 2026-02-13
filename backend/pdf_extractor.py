@@ -33,6 +33,41 @@ DATE_DMY_RE = re.compile(r"^\d{1,2}-[A-Za-z]{3}-\d{4}$")       # 01-Jan-2023 OR 
 DATE_MDY_SL_RE = re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$")      # 10/1/2025 (Access)
 DATE_DMY_YY_RE = re.compile(r"^\d{2}-[A-Za-z]{3}-\d{2}$")    # 15-Jan-21 (Fidelity)
 
+from datetime import datetime
+import pandas as pd
+
+def is_date(text: str) -> bool:
+    """
+    Check if text looks like a date (DD/MM/YYYY, DD-MMM-YYYY, YYYY-MM-DD, or DD Mon YYYY)
+    """
+    if not text or len(text) < 6:
+        return False
+    # Standard: 31/01/2023, 31-Jan-2023, 2023-01-31
+    if re.match(r"^\d{1,2}[-/\.]\w{3,}[-/\.]\d{2,4}$", text): return True
+    if re.match(r"^\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4}$", text): return True
+    if re.match(r"^\d{4}[-/\.]\d{1,2}[-/\.]\d{1,2}$", text): return True
+    
+    # Space separated: 01 Jan 2024 (FCMB) - Allow leading/trailing spaces
+    if re.match(r"^\s*\d{1,2}\s+\w{3,}\.?\s+\d{2,4}\s*$", text): return True
+    
+    return False
+
+def parse_date(text: str) -> str:
+    """
+    Normalize date to YYYY-MM-DD
+    """
+    try:
+        # 1. DD Mon YYYY (01 Jan 2024)
+        if re.match(r"^\s*\d{1,2}\s+\w{3,}\.?\s+\d{2,4}\s*$", text):
+            # clean up spaces
+            clean = re.sub(r"\s+", " ", text.strip())
+            return datetime.strptime(clean, "%d %b %Y").strftime("%Y-%m-%d")
+            
+        # 2. Standard formats
+        return pd.to_datetime(text, dayfirst=True).strftime("%Y-%m-%d")
+    except:
+        return text
+
 # ... (keep existing code) ...
 
 def detect_providus_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
@@ -114,27 +149,80 @@ def detect_column_cuts_from_header(words: List[Dict[str, Any]], bank_identifier:
     """
     Detect column boundaries from the header row (routes to bank-specific logic)
     """
-    # Check for specific bank headers first
+    # SMART TEMPLATE DETECTION: Try all robust detectors and pick the best one.
+    # This avoids fragility where a bank name isn't detected or a header keyword is slightly off.
     
-    # Providus Check (TXN DATE + VAL DATE)
-    header_text = " ".join([w["text"].upper() for w in words])
-    if "TXN DATE" in header_text and "VAL DATE" in header_text:
-        print("DEBUG: Detected Providus Bank header structure")
-        return detect_providus_columns(words)
+    detectors = [
+        ("Providus", detect_providus_columns),
+        ("Zenith", detect_zenith_columns),
+        ("Wema", detect_wema_columns),
+        ("FCMB", detect_fcmb_columns),
+        ("FirstBank", detect_firstbank_columns),
+        ("Ecobank", detect_ecobank_columns),
+        ("UBA", detect_uba_columns),
+        ("Access", detect_access_columns),
+        ("Fidelity", detect_fidelity_columns),
+        ("AptSecurities", detect_apt_columns),
+        ("GTBank", detect_gtbank_columns) # Fallback last
+    ]
+    
+    best_cuts = None
+    best_score = -1
+    best_name = ""
+    
+    print(f"DEBUG: Starting Smart Template Detection for bank hint: {bank_identifier}")
+    
+    # Priority: if bank_identifier matches a specific detector, try that FIRST with a bonus score
+    # But still try others if it fails.
+    
+    for name, detector_func in detectors:
+        try:
+            # UBA and Access need extra args
+            if name == "UBA":
+                cuts = detector_func(words, "uba")
+            elif name == "Access":
+                cuts = detector_func(words, "accessbank")
+            elif name == "Fidelity":
+                cuts = detector_func(words, "fidelity")
+            elif name == "AptSecurities":
+                cuts = detector_func(words, "apt_securities")
+            elif name == "FirstBank":
+                cuts = detector_func(words)
+            elif name == "Wema":
+                cuts = detector_func(words)
+            elif name == "FCMB":
+                cuts = detector_func(words)
+            else:
+                cuts = detector_func(words)
+            
+            if cuts:
+                # Score = number of columns found
+                score = len(cuts)
+                
+                # Bonus for mandatory columns (Date, Debit, Credit)
+                if "TransDate" in cuts and "Debit" in cuts and "Credit" in cuts:
+                    score += 2
+                    
+                # Bonus if this matches the user/auto-detected bank
+                if bank_identifier and name.lower() in bank_identifier.lower():
+                     score += 5
+                
+                print(f"DEBUG: Detector {name} found {len(cuts)} columns. Score: {score}")
+                
+                if score > best_score:
+                    best_score = score
+                    best_cuts = cuts
+                    best_name = name
+                    
+        except Exception as e:
+            print(f"DEBUG: Detector {name} crashed: {e}")
+            continue
 
-    # Ecobank Check
-    if "TRANS DATE" in header_text or "VALUE DATE" in header_text:
-        return detect_ecobank_columns(words)
+    if best_cuts:
+        print(f"DEBUG: Selected Best Template: {best_name} (Score: {best_score})")
+        return best_cuts
 
-    # UBA Check
-    if "TRANS" in header_text and "CHQ" in header_text:
-        return detect_uba_columns(words, "uba")
-
-    # Access Check
-    if "LODGEMENT" in header_text or "WITHDRAWAL" in header_text:
-        return detect_access_columns(words, "accessbank")
-
-    # GTBank / Generic fallback
+    # Last resort fallback if everything failed
     return detect_gtbank_columns(words)
 
 
@@ -170,6 +258,50 @@ def parse_date_smart(date_str: str) -> str | None:
         parts = s.split('-')
         if len(parts) == 3:
             # Assume 20xx for 2-digit year
+            return f"{parts[0]}-{parts[1]}-20{parts[2]}"
+
+    return None
+
+# Date Regexes
+DATE_DMY_DOT_RE = re.compile(r"^\d{1,2}\.\d{1,2}\.\d{4}$")      # 13.01.2023
+DATE_DMY_SL_RE = re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$")         # 13/01/2023 (Zenith/Generic)
+
+def parse_date_smart(date_str: str) -> str | None:
+    """
+    Parse various date formats into standard DD-MM-YYYY string.
+    Returns None if invalid.
+    """
+    s = (date_str or "").strip()
+    if not s:
+        return None
+        
+    # Standard: 01-Jan-2023 -> Keep as is
+    if DATE_DMY_RE.match(s):
+        return s
+        
+    # Zenith/Generic: 13/01/2023 (DD/MM/YYYY)
+    if DATE_DMY_SL_RE.match(s):
+        try:
+            parts = s.split('/')
+            p0, p1, p2 = int(parts[0]), int(parts[1]), int(parts[2])
+            
+            # Heuristic: If first part > 12, it's definitely DD/MM
+            # If both <= 12, assume DD/MM for Nigerian banks (British standard)
+            # UNLESS it's specifically marked as Access Bank which might use MDY (rare here but kept in mind)
+            
+            dd, mm, yyyy = p0, p1, p2
+            
+            # Basic validation
+            months = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+            if 1 <= mm <= 12 and 1 <= dd <= 31:
+                return f"{dd:02d}-{months[mm]}-{yyyy}"
+        except:
+            pass
+            
+    # Fidelity: 15-Jan-21 (DD-MMM-YY) -> 15-Jan-2021
+    if DATE_DMY_YY_RE.match(s):
+        parts = s.split('-')
+        if len(parts) == 3:
             return f"{parts[0]}-{parts[1]}-20{parts[2]}"
 
     return None
@@ -265,30 +397,43 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
                 bank_identifier = "uba"
             elif "GUARANTY TRUST" in first_text.upper() or "GTBANK" in first_text.upper():
                 bank_identifier = "gtbank"
+            elif "ZENITH" in first_text.upper():
+                bank_identifier = "zenith"
+            elif "FIRST BANK" in first_text.upper() or "FIRSTBANK" in first_text.upper():
+                bank_identifier = "firstbank"
+            elif "WEMA" in first_text.upper():
+                bank_identifier = "wema"
+            elif "FCMB" in first_text.upper() or "FIRST CITY" in first_text.upper():
+                bank_identifier = "fcmb"
             else:
                 bank_identifier = "gtbank"  # Default to GTBank
             print(f"DEBUG: Auto-detected bank: {bank_identifier}")
         
-        # --- 3) Detect column cuts ONCE using ALL pages until header is found ---
+    # --- 0) Special Case: Zenith Table Strategy
+    if bank_identifier == "zenith":
+        try:
+             # Try table strategy first
+             zenith_txns = extract_zenith_via_tables(Path(pdf_path), metadata)
+             if zenith_txns:
+                 return zenith_txns, metadata
+             print("DEBUG: Zenith table strategy returned no transactions, falling back to standard...")
+        except Exception as e:
+             print(f"DEBUG: Zenith table strategy failed: {e}")
+
+    # Reset metadata["_debug"] if fallback is used
+    column_debug = {}
+    
+    with pdfplumber.open(pdf_path) as pdf:
+        # --- 1) Scan all pages to detect header and column positions ---
         base_cuts = None
-        for i, p in enumerate(pdf.pages):  # Scan ALL pages, not just first 3
+        for i, p in enumerate(pdf.pages):
             words = []
             try:
                 words = p.extract_words(x_tolerance=2, y_tolerance=2)
                 print(f"DEBUG: Page {i} words count: {len(words)}")
             except Exception as e:
                 print(f"DEBUG: Page {i} pdfplumber extraction crashed ({type(e).__name__}: {e}), trying OCR...")
-                # Fallback to OCR
-                if OCR_AVAILABLE:
-                    try:
-                        words = extract_words_with_ocr(pdf_path, i)
-                        print(f"DEBUG: Page {i} OCR extracted {len(words)} words")
-                    except Exception as ocr_error:
-                        print(f"DEBUG: Page {i} OCR also failed ({type(ocr_error).__name__}: {ocr_error}), skipping...")
-                        continue
-                else:
-                    print(f"DEBUG: OCR not available, skipping page {i}")
-                    continue
+                continue
             
             if not words:
                 print(f"DEBUG: Page {i} has no words, skipping...")
@@ -576,12 +721,31 @@ def parse_statement_metadata(text: str) -> Dict[str, Any]:
     meta = {}
     
     # GTBank format: Account name is usually before "Trans. Date" header
+    # GTBank format: Account name is usually before "Trans. Date" header
     m = re.search(r"CUSTOMER STATEMENT\s*([\s\S]*?)\s*Trans\.\s*Date", text, re.I)
     if not m:
         # Alternative: look for account name pattern
         m = re.search(r"(?:Account Name|Name)[:\s]*(.*?)(?:\n|$)", text, re.I)
     if m:
-        meta["account_name"] = " ".join([x.strip() for x in m.group(1).splitlines() if x.strip()])
+        raw_name = m.group(1)
+        # Clean up: stop at "Total Debit" or "Total Credit" or "Currency" or "Account No" if captured
+        stop_patterns = ["TOTAL DEBIT", "TOTAL CREDIT", "CURRENCY", "ACCOUNT NO", "ACC NO"]
+        upper_raw = raw_name.upper()
+        
+        min_idx = len(raw_name)
+        for p in stop_patterns:
+            # Use regex to find pattern with variable spaces
+            pm = re.search(re.escape(p).replace(r"\ ", r"\s+"), upper_raw)
+            if pm:
+                idx = pm.start()
+                if idx < min_idx:
+                     min_idx = idx
+        
+        cleaned_name = raw_name[:min_idx].strip()
+        # Remove trailing punctuation
+        cleaned_name = cleaned_name.rstrip(":,.-")
+        
+        meta["account_name"] = " ".join([x.strip() for x in cleaned_name.splitlines() if x.strip()])
 
     # Statement period
     m = re.search(r"Statement Period\s*[:\s]*([\d\-A-Za-z\s]+to[\d\-A-Za-z\s]+)", text, re.I)
@@ -678,10 +842,11 @@ def assign_row_to_cols(row_words: List[Dict[str, Any]], cuts: Dict[str, Tuple[fl
 
     # 2. Content-Aware Repair (Fix mixed columns due to bad cuts)
     
-    # REPAIR 1: TransDate mixed into Remarks (Ecobank/GTBank)
+    # REPAIR 1: TransDate mixed into Remarks (Ecobank/GTBank/Zenith)
     if "TransDate" in bucket and not bucket["TransDate"] and bucket.get("Remarks"):
         w_text = bucket["Remarks"][0]
-        if re.match(r"^\d{1,2}[-/\.]\w{3,}[-/\.]\d{2,4}$", w_text):
+        # Regex update: Allow numeric month (e.g. 13/01/2023) or alpha month (DD-MMM-YYYY)
+        if re.match(r"^\d{1,2}[-/\.]\w+[-/\.]\d{2,4}$", w_text): 
             bucket["TransDate"].append(bucket["Remarks"].pop(0))
             
     # REPAIR 2: Reference mixed into Remarks (GTBank)
@@ -786,8 +951,133 @@ def detect_column_cuts_from_header(words: List[Dict[str, Any]], bank_identifier:
     """
     if bank_identifier == "ecobank":
         return detect_ecobank_columns(words)
+    elif bank_identifier == "zenith":
+        return detect_zenith_columns(words)
     else:
         return detect_gtbank_columns(words)
+
+
+def detect_zenith_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
+    """
+    Detect column boundaries for Zenith Bank
+    Common Headers: DATE | NARRATION | VALUE DATE | DEBIT | CREDIT | BALANCE
+    Handles split words like ["DATE", "POSTED"] and ["VALUE", "DATE"]
+    """
+    if not words:
+        return None
+
+    # Loose keywords to identifying the header row
+    # We look for the row having the most of these
+    keywords = ["DATE", "POSTED", "VALUE", "NARRATION", "DESCRIPTION", "DEBIT", "CREDIT", "BALANCE"]
+    
+    rows = group_words_to_rows(words, y_tol=4.0) # Slightly higher tol
+    
+    best_row = None
+    max_score = 0
+    
+    for r in rows:
+        score = 0
+        row_text_upper = " ".join([w["text"].upper() for w in r["words"]])
+        
+        # Must definitely contain DATE and (DEBIT or CREDIT or BALANCE)
+        if "DATE" not in row_text_upper: continue
+        if not any(x in row_text_upper for x in ["DEBIT", "CREDIT", "BALANCE"]): continue
+        
+        for w in r["words"]:
+            if w["text"].upper() in keywords:
+                score += 1
+        
+        # Bonus for exact phrases
+        if "DATE POSTED" in row_text_upper: score += 2
+        if "VALUE DATE" in row_text_upper: score += 2
+        if "DESCRIPTION" in row_text_upper: score += 2
+
+        if score > max_score:
+            max_score = score
+            best_row = r
+
+    if not best_row or max_score < 3:
+        return None
+
+    print(f"DEBUG: Found Zenith Header Row: {[w['text'] for w in best_row['words']]}")
+
+    # Now extracting x-coordinates for specific columns
+    # We iterate words left-to-right to find anchors
+    
+    sorted_words = sorted(best_row["words"], key=lambda w: w["x0"])
+    
+    bounds = {}
+    
+    # helper: find word containing text (approximate)
+    def find_word_x(text_part, start_idx=0):
+        for i in range(start_idx, len(sorted_words)):
+            if text_part in sorted_words[i]["text"].upper():
+                return i, sorted_words[i]
+        return -1, None
+
+    # 1. TransDate (DATE POSTED or just DATE at start)
+    # Usually the first "DATE"
+    idx_td, w_td = find_word_x("DATE")
+    if w_td: 
+        bounds["TransDate"] = (w_td["x0"], w_td["x1"])
+    
+    # 2. ValueDate (Look for "VALUE")
+    idx_vd, w_vd = find_word_x("VALUE")
+    if w_vd:
+        bounds["ValueDate"] = (w_vd["x0"], w_vd["x1"])
+        
+        # Refine TransDate: ensure TransDate is to the LEFT of ValueDate
+        if w_td and w_td["x0"] > w_vd["x0"]:
+             # Oops, we picked the "DATE" from "VALUE DATE" as transdate?
+             # But "VALUE" is usually before "DATE".
+             # If we mapped TransDate to the DATE in VALUE DATE, fix it.
+             pass 
+
+    # 3. Remarks (NARRATION / DESCRIPTION)
+    idx_rem, w_rem = find_word_x("NARRATION")
+    if not w_rem: idx_rem, w_rem = find_word_x("DESCRIPTION")
+    if not w_rem: idx_rem, w_rem = find_word_x("PARTICULARS")
+    if w_rem: bounds["Remarks"] = (w_rem["x0"], w_rem["x1"])
+
+    # 4. Debit/Credit/Balance
+    for col in ["DEBIT", "CREDIT", "BALANCE"]:
+        idx, w = find_word_x(col)
+        # Handle "DR" or "CR"
+        if not w and col == "DEBIT": idx, w = find_word_x("DR")
+        if not w and col == "CREDIT": idx, w = find_word_x("CR")
+        if not w and col == "BALANCE": idx, w = find_word_x("BAL")
+        
+        if w:
+            bounds[col.title()] = (w["x0"], w["x1"])
+
+    # Mandatory check
+    if "TransDate" not in bounds or "Debit" not in bounds:
+        return None
+
+    # Sort columns by X position
+    sorted_cols = sorted(bounds.items(), key=lambda item: item[1][0])
+    
+    cuts = {}
+    for i in range(len(sorted_cols)):
+        col_name, (l, r) = sorted_cols[i]
+        
+        # Start
+        if i == 0:
+            start = 0.0
+        else:
+            prev_name, (prev_l, prev_r) = sorted_cols[i-1]
+            start = (prev_r + l) / 2
+            
+        # End
+        if i == len(sorted_cols) - 1:
+            end = 1000.0
+        else:
+            next_name, (next_l, next_r) = sorted_cols[i+1]
+            end = (r + next_l) / 2
+            
+        cuts[col_name] = (start, end)
+        
+    return cuts
 
 
 def detect_ecobank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
@@ -1690,4 +1980,483 @@ def reconcile_transactions(transactions: List[Dict[str, Any]]) -> List[Dict[str,
                     del txn["reconciliation_error"]
 
     return reconciled
+
+
+def detect_firstbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
+    """
+    Detect column boundaries for First Bank
+    Headers: Trans Date | Ref. Number | Transaction Details | Value Date | Withdrawal(DR) | Deposit(CR) | Balance
+    """
+    if not words:
+        return None
+
+    # Keywords to identify header row
+    keywords = ["TRANS", "DATE", "REF", "NUMBER", "DETAILS", "VALUE", "WITHDRAWAL", "DEPOSIT", "BALANCE"]
+    
+    # Zenith/FirstBank often clearer with slightly larger tolerance? Or stick to 3.0?
+    rows = group_words_to_rows(words, y_tol=3.0)
+    
+    best_row = None
+    max_score = 0
+    
+    for r in rows:
+        score = 0
+        row_text_upper = " ".join([w["text"].upper() for w in r["words"]])
+        
+        # Mandatory checks
+        if "DATE" not in row_text_upper: continue
+        if not any(x in row_text_upper for x in ["WITHDRAWAL", "DEPOSIT", "BALANCE"]): continue
+        
+        for w in r["words"]:
+            for k in keywords: 
+                if k in w["text"].upper():
+                    score += 1
+        
+        # Bonus for specific FirstBank phrases
+        if "WITHDRAWAL" in row_text_upper and "(DR)" in row_text_upper: score += 3
+        if "DEPOSIT" in row_text_upper and "(CR)" in row_text_upper: score += 3
+        if "TRANSACTION DETAILS" in row_text_upper: score += 2
+
+        if score > max_score:
+            max_score = score
+            best_row = r
+
+    if not best_row or max_score < 3:
+        return None
+
+    print(f"DEBUG: Found FirstBank Header Row: {[w['text'] for w in best_row['words']]}")
+
+    # Extract columns
+    sorted_words = sorted(best_row["words"], key=lambda w: w["x0"])
+    
+    # Use helper similar to Zenith
+    def find_word_x(text_part, start_idx=0):
+        for i in range(start_idx, len(sorted_words)):
+            clean_text = re.sub(r"[^\w\s]", "", sorted_words[i]["text"].upper())
+            if text_part in clean_text:
+                return i, sorted_words[i]
+        return -1, None
+
+    bounds = {}
+
+    # 1. Trans Date
+    idx_td, w_td = find_word_x("TRANS")
+    if not w_td: idx_td, w_td = find_word_x("DATE") # Fallback
+    if w_td: bounds["TransDate"] = (w_td["x0"], w_td["x1"])
+
+    # 2. Ref Number 
+    idx_ref, w_ref = find_word_x("REF")
+    if w_ref: bounds["Reference"] = (w_ref["x0"], w_ref["x1"])
+
+    # 3. Remarks (Transaction Details)
+    idx_rem, w_rem = find_word_x("DETAILS")
+    if w_rem: bounds["Remarks"] = (w_rem["x0"], w_rem["x1"])
+
+    # 4. Value Date
+    # Find "VALUE" specifically
+    idx_vd, w_vd = find_word_x("VALUE")
+    if w_vd: bounds["ValueDate"] = (w_vd["x0"], w_vd["x1"])
+
+    # 5. Withdrawal (Debit)
+    idx_deb, w_deb = find_word_x("WITHDRAWAL") 
+    if not w_deb: idx_deb, w_deb = find_word_x("DR")
+    if w_deb: bounds["Debit"] = (w_deb["x0"], w_deb["x1"])
+
+    # 6. Deposit (Credit)
+    idx_cred, w_cred = find_word_x("DEPOSIT")
+    if not w_cred: idx_cred, w_cred = find_word_x("CR")
+    if w_cred: bounds["Credit"] = (w_cred["x0"], w_cred["x1"])
+
+    # 7. Balance
+    idx_bal, w_bal = find_word_x("BALANCE")
+    if w_bal: bounds["Balance"] = (w_bal["x0"], w_bal["x1"])
+
+    # Mandatory
+    if "TransDate" not in bounds or "Debit" not in bounds:
+        return None
+
+    # Construct cuts
+    sorted_cols = sorted(bounds.items(), key=lambda item: item[1][0])
+    
+    cuts = {}
+    for i in range(len(sorted_cols)):
+        col_name, (l, r) = sorted_cols[i]
+        
+        if i == 0:
+            start = 0.0
+        else:
+            prev_name, (prev_l, prev_r) = sorted_cols[i-1]
+            start = (prev_r + l) / 2
+            
+        if i == len(sorted_cols) - 1:
+            end = 1000.0
+        else:
+            next_name, (next_l, next_r) = sorted_cols[i+1]
+            end = (r + next_l) / 2
+            
+        cuts[col_name] = (start, end)
+
+    return cuts
+
+
+def detect_wema_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
+    """
+    Detect column boundaries for Wema Bank
+    Headers: Tran Date | Value Date | Narration | Tran ID | Cheque No | Withdrawals | Deposits | Balance
+    """
+    if not words:
+        return None
+
+    # Keywords to identify header row
+    keywords = ["TRAN", "DATE", "VALUE", "NARRATION", "ID", "CHEQUE", "WITHDRAWALS", "DEPOSITS", "BALANCE"]
+    
+    # Try multiple tolerances
+    rows = group_words_to_rows(words, y_tol=3.0)
+    
+    best_row = None
+    max_score = 0
+    
+    for r in rows:
+        score = 0
+        row_text_upper = " ".join([w["text"].upper() for w in r["words"]])
+        
+        # Mandatory checks (relaxed)
+        if "DATE" not in row_text_upper: continue
+        # Allow singular "WITHDRAWAL" or "DEPOSIT" just in case
+        if not any(x in row_text_upper for x in ["WITHDRAWAL", "DEPOSIT", "BALANCE"]): continue
+        
+        for w in r["words"]:
+            for k in keywords: 
+                if k in w["text"].upper():
+                    score += 1
+        
+        # Bonus for specific Wema phrases
+        if "TRAN DATE" in row_text_upper: score += 2
+        if "TRAN ID" in row_text_upper: score += 2
+        if "CHEQUE NO" in row_text_upper: score += 2
+
+        if score > max_score:
+            max_score = score
+            best_row = r
+
+    if not best_row or max_score < 3:
+        return None
+
+    print(f"DEBUG: Found Wema Header Row: {[w['text'] for w in best_row['words']]}")
+
+    # Extract columns
+    sorted_words = sorted(best_row["words"], key=lambda w: w["x0"])
+    
+    # Use helper
+    def find_word_x(text_part, start_idx=0):
+        for i in range(start_idx, len(sorted_words)):
+            clean_text = sorted_words[i]["text"].upper()
+            if text_part in clean_text:
+                return i, sorted_words[i]
+        return -1, None
+
+    bounds = {}
+
+    # 1. Tran Date
+    idx_td, w_td = find_word_x("TRAN")
+    if w_td:
+         bounds["TransDate"] = (w_td["x0"], w_td["x1"])
+    else:
+         idx_td, w_td = find_word_x("DATE") # Fallback
+         if w_td: bounds["TransDate"] = (w_td["x0"], w_td["x1"])
+
+    # 2. Value Date (Find VALUE)
+    idx_vd, w_vd = find_word_x("VALUE")
+    if w_vd: bounds["ValueDate"] = (w_vd["x0"], w_vd["x1"])
+
+    # 3. Narration
+    idx_rem, w_rem = find_word_x("NARRATION")
+    if w_rem: bounds["Remarks"] = (w_rem["x0"], w_rem["x1"])
+
+    # 4. Tran ID & Cheque No (Optional but good for bounding)
+    idx_ref, w_ref = find_word_x("ID") # TRAN ID
+    if w_ref: bounds["Reference"] = (w_ref["x0"], w_ref["x1"])
+    
+    # 5. Withdrawals (Debit) - Match WITHDRAWAL or WITHDRAWALS or DR
+    idx_deb, w_deb = find_word_x("WITHDRAWAL") 
+    if not w_deb: idx_deb, w_deb = find_word_x("DR")
+    if w_deb: bounds["Debit"] = (w_deb["x0"], w_deb["x1"])
+
+    # 6. Deposits (Credit) - Match DEPOSIT or DEPOSITS or CR
+    idx_cred, w_cred = find_word_x("DEPOSIT")
+    if not w_cred: idx_cred, w_cred = find_word_x("CR")
+    if w_cred: bounds["Credit"] = (w_cred["x0"], w_cred["x1"])
+
+    # 7. Balance
+    idx_bal, w_bal = find_word_x("BALANCE")
+    if w_bal: bounds["Balance"] = (w_bal["x0"], w_bal["x1"])
+
+    # Mandatory
+    if "TransDate" not in bounds or "Debit" not in bounds:
+        print("DEBUG: Wema detected header but missing TransDate or Debit column")
+        return None
+
+    # Construct cuts
+    sorted_cols = sorted(bounds.items(), key=lambda item: item[1][0])
+    
+    cuts = {}
+    for i in range(len(sorted_cols)):
+        col_name, (l, r) = sorted_cols[i]
+        
+        if i == 0:
+            start = 0.0
+        else:
+            prev_name, (prev_l, prev_r) = sorted_cols[i-1]
+            start = (prev_r + l) / 2
+            
+        if i == len(sorted_cols) - 1:
+            end = 1000.0
+        else:
+            next_name, (next_l, next_r) = sorted_cols[i+1]
+            end = (r + next_l) / 2
+            
+        cuts[col_name] = (start, end)
+
+    return cuts
+
+
+def detect_fcmb_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
+    """
+    Detect column boundaries for FCMB
+    Headers: Tran. Date | Value Date | Ref | Transaction Details | Debit | Credit | Balance
+    """
+    if not words:
+        return None
+
+    # Keywords to identify header row
+    keywords = ["TRAN", "DATE", "VALUE", "REF", "DETAILS", "DEBIT", "CREDIT", "BALANCE"]
+    
+    # Try multiple tolerances
+    rows = group_words_to_rows(words, y_tol=3.0)
+    
+    best_row = None
+    max_score = 0
+    
+    for r in rows:
+        score = 0
+        row_text_upper = " ".join([w["text"].upper() for w in r["words"]])
+        
+        # Mandatory checks
+        if "DATE" not in row_text_upper or "DETAILS" not in row_text_upper: continue
+        if not any(x in row_text_upper for x in ["DEBIT", "CREDIT", "BALANCE"]): continue
+        
+        for w in r["words"]:
+            for k in keywords: 
+                if k in w["text"].upper():
+                    score += 1
+
+        if score > max_score:
+            max_score = score
+            best_row = r
+
+    if not best_row or max_score < 3:
+        return None
+
+    print(f"DEBUG: Found FCMB Header Row: {[w['text'] for w in best_row['words']]}")
+
+    # Extract columns
+    sorted_words = sorted(best_row["words"], key=lambda w: w["x0"])
+    
+    # Use helper
+    def find_word_x(text_part, start_idx=0):
+        for i in range(start_idx, len(sorted_words)):
+            clean_text = sorted_words[i]["text"].upper()
+            if text_part in clean_text:
+                return i, sorted_words[i]
+        return -1, None
+
+    bounds = {}
+
+    # 1. Tran. Date (tran. date in image)
+    idx_td, w_td = find_word_x("TRAN")
+    if w_td:
+         bounds["TransDate"] = (w_td["x0"], w_td["x1"])
+    else:
+         idx_td, w_td = find_word_x("DATE") # Fallback
+         if w_td: bounds["TransDate"] = (w_td["x0"], w_td["x1"])
+
+    # 2. Value Date (Find VALUE)
+    idx_vd, w_vd = find_word_x("VALUE")
+    if w_vd: bounds["ValueDate"] = (w_vd["x0"], w_vd["x1"])
+
+    # 3. Ref
+    idx_ref, w_ref = find_word_x("REF")
+    if w_ref: bounds["Reference"] = (w_ref["x0"], w_ref["x1"])
+
+    # 4. Remarks (Transaction Details)
+    idx_rem, w_rem = find_word_x("DETAILS")
+    if w_rem: bounds["Remarks"] = (w_rem["x0"], w_rem["x1"])
+    
+    # 5. Debit
+    idx_deb, w_deb = find_word_x("DEBIT") 
+    if w_deb: bounds["Debit"] = (w_deb["x0"], w_deb["x1"])
+
+    # 6. Credit
+    idx_cred, w_cred = find_word_x("CREDIT")
+    if w_cred: bounds["Credit"] = (w_cred["x0"], w_cred["x1"])
+
+    # 7. Balance
+    idx_bal, w_bal = find_word_x("BALANCE")
+    if w_bal: bounds["Balance"] = (w_bal["x0"], w_bal["x1"])
+
+    # Mandatory
+    if "TransDate" not in bounds or "Debit" not in bounds:
+        print("DEBUG: FCMB detected header but missing TransDate or Debit column")
+        return None
+
+    # Construct cuts
+    sorted_cols = sorted(bounds.items(), key=lambda item: item[1][0])
+    
+    cuts = {}
+    for i in range(len(sorted_cols)):
+        col_name, (l, r) = sorted_cols[i]
+        
+        if i == 0:
+            start = 0.0
+        else:
+            prev_name, (prev_l, prev_r) = sorted_cols[i-1]
+            start = (prev_r + l) / 2
+            
+        if i == len(sorted_cols) - 1:
+            end = 1000.0
+        else:
+            next_name, (next_l, next_r) = sorted_cols[i+1]
+            end = (r + next_l) / 2
+            
+        cuts[col_name] = (start, end)
+
+    return cuts
+
+
+def clean_currency_str(value):
+    """Converts string currency (e.g., '1,200.50') to float."""
+    if value is None:
+        return 0.0
+    if isinstance(value, (float, int)):
+        return float(value)
+    clean_str = str(value).replace(",", "").strip()
+    try:
+        return float(clean_str)
+    except ValueError:
+        return 0.0
+
+def extract_zenith_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
+    """
+    Specialized extractor for Zenith using pdfplumber's extract_tables()
+    This is often more robust for Zenith's grid lines.
+    """
+    print("DEBUG: Using Zenith Table-Based Extraction Strategy")
+    all_rows = []
+    
+    with pdfplumber.open(pdf_path) as pdf:
+        for page_num, page in enumerate(pdf.pages, 1):
+            # Zenith often has distinct table lines
+            tables = page.extract_tables()
+            for table in tables:
+                for row in table:
+                    # Clean None/newlines
+                    clean_row = [str(cell).strip().replace("\\n", " ") if cell else "" for cell in row]
+                    if any(clean_row): # Skip empty rows
+                         all_rows.append(clean_row)
+
+    if not all_rows:
+        print("DEBUG: No tables found in Zenith PDF.")
+        return []
+
+    # Create DataFrame from all rows
+    df = pd.DataFrame(all_rows)
+    
+    # Locate Header (Optional but good for validation)
+    # We will use positional logic mainly, but header helps confirm we have a statement
+    header_idx = -1
+    for i, row in df.iterrows():
+        row_str = " ".join([str(x).upper() for x in row])
+        if "DATE" in row_str and ("DESCRIPTION" in row_str or "NARRATION" in row_str or "PARTICULARS" in row_str) and ("DEBIT" in row_str or "WITHDRAWAL" in row_str):
+            header_idx = i
+            break
+    
+    # If header found, slice from there, otherwise assume whole file is data (risky but fallback)
+    start_row = header_idx + 1 if header_idx != -1 else 0
+    df_data = df.iloc[start_row:]
+    
+    final_txns = []
+    
+    for i, row in df_data.iterrows():
+        # Convert row to list for positional access
+        row_list = row.tolist()
+        
+        # Skip empty rows or rows with too few columns
+        if not row_list or len(row_list) < 5: continue
+        
+        # Check if first column looks like a date (Zenith specific: DD/MM/YYYY)
+        first_col = str(row_list[0]).strip()
+        
+        # Is it a date?
+        date_parsed = parse_date(first_col)
+        # If parse_date returned input text and it's not a valid date format, skip
+        if not is_date(first_col) and date_parsed == first_col:
+             continue 
+
+        # --- MERGE SPLIT DESCRIPTION LOGIC ---
+        # Assumption: 
+        # - Col 0: Date
+        # - Col 1: Value Date (usually)
+        # - Last 3 cols: Debit, Credit, Balance
+        # - Middle cols: Description parts
+        
+        # Identify Financials (Last 3)
+        debit_str = row_list[-3]
+        credit_str = row_list[-2]
+        balance_str = row_list[-1]
+        
+        # Identify Description (Index 2 to -3)
+        # Only if we have enough columns. If len is 5, 2:-3 is empty range [2:2] -> []
+        # In that case, maybe description is col 1? 
+        # Let's start Description from Col 2 normally, but if len is 5, it means [Date, ValDate, Deb, Cred, Bal] -> No Desc?
+        # Actually Zenith usually has [Date, ValDate, Desc..., Deb, Cred, Bal].
+        
+        if len(row_list) > 5:
+            desc_parts = row_list[2:-3]
+            description = " ".join([str(x).strip() for x in desc_parts if x]).strip()
+        elif len(row_list) == 5:
+            # Maybe [Date, Desc, Deb, Cred, Bal] ?
+            description = str(row_list[1]).strip()
+        else:
+            description = ""
+            
+        # Parse financials
+        d_float = clean_currency_str(debit_str)
+        c_float = clean_currency_str(credit_str)
+        b_float = clean_currency_str(balance_str)
+        
+        if d_float == 0 and c_float == 0: continue
+
+        txn = {
+            "date": date_parsed,
+            "value_date": "", # Skipped for now or could parse row_list[1]
+            "reference": "",
+            "originating_branch": "",
+            "remarks": description,
+            "description": description,
+            "debit": d_float,
+            "credit": c_float,
+            "balance": b_float,
+            "category": "Unallocated",
+            "is_reversal": False,
+            "_page": 0,
+            "_row": i
+        }
+        
+        final_txns.append(txn)
+             
+    print(f"DEBUG: Extracted {len(final_txns)} transactions via Zenith Table strategy (Split Merge)")
+    return final_txns
+             
+    print(f"DEBUG: Extracted {len(final_txns)} transactions via Table strategy")
+    return final_txns
 
