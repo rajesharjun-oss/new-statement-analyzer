@@ -2457,6 +2457,5 @@ def extract_zenith_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
     print(f"DEBUG: Extracted {len(final_txns)} transactions via Zenith Table strategy (Split Merge)")
     return final_txns
              
-    print(f"DEBUG: Extracted {len(final_txns)} transactions via Table strategy")
-    return final_txns
+
 
