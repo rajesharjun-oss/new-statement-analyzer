@@ -2764,6 +2764,33 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
         else:
             df[col] = 0.0
 
+    # 4. Recover missing debit/credit from balance movement.
+    # Some Ecobank rows occasionally lose the amount column and only preserve the
+    # updated running balance. When both debit and credit are effectively zero,
+    # infer the side from the delta vs the previous row's balance.
+    AMOUNT_EPSILON = 0.005
+    DELTA_EPSILON = 0.01
+
+    for idx in range(1, len(df)):
+        debit = float(pd.to_numeric(df.at[idx, 'Debit'], errors='coerce') or 0.0)
+        credit = float(pd.to_numeric(df.at[idx, 'Credit'], errors='coerce') or 0.0)
+        prev_balance = float(pd.to_numeric(df.at[idx - 1, 'Balance'], errors='coerce') or 0.0)
+        curr_balance = float(pd.to_numeric(df.at[idx, 'Balance'], errors='coerce') or 0.0)
+
+        # Guardrail: only infer for rows that look like actual transactions.
+        has_context = bool(str(df.at[idx, 'Date']).strip()) and bool(str(df.at[idx, 'Description']).strip())
+
+        if has_context and abs(debit) <= AMOUNT_EPSILON and abs(credit) <= AMOUNT_EPSILON:
+            delta = prev_balance - curr_balance
+            if abs(delta) >= DELTA_EPSILON:
+                if delta > 0:
+                    df.at[idx, 'Debit'] = round(delta, 2)
+                    print(f"DEBUG: Inferred missing debit {delta:.2f} at row {idx} from balance delta")
+                else:
+                    inferred_credit = abs(delta)
+                    df.at[idx, 'Credit'] = round(inferred_credit, 2)
+                    print(f"DEBUG: Inferred missing credit {inferred_credit:.2f} at row {idx} from balance delta")
+
     final_txns = []
     
     # Convert back to standard list of dicts for the application
