@@ -8,7 +8,6 @@ import os
 import pandas as pd
 from pathlib import Path
 from typing import List, Dict, Tuple, Any
-from backend.ecobank_engine import extract_ecobank_via_custom_tables
 
 # OCR fallback
 try:
@@ -433,16 +432,20 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
         except Exception as e:
              print(f"DEBUG: FCMB table strategy failed: {e}")
 
-    # --- 0c) Special Case: Ecobank Strategy (User Custom Tables)
+    # --- 0c) Special Case: Ecobank Table Strategy
     if bank_identifier == "ecobank":
         try:
-             # Use the new Custom Table Engine
              ecobank_txns = extract_ecobank_via_custom_tables(Path(pdf_path), metadata)
              if ecobank_txns:
                  return ecobank_txns, metadata
-             print("DEBUG: Ecobank custom strategy returned no transactions, falling back to standard...")
+             print("DEBUG: Ecobank custom table strategy returned no transactions, trying legacy strategy...")
+
+             ecobank_txns = extract_ecobank_via_tables(Path(pdf_path), metadata)
+             if ecobank_txns:
+                 return ecobank_txns, metadata
+             print("DEBUG: Ecobank legacy table strategy returned no transactions, falling back to standard...")
         except Exception as e:
-             print(f"DEBUG: Ecobank custom strategy failed: {e}")
+             print(f"DEBUG: Ecobank table strategy failed: {e}")
 
     # Reset metadata["_debug"] if fallback is used
     column_debug = {}
@@ -2580,6 +2583,150 @@ def extract_fcmb_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
         final_txns.append(txn)
 
     print(f"DEBUG: Extracted {len(final_txns)} transactions via FCMB Table strategy")
+    return final_txns
+
+
+def extract_ecobank_via_custom_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
+    """
+    Extract Ecobank transactions using custom table settings tuned for split rows.
+    This strategy prioritizes preserving full debit/credit values before any inference.
+    """
+    print("DEBUG: Using Ecobank Custom Table Strategy")
+
+    custom_settings = {
+        "vertical_strategy": "text",
+        "horizontal_strategy": "text",
+        "snap_tolerance": 5,
+        "intersection_y_tolerance": 5,
+        "join_x_tolerance": 3,
+    }
+
+    fallback_settings = {
+        "vertical_strategy": "text",
+        "horizontal_strategy": "text",
+        "intersection_y_tolerance": 5,
+        "snap_tolerance": 5,
+    }
+
+    all_rows: List[List[str]] = []
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            table = page.extract_table(custom_settings)
+            if table is None:
+                table = page.extract_table(fallback_settings)
+            if table:
+                all_rows.extend(table)
+
+    if not all_rows:
+        print("DEBUG: Ecobank custom table strategy found no rows.")
+        return []
+
+    df = pd.DataFrame(all_rows)
+    print(f"DEBUG: Extracted {len(df)} raw rows using custom settings.")
+    if df.empty:
+        return []
+
+    header_idx = df[
+        df.apply(
+            lambda r: r.astype(str).str.contains(r'Transaction\s*Date|\bDate\b', case=False, na=False).any(),
+            axis=1,
+        )
+    ].index
+
+    if not header_idx.empty:
+        resolved_header = df.iloc[header_idx[0]].astype(str).str.strip()
+        df.columns = resolved_header
+        df = df.iloc[header_idx[0] + 1 :].reset_index(drop=True)
+    elif len(df.columns) >= 6:
+        # Fallback when header row is not captured.
+        df = df.iloc[:, :6]
+        df.columns = ["Date", "Description", "Value Date", "Debit", "Credit", "Balance"]
+    else:
+        print("DEBUG: Ecobank custom table strategy could not identify usable header.")
+        return []
+
+    col_map: Dict[str, str] = {}
+    for c in df.columns:
+        c_upper = str(c).upper()
+        if 'DATE' in c_upper and 'VAL' not in c_upper:
+            col_map[c] = 'Date'
+        elif 'DESC' in c_upper or 'PARTICULAR' in c_upper or 'NARRATION' in c_upper:
+            col_map[c] = 'Description'
+        elif 'DEBIT' in c_upper or 'WITHDRAW' in c_upper:
+            col_map[c] = 'Debit'
+        elif 'CREDIT' in c_upper or 'DEPOSIT' in c_upper:
+            col_map[c] = 'Credit'
+        elif 'BAL' in c_upper:
+            col_map[c] = 'Balance'
+
+    df = df.rename(columns=col_map)
+
+    for req in ['Date', 'Description', 'Debit', 'Credit', 'Balance']:
+        if req not in df.columns:
+            df[req] = ""
+
+    invalid_noise = ['Account Statement', 'Transaction Date', 'Opening Balance', 'Page', 'Ecobank']
+    df = df[~df['Date'].astype(str).str.contains('|'.join(invalid_noise), case=False, na=False)]
+
+    def clean_money(val: object) -> float:
+        if pd.isna(val):
+            return 0.0
+        cleaned = str(val).replace('\\n', '').strip()
+        if not cleaned:
+            return 0.0
+
+        # If two values are merged in one cell, keep the first number for this column.
+        match = re.search(r'-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?', cleaned)
+        if match:
+            cleaned = match.group(0)
+
+        cleaned = cleaned.replace(',', '')
+        try:
+            return float(cleaned)
+        except ValueError:
+            return 0.0
+
+    for col in ['Debit', 'Credit', 'Balance']:
+        df[col] = df[col].apply(clean_money)
+
+    # Keep real transaction rows and rows where we can recover amount from balance movement.
+    df = df[(df['Debit'] + df['Credit'] > 0) | (df['Balance'] != 0)].reset_index(drop=True)
+
+    # Recover missing amount from running balance for rows where debit/credit were not parsed.
+    for idx in range(1, len(df)):
+        debit = float(df.at[idx, 'Debit'])
+        credit = float(df.at[idx, 'Credit'])
+        prev_balance = float(df.at[idx - 1, 'Balance'])
+        curr_balance = float(df.at[idx, 'Balance'])
+
+        if abs(debit) < 0.005 and abs(credit) < 0.005:
+            delta = round(prev_balance - curr_balance, 2)
+            if abs(delta) >= 0.01:
+                if delta > 0:
+                    df.at[idx, 'Debit'] = delta
+                else:
+                    df.at[idx, 'Credit'] = abs(delta)
+
+    final_txns: List[Dict] = []
+    for i, row in df.iterrows():
+        description = str(row.get('Description', '')).strip().replace('\\n', ' ')
+        final_txns.append({
+            "date": parse_date(row.get('Date', '')),
+            "value_date": "",
+            "reference": "",
+            "originating_branch": "",
+            "remarks": description,
+            "description": description,
+            "debit": float(row.get('Debit', 0.0) or 0.0),
+            "credit": float(row.get('Credit', 0.0) or 0.0),
+            "balance": float(row.get('Balance', 0.0) or 0.0),
+            "category": "Unallocated",
+            "is_reversal": False,
+            "_page": 0,
+            "_row": i,
+        })
+
+    print(f"DEBUG: Extracted {len(final_txns)} transactions via Ecobank Custom Table strategy")
     return final_txns
 
 
