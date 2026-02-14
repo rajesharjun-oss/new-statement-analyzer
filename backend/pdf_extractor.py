@@ -5,6 +5,8 @@ import pdfplumber
 import re
 import math
 import os
+import pandas as pd
+from pathlib import Path
 from typing import List, Dict, Tuple, Any
 
 # OCR fallback
@@ -419,6 +421,16 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
              print("DEBUG: Zenith table strategy returned no transactions, falling back to standard...")
         except Exception as e:
              print(f"DEBUG: Zenith table strategy failed: {e}")
+
+    # --- 0b) Special Case: FCMB Table Strategy
+    if bank_identifier == "fcmb":
+        try:
+             fcmb_txns = extract_fcmb_via_tables(Path(pdf_path), metadata)
+             if fcmb_txns:
+                 return fcmb_txns, metadata
+             print("DEBUG: FCMB table strategy returned no transactions, falling back to standard...")
+        except Exception as e:
+             print(f"DEBUG: FCMB table strategy failed: {e}")
 
     # Reset metadata["_debug"] if fallback is used
     column_debug = {}
@@ -2455,6 +2467,107 @@ def extract_zenith_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
         final_txns.append(txn)
              
     print(f"DEBUG: Extracted {len(final_txns)} transactions via Zenith Table strategy (Split Merge)")
+    return final_txns
+
+
+def extract_fcmb_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
+    """
+    Specialized extractor for FCMB using pdfplumber's extract_tables()
+    Strategy: 
+    - Col 0: Date
+    - Last 3 Cols: Debit, Credit, Balance
+    - Middle: Description
+    """
+    print("DEBUG: Using FCMB Table-Based Extraction Strategy")
+    all_rows = []
+    
+    with pdfplumber.open(pdf_path) as pdf:
+        # Try to capture totals from page 1 text for metadata
+        try:
+            first_text = pdf.pages[0].extract_text()
+            # FCMB Summary Pattern
+            deb_match = re.search(r"Total Debit[:\s]*([\d,]+\.\d{2})", first_text, re.IGNORECASE)
+            cred_match = re.search(r"Total Credit[:\s]*([\d,]+\.\d{2})", first_text, re.IGNORECASE)
+            
+            if deb_match: 
+                metadata["statement_total_debit"] = clean_currency_str(deb_match.group(1))
+            if cred_match:
+                metadata["statement_total_credit"] = clean_currency_str(cred_match.group(1))
+        except:
+            pass
+
+        for page in pdf.pages:
+            tables = page.extract_tables()
+            for table in tables:
+                for row in table:
+                    # Clean proper None values and newlines
+                    clean_row = [str(cell).strip().replace("\\n", " ") if cell else "" for cell in row]
+                    if any(clean_row): 
+                         all_rows.append(clean_row)
+
+    if not all_rows:
+        print("DEBUG: No tables found in FCMB PDF.")
+        return []
+
+    final_txns = []
+    
+    for i, row in enumerate(all_rows):
+        # Skip empty or short rows
+        if not row or len(row) < 5: continue
+        
+        # Skip Headers (contain "DATE" and "PARTICULARS" etc)
+        row_str = "".join(row).upper()
+        if "DATE" in row_str and ("PARTICULARS" in row_str or "NARRATION" in row_str or "BALANCE" in row_str):
+            continue
+
+        # Check Date Column (Col 0)
+        date_str = row[0]
+        # Supports: 01/01/2023, 01-JAN-2023, 01 Jan 2024
+        if not is_date(date_str):
+             continue
+
+        date_parsed = parse_date(date_str)
+        
+        # Identify Financials (Last 3)
+        debit_str = row[-3]
+        credit_str = row[-2]
+        balance_str = row[-1]
+        
+        # Identify Description:
+        # Usually index 2 to -3 (Date, ValueDate, ...Desc..., Deb, Cred, Bal)
+        # But verify if Col 1 is ValueDate or part of Desc
+        start_desc = 1
+        # If Col 1 looks like a date, assume it's Value Date, so Desc starts at 2
+        if is_date(row[1]):
+            start_desc = 2
+            
+        desc_parts = row[start_desc:-3]
+        description = " ".join([d for d in desc_parts if d]).strip()
+        
+        d_float = clean_currency_str(debit_str)
+        c_float = clean_currency_str(credit_str)
+        b_float = clean_currency_str(balance_str)
+        
+        if d_float == 0 and c_float == 0: continue
+
+        txn = {
+            "date": date_parsed,
+            "value_date": parse_date(row[1]) if start_desc == 2 else "",
+            "reference": "",
+            "originating_branch": "",
+            "remarks": description,
+            "description": description,
+            "debit": d_float,
+            "credit": c_float,
+            "balance": b_float,
+            "category": "Unallocated",
+            "is_reversal": False,
+            "_page": 0,
+            "_row": i
+        }
+        final_txns.append(txn)
+
+    print(f"DEBUG: Extracted {len(final_txns)} transactions via FCMB Table strategy")
     return final_txns
              
 
