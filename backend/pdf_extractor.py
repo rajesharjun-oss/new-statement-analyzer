@@ -2771,14 +2771,20 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
     AMOUNT_EPSILON = 0.005
     DELTA_EPSILON = 0.01
 
+    def _safe_float(value) -> float:
+        numeric = pd.to_numeric(value, errors='coerce')
+        if pd.isna(numeric):
+            return 0.0
+        return float(numeric)
+
     for idx in range(1, len(df)):
-        debit = float(pd.to_numeric(df.at[idx, 'Debit'], errors='coerce') or 0.0)
-        credit = float(pd.to_numeric(df.at[idx, 'Credit'], errors='coerce') or 0.0)
-        prev_balance = float(pd.to_numeric(df.at[idx - 1, 'Balance'], errors='coerce') or 0.0)
-        curr_balance = float(pd.to_numeric(df.at[idx, 'Balance'], errors='coerce') or 0.0)
+        debit = _safe_float(df.at[idx, 'Debit'])
+        credit = _safe_float(df.at[idx, 'Credit'])
+        prev_balance = _safe_float(df.at[idx - 1, 'Balance'])
+        curr_balance = _safe_float(df.at[idx, 'Balance'])
 
         # Guardrail: only infer for rows that look like actual transactions.
-        has_context = bool(str(df.at[idx, 'Date']).strip()) and bool(str(df.at[idx, 'Description']).strip())
+        has_context = bool(str(df.at[idx, 'Date']).strip()) or bool(str(df.at[idx, 'Description']).strip())
 
         if has_context and abs(debit) <= AMOUNT_EPSILON and abs(credit) <= AMOUNT_EPSILON:
             delta = prev_balance - curr_balance
