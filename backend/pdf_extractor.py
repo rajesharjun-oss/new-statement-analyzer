@@ -432,6 +432,16 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
         except Exception as e:
              print(f"DEBUG: FCMB table strategy failed: {e}")
 
+    # --- 0c) Special Case: Ecobank Table Strategy
+    if bank_identifier == "ecobank":
+        try:
+             ecobank_txns = extract_ecobank_via_tables(Path(pdf_path), metadata)
+             if ecobank_txns:
+                 return ecobank_txns, metadata
+             print("DEBUG: Ecobank table strategy returned no transactions, falling back to standard...")
+        except Exception as e:
+             print(f"DEBUG: Ecobank table strategy failed: {e}")
+
     # Reset metadata["_debug"] if fallback is used
     column_debug = {}
     
@@ -2568,6 +2578,179 @@ def extract_fcmb_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
         final_txns.append(txn)
 
     print(f"DEBUG: Extracted {len(final_txns)} transactions via FCMB Table strategy")
+    return final_txns
+
+
+def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
+    """
+    Extract Ecobank transactions using 'Date Anchor' grouping with table extraction.
+    Replaces word-based logic for Ecobank to handle split decimals via row stitching.
+    """
+    print("DEBUG: Using Ecobank Table-Based Extraction Strategy (Date Anchor)")
+    transactions = []
+    
+    # EcoBank Date Format is usually DD-Mon-YYYY (e.g., 31-May-2025)
+    date_pattern = re.compile(r'^\d{2}-[A-Za-z]{3}-\d{4}')
+    
+    with pdfplumber.open(pdf_path) as pdf:
+        all_rows = []
+        
+        # 1. Extract all table rows across all pages
+        for page in pdf.pages:
+            # table_settings usually help with "ghost columns"
+            # vertical_strategy="text" helps when columns aren't ruled lines
+            table = page.extract_table({
+                "vertical_strategy": "text", 
+                "horizontal_strategy": "text",
+                "intersection_y_tolerance": 5 
+            })
+            
+            if table:
+                all_rows.extend(table)
+
+    # 2. Iterate and Group (The "Stitching" Logic)
+    current_txn = None
+    headers_found = False
+    
+    # Defaults
+    idx_date = 0
+    idx_desc = 1
+    # value date is usually 2, but we might skip it in capture if not needed
+    idx_debit = 3 # Typical
+    idx_credit = 4 # Typical
+    idx_bal = 5 # Typical
+    
+    for row in all_rows:
+        # Clean row: remove None values
+        row = [str(x).strip() if x else '' for x in row]
+        
+        # Safety: Need at least a few columns
+        if len(row) < 3:
+            continue
+
+        # A. Detect Header
+        if not headers_found:
+            row_upper = [x.upper() for x in row]
+            if 'DATE' in row_upper and ('BALANCE' in row_upper or 'BAL' in row_upper):
+                headers_found = True
+                print(f"DEBUG: Found Ecobank Header: {row}")
+                try:
+                    # Find indices dynamically
+                    for i, col in enumerate(row_upper):
+                        if 'TRANS' in col and 'DATE' in col: idx_date = i
+                        elif 'DATE' in col and i == 0: idx_date = i 
+                        
+                        if 'DESCRIPTION' in col or 'PARTICULARS' in col or 'NARRATION' in col: idx_desc = i
+                        if 'DEBIT' in col or 'WITHDRAWAL' in col: idx_debit = i
+                        if 'CREDIT' in col or 'DEPOSIT' in col: idx_credit = i
+                        if 'BALANCE' in col: idx_bal = i
+                except ValueError:
+                    pass
+            continue 
+
+        # B. Check if this is a "New Transaction" (starts with a valid date)
+        # Check boundary
+        if idx_date >= len(row): continue
+        
+        first_col_val = row[idx_date]
+        is_new_date = date_pattern.match(first_col_val)
+        
+        # Helper to get safe value
+        def get_val(idx): return row[idx] if idx < len(row) else ""
+        
+        desc = get_val(idx_desc)
+        debit = get_val(idx_debit)
+        credit = get_val(idx_credit)
+        bal = get_val(idx_bal)
+
+        if is_new_date:
+            # Save previous
+            if current_txn:
+                transactions.append(current_txn)
+            
+            # Start new
+            current_txn = {
+                'Date': first_col_val,
+                'Description': desc,
+                'Debit_Raw': debit, 
+                'Credit_Raw': credit,
+                'Balance_Raw': bal
+            }
+        
+        # C. Wrapped Row (Stitching)
+        elif current_txn:
+            # Append text
+            if desc: current_txn['Description'] += " " + desc
+            if debit: current_txn['Debit_Raw'] += debit   # Concatenate for split decimals
+            if credit: current_txn['Credit_Raw'] += credit
+            if bal: current_txn['Balance_Raw'] += bal
+
+    # Last one
+    if current_txn:
+        transactions.append(current_txn)
+
+    # 3. Clean and Standardize for Backend using Pandas (Aggressive Cleaning)
+    if not transactions:
+        print("DEBUG: No transactions found for Ecobank table strategy.")
+        return []
+
+    # Rename keys to map to user's desired column names for processing then to standard output
+    cleaned_txns_data = []
+    for t in transactions:
+        cleaned_txns_data.append({
+            'Date': t['Date'],
+            'Description': t['Description'],
+            'Debit': t['Debit_Raw'],
+            'Credit': t['Credit_Raw'],
+            'Balance': t['Balance_Raw']
+        })
+
+    df = pd.DataFrame(cleaned_txns_data)
+    
+    def aggressive_clean(val):
+        if pd.isna(val):
+            return 0.0
+        
+        val = str(val)
+        # Strip letters, spaces, and hidden PDF characters, keep digits and dots
+        # The user's regex was r'[^\d.]'
+        cleaned_val = re.sub(r'[^\d.]', '', val)
+        
+        try:
+            return float(cleaned_val) if cleaned_val else 0.0
+        except ValueError:
+            # If it still fails (e.g., multiple decimal points), return 0.0
+            return 0.0
+
+    # Apply aggressive cleaning as requested
+    for col in ['Debit', 'Credit', 'Balance']:
+        if col in df.columns:
+            df[col] = df[col].apply(aggressive_clean)
+        else:
+            df[col] = 0.0
+
+    final_txns = []
+    
+    # Convert back to standard list of dicts for the application
+    for i, row in df.iterrows():
+        std_txn = {
+            "date": parse_date(row.get('Date', '')),
+            "value_date": "", 
+            "reference": "",
+            "originating_branch": "",
+            "remarks": row.get('Description', ''),
+            "description": row.get('Description', ''),
+            "debit": row['Debit'],
+            "credit": row['Credit'],
+            "balance": row['Balance'],
+            "category": "Unallocated",
+            "is_reversal": False,
+            "_page": 0,
+            "_row": i
+        }
+        final_txns.append(std_txn)
+
+    print(f"DEBUG: Extracted {len(final_txns)} transactions via Ecobank Table strategy")
     return final_txns
              
 
