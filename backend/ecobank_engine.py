@@ -55,13 +55,28 @@ def extract_ecobank_via_custom_tables(pdf_path, metadata: Dict) -> List[Dict]:
         return []
 
     # 2. Re-apply standard header mapping
-    header_idx = df[df.apply(lambda r: r.astype(str).str.contains('Transaction Date|Date', case=False, na=False).any(), axis=1)].index
+    # 2. Re-apply standard header mapping (STRICTER SEARCH)
+    def is_header_row(row):
+        text = " | ".join([str(x).strip().lower() for x in row.tolist() if str(x).strip() != ""])
+        needed = [
+            ("date" in text or "transaction date" in text),
+            ("desc" in text or "particular" in text or "narration" in text),
+            ("debit" in text or "withdraw" in text),
+            ("credit" in text or "deposit" in text),
+            ("bal" in text),
+        ]
+        # Require at least 3-4 of these to avoid false positives
+        return sum(needed) >= 3
+
+    header_candidates = df[df.apply(is_header_row, axis=1)].index
     
-    if not header_idx.empty:
+    if not header_candidates.empty:
         # Set header
-        new_header = df.iloc[header_idx[0]].astype(str).str.strip().str.title()
+        hdr_i = header_candidates[0]
+        # User requested: Do NOT .title() headers to avoid mangling
+        new_header = df.iloc[hdr_i].astype(str).str.strip()
         df.columns = new_header
-        df = df.iloc[header_idx[0] + 1:].reset_index(drop=True)
+        df = df.iloc[hdr_i + 1:].reset_index(drop=True)
     else:
         print("DEBUG: No header found. Using index mapping.")
 
