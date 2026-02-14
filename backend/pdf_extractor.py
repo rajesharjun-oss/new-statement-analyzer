@@ -2741,25 +2741,26 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
     df['Debit'] = df.apply(recover_shifted_amounts, axis=1)
     # --- USER CLEANUP LOGIC END ---
     
-    def aggressive_clean(val):
-        if pd.isna(val):
-            return 0.0
+    def fix_ecobank_amounts(val):
+        # 1. Fix numbers that wrap vertically (e.g., "13,000,000.\n00")
+        val = str(val).replace('\n', '') 
         
-        val = str(val)
-        # Strip letters, spaces, and hidden PDF characters, keep digits and dots
-        # The user's regex was r'[^\d.]'
-        cleaned_val = re.sub(r'[^\d.]', '', val)
+        # 2. Fix columns that merge horizontally (e.g., "8,000,000.00 0.00")
+        # This splits by space and grabs only the first amount
+        first_amount = val.split()[0] if val.strip() else ''
+        
+        # 3. Strip commas and convert
+        clean_str = re.sub(r'[^\d.]', '', first_amount)
         
         try:
-            return float(cleaned_val) if cleaned_val else 0.0
+            return float(clean_str) if clean_str else 0.0
         except ValueError:
-            # If it still fails (e.g., multiple decimal points), return 0.0
             return 0.0
 
-    # Apply aggressive cleaning as requested
+    # Apply this to your extracted columns before saving to Excel
     for col in ['Debit', 'Credit', 'Balance']:
         if col in df.columns:
-            df[col] = df[col].apply(aggressive_clean)
+            df[col] = df[col].apply(fix_ecobank_amounts)
         else:
             df[col] = 0.0
 
