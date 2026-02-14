@@ -2707,6 +2707,40 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
 
     df = pd.DataFrame(cleaned_txns_data)
     
+    # --- USER CLEANUP LOGIC START ---
+    # 1. Drop the junk rows that interrupt page breaks
+    invalid_noise = ['Account Statement', 'Transaction Date', 'Opening Balance', 'Page', 'Ecobank']
+    # Ensure Date is string for contains check
+    df = df[~df['Date'].astype(str).str.contains('|'.join(invalid_noise), case=False, na=False)]
+
+    # 2. Fix shifted columns at page breaks
+    # If Debit is empty/0 but we know it's a valid row, check if the amount shifted into the Description or Value Date
+    # Note: Our dataframe keys are Date, Description, Debit, Credit, Balance (all from _Raw)
+    # The user's code references 'Value Date' which we didn't map in the DF yet.
+    # We will map 'Description' as the primary search area since we concatenated everything there.
+    
+    def recover_shifted_amounts(row):
+        debit_val = str(row.get('Debit', '0')).strip()
+        
+        # If Debit looks empty or zero, but it's a real transaction
+        if debit_val in ['', '0', '0.0', 'None', 'nan']:
+            # Search the Description column for orphaned large numbers (e.g., 8,000,000.00)
+            # The user's snippet checked 'Value Date' + 'Description'. 
+            # We only have 'Description' populated in our keymap currently, so we use that.
+            search_area = str(row.get('Description', ''))
+            
+            # Regex finds numbers with commas and two decimal places (e.g., 8,000,000.00)
+            hidden_amount = re.search(r'\b\d{1,3}(?:,\d{3})*\.\d{2}\b', search_area)
+            if hidden_amount:
+                print(f"DEBUG: Recovered shifted debit: {hidden_amount.group()} from {search_area[:20]}...")
+                return hidden_amount.group() # Return the found amount to the Debit column
+                
+        return debit_val
+
+    # Apply the recovery function
+    df['Debit'] = df.apply(recover_shifted_amounts, axis=1)
+    # --- USER CLEANUP LOGIC END ---
+    
     def aggressive_clean(val):
         if pd.isna(val):
             return 0.0
