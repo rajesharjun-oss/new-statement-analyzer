@@ -1,87 +1,138 @@
+
 import re
 import pdfplumber
 import pandas as pd
+import numpy as np
 from typing import List, Dict
 from datetime import datetime
 
 def parse_date(date_str):
-    if pd.isna(date_str) or not str(date_str).strip():
-        return ""
     try:
-        # Grabs just the DD-Mon-YYYY part in case of trailing characters
-        return datetime.strptime(str(date_str).strip()[:11], '%d-%b-%Y').strftime('%Y-%m-%d')
+        return datetime.strptime(str(date_str).strip(), '%d-%b-%Y').strftime('%Y-%m-%d')
     except:
-        return str(date_str)
+        try:
+            return pd.to_datetime(date_str).strftime('%Y-%m-%d')
+        except:
+            return date_str
 
-def extract_ecobank_via_custom_tables(pdf_path, metadata: Dict = None) -> List[Dict]:
-    # 1. Settings to ignore drawn gridlines and prevent number slicing
+def extract_ecobank_via_custom_tables(pdf_path, metadata: Dict) -> List[Dict]:
+    """
+    Extract Ecobank transactions using USER'S CUSTOM TABLE SETTINGS.
+    """
+    print("DEBUG: Using Ecobank Custom Table Strategy (User Settings + Numpy Fix)")
+    
+    # 1. THE FIX: Tell pdfplumber to ignore the drawn gridlines
     custom_settings = {
-        "vertical_strategy": "text",   
-        "horizontal_strategy": "text", 
-        "intersection_y_tolerance": 5, 
-        "join_x_tolerance": 3          
+        "vertical_strategy": "text",   # Ignores broken vertical lines, prevents number slicing
+        "horizontal_strategy": "text", # Ignores broken horizontal lines at page breaks
+        "intersection_y_tolerance": 5, # Replaces snap_y_tolerance 
+        "snap_tolerance": 5,
+        "join_x_tolerance": 3          # Keeps wide numbers glued together
     }
 
     all_rows = []
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
-            # FIX: Must explicitly pass as table_settings
-            table = page.extract_table(table_settings=custom_settings)
+            try:
+                table = page.extract_table(custom_settings)
+            except:
+                # Fallback if keys are wrong
+                safe_settings = {
+                    "vertical_strategy": "text",
+                    "horizontal_strategy": "text",
+                    "intersection_y_tolerance": 5,
+                    "snap_tolerance": 5
+                }
+                table = page.extract_table(safe_settings)
+            
             if table:
                 all_rows.extend(table)
 
     df = pd.DataFrame(all_rows)
+    print(f"DEBUG: Extracted {len(df)} raw rows using custom settings.")
+    
     if df.empty:
         return []
 
-    # 2. Header Mapping
-    # Find row with 'Transaction Date'
-    header_idx = df[df.apply(lambda r: r.astype(str).str.contains('Transaction Date', case=False, na=False).any(), axis=1)].index
+    # 2. Re-apply standard header mapping
+    header_idx = df[df.apply(lambda r: r.astype(str).str.contains('Transaction Date|Date', case=False, na=False).any(), axis=1)].index
     
     if not header_idx.empty:
-        df.columns = df.iloc[header_idx[0]].astype(str).str.strip()
+        # Set header
+        new_header = df.iloc[header_idx[0]].astype(str).str.strip().str.title()
+        df.columns = new_header
         df = df.iloc[header_idx[0] + 1:].reset_index(drop=True)
+    else:
+        print("DEBUG: No header found. Using index mapping.")
 
+    # Normalize columns
     col_map = {}
     for c in df.columns:
         c_upper = str(c).upper()
         if 'DATE' in c_upper and 'VAL' not in c_upper: col_map[c] = 'Date'
-        elif 'DESC' in c_upper or 'PARTICULAR' in c_upper: col_map[c] = 'Description'
-        elif 'DEBIT' in c_upper or 'WITHDRAW' in c_upper: col_map[c] = 'Debit'
-        elif 'CREDIT' in c_upper or 'DEPOSIT' in c_upper: col_map[c] = 'Credit'
-        elif 'BAL' in c_upper: col_map[c] = 'Balance'
+        if 'DESC' in c_upper or 'PARTICULAR' in c_upper: col_map[c] = 'Description'
+        if 'DEBIT' in c_upper or 'WITHDRAW' in c_upper: col_map[c] = 'Debit'
+        if 'CREDIT' in c_upper or 'DEPOSIT' in c_upper: col_map[c] = 'Credit'
+        if 'BAL' in c_upper: col_map[c] = 'Balance'
     
     df = df.rename(columns=col_map)
     
+    # Ensure columns exist
     for req in ['Date', 'Description', 'Debit', 'Credit', 'Balance']:
         if req not in df.columns:
             df[req] = ""
 
-    # 3. Amount Cleaning
+    # 3. Clean the amounts (User's Numpy Version)
     def clean_money(val):
-        if pd.isna(val) or str(val).strip() == '': 
-            return 0.0
-        
-        # FIX: Handle horizontally merged cells (e.g. "8000000.00 0.00")
-        first_val = str(val).replace('\n', '').strip().split()[0]
-        
-        # Strip invalid chars
-        clean_str = re.sub(r'[^\d.-]', '', first_val)
+        if val is None or (isinstance(val, float) and pd.isna(val)) or (isinstance(val, str) and not val.strip()):
+            return np.nan
+
+        s = str(val).replace('\n', '').strip()
+
+        # Handle parentheses negatives e.g. (1,234.00)
+        neg = False
+        if s.startswith('(') and s.endswith(')'):
+            neg = True
+            s = s[1:-1].strip()
+
+        # Keep digits, decimal point, minus sign
+        s = re.sub(r'[^\d.\-]', '', s)
+
+        # If more than one dot, treat as NaN (broken tokenization)
+        if s.count('.') > 1:
+            return np.nan
+
+        # If it's just "-" or empty
+        if s in ("", "-", "."):
+            return np.nan
+
         try:
-            return float(clean_str) if clean_str else 0.0
-        except ValueError:
-            return 0.0
+            x = float(s)
+            return -x if neg else x
+        except:
+            return np.nan
 
     for col in ['Debit', 'Credit', 'Balance']:
-        df[col] = df[col].apply(clean_money)
+        if col in df.columns:
+            df[col] = df[col].apply(clean_money)
 
-    # Filter out empty rows from page breaks
-    df = df[(df['Debit'] > 0) | (df['Credit'] > 0)]
+    # 4. Filter empty rows (User's Logic: Keep NaNs until filter)
+    df['Debit'] = pd.to_numeric(df['Debit'], errors='coerce')   # keep NaN
+    df['Credit'] = pd.to_numeric(df['Credit'], errors='coerce') # keep NaN
 
-    # 4. Final Formatting
+    # Keep rows where at least one of Debit/Credit is a valid number and > 0
+    df = df[(df['Debit'].fillna(0) > 0) | (df['Credit'].fillna(0) > 0)]
+
+    # Normalize final output
+    df['Debit'] = df['Debit'].fillna(0.0)
+    df['Credit'] = df['Credit'].fillna(0.0)
+    df['Balance'] = pd.to_numeric(df['Balance'], errors='coerce').fillna(0.0)
+
+    # --- Final Output Formatting ---
     final_txns = []
+    
     for i, row in df.iterrows():
-        final_txns.append({
+        std_txn = {
             "date": parse_date(row.get('Date', '')),
             "value_date": "", 
             "reference": "",
@@ -90,11 +141,13 @@ def extract_ecobank_via_custom_tables(pdf_path, metadata: Dict = None) -> List[D
             "description": str(row.get('Description', '')).strip().replace('\n', ' '),
             "debit": float(row['Debit']),
             "credit": float(row['Credit']),
-            "balance": float(row['Balance']) if 'Balance' in df.columns else 0.0,
+            "balance": float(row['Balance']),
             "category": "Unallocated",
             "is_reversal": False,
             "_page": 0,
             "_row": i
-        })
+        }
+        final_txns.append(std_txn)
 
+    print(f"DEBUG: Extracted {len(final_txns)} transactions via Ecobank Custom Table Strategy (Numpy Fixed)")
     return final_txns
