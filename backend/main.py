@@ -10,10 +10,10 @@ from pathlib import Path
 # Load environment variables from .env file
 load_dotenv()
 
-from pdf_extractor import extract_transactions
-from validation import validate_totals
-from categorization import categorize_transactions
-from excel_generator import generate_excel
+from .pdf_extractor import extract_transactions
+from .validation import validate_totals
+from .categorization import categorize_transactions
+from .excel_generator import generate_excel
 
 app = FastAPI()
 
