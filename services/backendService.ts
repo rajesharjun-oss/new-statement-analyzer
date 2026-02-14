@@ -3,7 +3,8 @@
  * Handles communication with Python FastAPI backend
  */
 
-const BACKEND_URL = 'http://localhost:8000';
+const isProduction = import.meta.env.PROD;
+const BACKEND_URL = isProduction ? '' : 'http://localhost:8000';
 
 export interface BackendAnalysisResult {
     summary: {

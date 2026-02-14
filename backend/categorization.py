@@ -22,20 +22,34 @@ class Rule:
         self.exclude = re.compile(exclude, re.IGNORECASE) if exclude else None
 
 # Rules defined in the Spec (R001 - R090)
+# Exclude Transfers from being matched as Bank Charges
+TRANSFER_EXCLUDE = r"\bTRANSFER BETWEEN CUSTOMERS\b|\bNIP\b|\bGTW(?:ORLD)?\b|\bGTWORLD\b|\bGAPSLITE\b|\bGAPS?\b|\bNIBSS\b|\bTRF\b"
+
 RULES = [
     Rule("R001_OPENING_BALANCE", 1, r"OPENING\s+BAL|BAL\s*B\/F|BALANCE\s*BROUGHT|B\/F\b|BROUGHT\s*FORWARD", "Opening Balance", 1.0, "both"),
     
     # INFLOWS (High Priority)
+    Rule("R004A_TRANSFER_VIA", 4, r"\bTRANSFER\s*BETWEEN\s*CUSTOMERS\b.*\bVIA\b", "Operating Income", 0.95, "credit"),
+    Rule("R004B_GTWORLD", 4, r"\bGTW(?:ORLD)?\b|\bGTWORLD\b", "Operating Income", 0.92, "credit"),
+    Rule("R004C_NIP_TRF_FROM", 4, r"\bNIP\b.*\bTRF(?:FOR|FRM|FROM)?\b|\bTRF\s*FRM\b|\bTRF\s*FROM\b|\bTRFFOR\b", "Operating Income", 0.93, "credit"),
+    Rule("R004D_GAPS", 4, r"\bGAPSLITE\b|\bGAPS?\b", "Operating Income", 0.92, "credit"),
+
     Rule("R005_INWARD_TRANSFERS", 5, r"NIP\s*FROM|TRF\s*FROM|CREDIT\s*FROM|DEPOSIT\b|INFLOW\b", "Operating Income", 0.9, "credit"),
     
     # BANK CHARGES & LEVIES (High Priority)
-    Rule("R010_BANK_STAMP_DUTY", 10, r"STAMP\s*DUTY|FGN\s*STAMPDUTY", "Bank Charges", 1.0, "debit"),
-    Rule("R011_BANK_CHARGES_CORE", 11, r"SMS\s*CHARGE|SMS\b|COMMISSION|COMM\b|TRANSFER\s*CHARGE|BANK\s*CHARGE|MAINTENANCE\s*(?:FEE|CHG|CHARGE)|ACCT\s*MAINT|ACCOUNT\s*MAINT|AMF\b|NIP\s*CHG|NIP\s*FEE|TRF\s*CHG|TRF\s*FEE|UBR\s*CHG", "Bank Charges", 1.0, "debit"),
-    Rule("R012_GOVT_LEVIES_TAXES", 12, r"ELECTRONIC\s*MONEY\s*TRANSFER\s*LEVY|EMTL|VAT\b|TAX\b|FGN\s*LEVY|VAT\s*ON\s*CHG|VAT\s*ON\s*TRF|VAT\s*ON\s*NIP", "Bank Charges", 1.0, "debit"),
+
+    # DEBIT: transfers out / treasury / payments (Priority 9) - BEFORE Bank Charges
+    Rule("R009A_TRANSFER_BETWEEN", 9, r"\bTRANSFER BETWEEN CUSTOMERS\b|\bNIBSS\b", "Inter-Account / Treasury Transfer", 0.90, "debit"),
+    Rule("R009B_NIP_TRF_TO", 9, r"\bNIP\b.*\bTO\b|\bTRF\s*TO\b|\bTRFTO\b|\bNIP\s*TO\b", "Inter-Account / Treasury Transfer", 0.88, "debit"),
+    Rule("R009C_GTWORLD_GAPS", 9, r"\bGTW(?:ORLD)?\b|\bGTWORLD\b|\bGAPSLITE\b|\bGAPS?\b|\bGAP\b", "Inter-Account / Treasury Transfer", 0.85, "debit"),
+
+    Rule("R010_BANK_STAMP_DUTY", 10, r"\bSTAMP\s*DUTY\b", "Bank Charges", 1.0, "debit"),
+    Rule("R011_BANK_CHARGES_CORE", 11, r"\bSMS\s*CHARGE\b|\bCOMMISSION\b|\bMAINTENANCE\b|\bACCOUNT\s*MAINTENANCE\b", "Bank Charges", 1.0, "debit", exclude=TRANSFER_EXCLUDE),
+    Rule("R012_GOVT_LEVIES_TAXES", 12, r"\bVAT\b|\bVATCHARGES\b|\bTAX\b|\bLEVY\b", "Bank Charges", 1.0, "debit", exclude=TRANSFER_EXCLUDE),
     
     # --- FIX 9: BANK CHARGES CLASSIFICATION ---
-    Rule("R013_LEVY_50_AMOUNT", 13, r"LEVY", "Bank Charges", 1.0, "debit"), # Will be refined by amount check in code
-    Rule("R014_SPECIFIC_AMOUNT_CHARGES", 14, r".*", "Bank Charges", 0.8, "debit"), # Placeholder for Amount-based rule
+    # Rule("R013_LEVY_50_AMOUNT", 13, r"LEVY", "Bank Charges", 1.0, "debit"), # Handled by R012 + Amount Check
+    # Rule("R014_SPECIFIC_AMOUNT_CHARGES", 14, r".*", "Bank Charges", 0.8, "debit"), # Removed placeholder
 
     # INTEREST
     Rule("R020_WHT_ON_INTEREST_DEBIT", 20, r"CREDIT\s*INTEREST|INTEREST\b", "WHT Receivable", 1.0, "debit", exclude=r"OVERDRAFT\s*INTEREST|LOAN\s*INTEREST|INTEREST\s*CHARGE"),
@@ -45,24 +59,28 @@ RULES = [
     Rule("R022_INTEREST_REVERSAL_DEBIT", 22, r"CURRENT\s*ACT\s*CREDIT\s*INTEREST", "Interest Reversal / Adjustment", 1.0, "debit"),
     Rule("R023_INTEREST_INCOME_SPECIFIC", 23, r"CURRENT\s*ACT\s*CREDIT\s*INTEREST", "Interest Income", 1.0, "credit"),
     
-    # STAFF
-    Rule("R030_SALARY_PAYROLL", 30, r"SALARY\b|PAYROLL\b|WAGES\b|STAFF\s*SAL", "Salaries & Wages", 1.0, "debit"),
-    Rule("R031_STAFF_ADVANCE", 31, r"STAFF\s*LOAN|SALARY\s*ADVANCE|ADVANCE\s*TO\s*STAFF", "Staff Debtors / Salary Advances", 1.0, "debit"),
-    Rule("R032_STAFF_WELFARE", 32, r"WELFARE|LUNCH|CATERING|TEAM\s*BONDING|GROCERIES", "Staff Welfare", 0.9, "debit"),
-    Rule("R033_STAFF_TRAINING", 33, r"TRAINING|WORKSHOP|SEMINAR|COURSE\b|UDEMY|COURSERA", "Staff Training & Development", 0.9, "debit"),
+    # STAFF (Priority 6 - Override Transfers/Charges)
+    Rule("R006A_SALARY_PAYROLL", 6, r"SALARY\b|PAYROLL\b|WAGES\b|STAFF\s*SAL", "Salaries & Wages", 1.0, "debit"),
+    Rule("R006B_STAFF_ADVANCE", 6, r"STAFF\s*LOAN|SALARY\s*ADVANCE|ADVANCE\s*TO\s*STAFF", "Staff Debtors / Salary Advances", 1.0, "debit"),
+    Rule("R006C_STAFF_WELFARE", 6, r"WELFARE|LUNCH|CATERING|TEAM\s*BONDING|GROCERIES", "Staff Welfare", 0.9, "debit"),
+    Rule("R006D_STAFF_TRAINING", 6, r"TRAINING|WORKSHOP|SEMINAR|COURSE\b|UDEMY|COURSERA", "Staff Training & Development", 0.9, "debit"),
     
-    # EXPENSES
-    Rule("R040_EVENT_CONFERENCE", 40, r"SUMMIT|CONFERENCE|HEALTHTECH|KIGALI|NAMETAG|NAME\s*TAGS", "Event & Conference Expenses", 1.0, "debit"),
-    Rule("R041_TRANSPORT_VEHICLE", 41, r"VEHICLE|TINT|VEHICLE\s*REG|CAR\s*REG|LICENSE|VEHICLE\s*PAPERS|FUEL\b|DIESEL\b", "Transport & Logistics", 1.0, "debit"),
-    Rule("R042_REPAIRS_MAINTENANCE", 42, r"REPAIR|MAINTENANCE\s*(?!FEE|CHG|CHARGE|ACCT|ACCOUNT)|SERVICING|PLUMBING|ELECTRICAL|CARPENTRY", "Repairs & Maintenance", 0.9, "debit"),
+    # EXPENSES (Priority 7 - Override Transfers/Charges)
+    Rule("R007A_EVENT_CONFERENCE", 7, r"SUMMIT|CONFERENCE|HEALTHTECH|KIGALI|NAMETAG|NAME\s*TAGS", "Event & Conference Expenses", 1.0, "debit"),
+    Rule("R007B_TRANSPORT_VEHICLE", 7, r"VEHICLE|TINT|VEHICLE\s*REG|CAR\s*REG|LICENSE|VEHICLE\s*PAPERS|FUEL\b|DIESEL\b", "Transport & Logistics", 1.0, "debit"),
+    Rule("R007C_REPAIRS_MAINTENANCE", 7, r"REPAIR|MAINTENANCE\s*(?!FEE|CHG|CHARGE|ACCT|ACCOUNT)|SERVICING|PLUMBING|ELECTRICAL|CARPENTRY", "Repairs & Maintenance", 0.9, "debit"),
     
-    Rule("R049_FOREIGN_EXAM_FEES", 49, r"\bSAT\b|TOEFL\b|IELTS\b|GRE\b|GMAT\b", "Foreign Exam Fees", 1.0, "both"),
-    Rule("R050_EXAM_GENERIC_PASSTHROUGH", 50, r"\bEXAM\b|EXAM\s*FEE|REGISTRATION\s*(?:EXAM|FORM|FEE)|ADMISSION|APPLICATION\s*FORM|COMMON\s*ENTRANCE", "Student Exam Fees (Pass-Through)", 0.95, "both"),
+    # --- NEW: SECURITY & SAFETY ---
+    # Priority 8 to override "Transfer" (Rule 9)
+    Rule("R008_SECURITY_EXPENSES", 8, r"SECURITY\s*EXPENSE|SECURITY\b|POLICE|VIGILANTE|GUARD|ESCORT|SAFETY", "Security & Safety", 0.95, "debit"),
     
-    Rule("R055_CAPITAL_PROJECT_VALUATION", 55, r"VALUATION\s*INVOICE|VARIATION\s*INVOICE", "Capital Expenditure (CWIP)", 1.0, "debit"),
-    Rule("R060_OFFICE_RENT_CORPORATE_SERVICES", 60, r"CORPORATE\s*SERVICES|SERVICED\s*OFFICE|VICTORIA\s*ISLAND|ADEOLA\s*ODEKU", "Office Rent / Lease", 0.92, "debit"),
+    Rule("R007D_FOREIGN_EXAM_FEES", 7, r"\bSAT\b|TOEFL\b|IELTS\b|GRE\b|GMAT\b", "Foreign Exam Fees", 1.0, "both"),
+    Rule("R007E_EXAM_GENERIC_PASSTHROUGH", 7, r"\bEXAM\b|EXAM\s*FEE|REGISTRATION\s*(?:EXAM|FORM|FEE)|ADMISSION|APPLICATION\s*FORM|COMMON\s*ENTRANCE", "Student Exam Fees (Pass-Through)", 0.95, "both"),
     
-    Rule("R070_ADMINISTRATIVE_EXPENSES", 70, r"MISCELLANEOUS|MISC\b|OFFICE\s*EXP|STATIONERY|PRINTING|COURIER|NEWSPAPER|SUBSCRIPTION|REGISTRATION\b|INTERNET|DATA\s*BUNDLE|AIRTIME", "Administrative Expenses", 0.95, "debit"),
+    Rule("R007F_CAPITAL_PROJECT_VALUATION", 7, r"VALUATION\s*INVOICE|VARIATION\s*INVOICE", "Capital Expenditure (CWIP)", 1.0, "debit"),
+    Rule("R007G_OFFICE_RENT_CORPORATE_SERVICES", 7, r"CORPORATE\s*SERVICES|SERVICED\s*OFFICE|VICTORIA\s*ISLAND|ADEOLA\s*ODEKU", "Office Rent / Lease", 0.92, "debit"),
+    
+    Rule("R007H_ADMINISTRATIVE_EXPENSES", 7, r"MISCELLANEOUS|MISC\b|OFFICE\s*EXP|STATIONERY|PRINTING|COURIER|NEWSPAPER|SUBSCRIPTION|REGISTRATION\b|INTERNET|DATA\s*BUNDLE|AIRTIME", "Administrative Expenses", 0.95, "debit"),
     
     # CATCH-ALL OUTWARD TRANSFERS (Lowest Priority Rule)
     Rule("R090_GENERIC_OUTWARD_TRANSFER", 90, r"NIP\s*TO|TRF\s*TO|TRF\s*IFO|LOCAL\s*TRANSFERS", "Inter-Account / Treasury Transfer", 0.6, "debit"),
@@ -82,6 +100,8 @@ def normalize_description(desc: str) -> str:
     desc = re.sub(r'\s+', ' ', desc)
     return desc.strip()
 
+print("--- CATEGORIZATION MODULE LOADED ---")
+
 def categorize_single_transaction(txn: Dict) -> Dict:
     """
     Apply rules to a single transaction in place.
@@ -98,6 +118,8 @@ def categorize_single_transaction(txn: Dict) -> Dict:
     updated_cat = None
     confidence = 0.0
     rule_id = None
+    decision_source = None
+
     decision_source = None
     
     # 0. CHECK REVERSALS
@@ -136,10 +158,15 @@ def categorize_single_transaction(txn: Dict) -> Dict:
              rule_id = "R014_SPECIFIC_AMOUNT_CHARGES"
              decision_source = "RULE_SPECIFIC"
 
-        # Existing Standard Fee Checks (fallback)
+        # Corrected Standard Fee Checks (fallback with guard)
         elif any(math.isclose(abs_amt, amt, abs_tol=0.01) for amt in [50.00, 52.50, 10.00, 4.00, 26.88]):
             # 26.88 is common for some SMS charges
-            if not re.search(r"OPENING\s*BAL", norm_desc):
+            # Safe Guard: Only if it DOES contain charge-like keywords OR DOES NOT look like a payment/transfer
+            
+            looks_like_charge = re.search(r"CHG|FEE|VAT|SMS|COMM|MAINT|LEVY|DUTY", norm_desc)
+            looks_like_transfer = re.search(r"TRF|NIP|PAYMENT|PYMT|WEB|POS|ATM|DATA|AIRTIME", norm_desc)
+            
+            if looks_like_charge or (not looks_like_transfer and not re.search(r"OPENING\s*BAL", norm_desc)):
                 updated_cat = "Bank Charges"
                 confidence = 0.99
                 rule_id = "AMT_STD_FEE"
@@ -192,7 +219,8 @@ def categorize_single_transaction(txn: Dict) -> Dict:
             decision_source = "AI_HEURISTIC" # Mark as AI/Heuristic
             
         else:
-            updated_cat = "Unallocated"
+            # Change fallback defaults as requested
+            updated_cat = "Uncategorized Expense" if is_debit else "Uncategorized Income"
             confidence = 0.0
             decision_source = "AI"
 
@@ -202,7 +230,11 @@ def categorize_single_transaction(txn: Dict) -> Dict:
         txn['ruleId'] = rule_id
     if decision_source:
         txn['decision_source'] = decision_source
-        
+    
+    # DEBUG LOG
+    if "SECURITY" in norm_desc or abs(debit) == 100000:
+        print(f"DEBUG: Desc='{norm_desc}' | Amt={debit} | Cat='{updated_cat}' | Rule='{rule_id}' | Source='{decision_source}'")
+
     return txn
 
 
