@@ -131,6 +131,14 @@ def extract_ecobank_via_custom_tables(pdf_path, metadata: Dict) -> List[Dict]:
         if col in df.columns:
             df[col] = df[col].apply(clean_money)
 
+    # --- DEBUG GUARD START (User Request) ---
+    # Check for rows with description but No Parsed Amounts
+    bad = df[(df['Debit'].isna()) & (df['Credit'].isna()) & (df['Description'].astype(str).str.strip() != "")]
+    print(f"DEBUG: Rows with description but no parsed amounts: {len(bad)}")
+    if len(bad) > 0:
+        print(bad.head(10))
+    # --- DEBUG GUARD END ---
+
     # 4. Filter empty rows (User's Logic: Keep NaNs until filter)
     df['Debit'] = pd.to_numeric(df['Debit'], errors='coerce')   # keep NaN
     df['Credit'] = pd.to_numeric(df['Credit'], errors='coerce') # keep NaN
