@@ -2663,14 +2663,35 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
         credit = get_val(idx_credit)
         bal = get_val(idx_bal)
 
-        if is_new_date:
+        # --- IMPLICIT DATE LOGIC START ---
+        # Check if it's a "Same Day" transaction (No date, but has Money)
+        is_implicit_date_txn = False
+        if not is_new_date and current_txn:
+            # Heuristic: If Date is empty, but Debit OR Credit has a value that looks like money (or balance)
+            # AND it's not just a wrapped description line.
+            # A wrapped line usually has empty Debit/Credit/Balance OR partial text.
+            # A new txn usually has a clear Debit/Credit/Balance.
+            
+            has_money = (debit and any(c.isdigit() for c in debit)) or \
+                        (credit and any(c.isdigit() for c in credit)) or \
+                        (bal and any(c.isdigit() for c in bal) and len(bal) > 3)
+            
+            # If we align with columns, it's likely a new txn
+            if has_money:
+                 is_implicit_date_txn = True
+        # --- IMPLICIT DATE LOGIC END ---
+
+        if is_new_date or is_implicit_date_txn:
             # Save previous
             if current_txn:
                 transactions.append(current_txn)
             
             # Start new
+            # If implicit, use the Last Known Date from the current_txn (or a tracked variable)
+            txn_date = first_col_val if is_new_date else (current_txn['Date'] if current_txn else "")
+            
             current_txn = {
-                'Date': first_col_val,
+                'Date': txn_date,
                 'Description': desc,
                 'Debit_Raw': debit, 
                 'Credit_Raw': credit,
