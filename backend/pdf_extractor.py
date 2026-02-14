@@ -2785,38 +2785,47 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
         else:
             df[col] = 0.0
 
-    # 4. Recover missing debit/credit from balance movement.
-    # Some Ecobank rows occasionally lose the amount column and only preserve the
-    # updated running balance. When both debit and credit are effectively zero,
-    # infer the side from the delta vs the previous row's balance.
-    AMOUNT_EPSILON = 0.005
-    DELTA_EPSILON = 0.01
+    # 4. Recalculate Debits and Credits based on the row-to-row Balance change (User Request)
+    # The "Nuclear Option": Trust Balance column implicitly.
+    
+    # Ensure numeric types first (already done by fix_ecobank_amounts loop above for D/C/B)
+    # We strictly enforce Balance as float for diff
+    df['Balance'] = pd.to_numeric(df['Balance'], errors='coerce').fillna(0.0)
+    
+    df['Balance_Diff'] = df['Balance'].diff()
+    # Note: .diff() is [i] - [i-1].
+    # Balance Drops (negative diff) -> Money Left (Debit)
+    # Balance Rises (positive diff) -> Money Entered (Credit)
 
-    def _safe_float(value) -> float:
-        numeric = pd.to_numeric(value, errors='coerce')
-        if pd.isna(numeric):
-            return 0.0
-        return float(numeric)
+    df['Calculated_Debit'] = pd.NA
+    df['Calculated_Credit'] = pd.NA
 
-    for idx in range(1, len(df)):
-        debit = _safe_float(df.at[idx, 'Debit'])
-        credit = _safe_float(df.at[idx, 'Credit'])
-        prev_balance = _safe_float(df.at[idx - 1, 'Balance'])
-        curr_balance = _safe_float(df.at[idx, 'Balance'])
+    # Threshold for float noise
+    diff_epsilon = 0.005 
 
-        # Guardrail: only infer for rows that look like actual transactions.
-        has_context = bool(str(df.at[idx, 'Date']).strip()) or bool(str(df.at[idx, 'Description']).strip())
+    # If balance drops, it's a Debit. 
+    mask_debit = df['Balance_Diff'] < -diff_epsilon
+    df.loc[mask_debit, 'Calculated_Debit'] = df.loc[mask_debit, 'Balance_Diff'].abs()
 
-        if has_context and abs(debit) <= AMOUNT_EPSILON and abs(credit) <= AMOUNT_EPSILON:
-            delta = prev_balance - curr_balance
-            if abs(delta) >= DELTA_EPSILON:
-                if delta > 0:
-                    df.at[idx, 'Debit'] = round(delta, 2)
-                    print(f"DEBUG: Inferred missing debit {delta:.2f} at row {idx} from balance delta")
-                else:
-                    inferred_credit = abs(delta)
-                    df.at[idx, 'Credit'] = round(inferred_credit, 2)
-                    print(f"DEBUG: Inferred missing credit {inferred_credit:.2f} at row {idx} from balance delta")
+    # If balance rises, it's a Credit.
+    mask_credit = df['Balance_Diff'] > diff_epsilon
+    df.loc[mask_credit, 'Calculated_Credit'] = df.loc[mask_credit, 'Balance_Diff']
+
+    # 2. Overwrite the broken columns (leaving the first row's NaN as 0.0 or original)
+    # We fillna with the original extracted values, so if diff is NaN (row 0), we keep extraction.
+    # But if diff exists, we use it to overwrite extraction (fixing 0s or empty extractions).
+    df['Debit'] = df['Calculated_Debit'].fillna(df['Debit'])
+    df['Debit'] = pd.to_numeric(df['Debit'], errors='coerce').fillna(0.0).round(2)
+    
+    df['Credit'] = df['Calculated_Credit'].fillna(df['Credit'])
+    df['Credit'] = pd.to_numeric(df['Credit'], errors='coerce').fillna(0.0).round(2)
+
+    # 3. Clean up the stray numbers that got thrown into your Date column
+    if 'Date' in df.columns:
+        df['Date'] = df['Date'].astype(str).str.replace(r'\s+\d+$', '', regex=True)
+
+    # Drop temporary columns
+    df.drop(columns=['Balance_Diff', 'Calculated_Debit', 'Calculated_Credit'], inplace=True, errors='ignore')
 
     final_txns = []
     
