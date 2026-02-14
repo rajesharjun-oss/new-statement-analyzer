@@ -8,7 +8,7 @@ import os
 import pandas as pd
 from pathlib import Path
 from typing import List, Dict, Tuple, Any
-from backend.ecobank_engine import extract_ecobank_via_text_strategy
+from backend.ecobank_engine import extract_ecobank_via_custom_tables
 
 # OCR fallback
 try:
@@ -433,16 +433,16 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
         except Exception as e:
              print(f"DEBUG: FCMB table strategy failed: {e}")
 
-    # --- 0c) Special Case: Ecobank Table Strategy (REWRITTEN to Text Strategy)
+    # --- 0c) Special Case: Ecobank Strategy (User Custom Tables)
     if bank_identifier == "ecobank":
         try:
-             # Use the new Text-Based Engine
-             ecobank_txns = extract_ecobank_via_text_strategy(Path(pdf_path), metadata)
+             # Use the new Custom Table Engine
+             ecobank_txns = extract_ecobank_via_custom_tables(Path(pdf_path), metadata)
              if ecobank_txns:
                  return ecobank_txns, metadata
-             print("DEBUG: Ecobank text strategy returned no transactions, falling back to standard...")
+             print("DEBUG: Ecobank custom strategy returned no transactions, falling back to standard...")
         except Exception as e:
-             print(f"DEBUG: Ecobank text strategy failed: {e}")
+             print(f"DEBUG: Ecobank custom strategy failed: {e}")
 
     # Reset metadata["_debug"] if fallback is used
     column_debug = {}
