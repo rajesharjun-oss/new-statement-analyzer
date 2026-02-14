@@ -167,40 +167,38 @@ def extract_ecobank_via_text_strategy(pdf_path, metadata: Dict) -> List[Dict]:
 
     # --- NUCLEAR OPTION: RE-APPLY BALANCE DRIVEN CALCULATION ---
     if not df.empty:
-        # 1. Fill NaNs
+    # --- NUCLEAR OPTION: RE-APPLY BALANCE DRIVEN CALCULATION ---
+    if not df.empty:
+        # Ensure numeric types first
         df['Balance'] = pd.to_numeric(df['Balance'], errors='coerce').fillna(0.0)
         
-        # 2. Calculate Diff
+        # 1. Recalculate Debits and Credits based on the row-to-row Balance change
         df['Balance_Diff'] = df['Balance'].diff()
+
+        # Init calc cols with NaN (pd.NA) to allow fillna later
+        df['Calculated_Debit'] = pd.NA
+        df['Calculated_Credit'] = pd.NA
         
-        # 3. Logic
-        diff_epsilon = 0.005 
-
-        # Init calc columns
-        df['Calculated_Debit'] = 0.0
-        df['Calculated_Credit'] = 0.0
-
-        # Balance Drops -> Debit
-        mask_debit = df['Balance_Diff'] < -diff_epsilon
-        df.loc[mask_debit, 'Calculated_Debit'] = df.loc[mask_debit, 'Balance_Diff'].abs()
-
-        # Balance Rises -> Credit
-        mask_credit = df['Balance_Diff'] > diff_epsilon
-        df.loc[mask_credit, 'Calculated_Credit'] = df.loc[mask_credit, 'Balance_Diff']
-
-        # 4. Overwrite ONLY if extraction was zero/ambiguous?
-        # User said "Nuclear Option", implies Trust Balance. 
-        # But if diff says 0 (missing balance row?), we trust extraction??
-        # If Balance column is wrong, we are doomed. 
-        # Assuming Balance column is consistently read (it's the last number), this is safest.
+        # If balance drops, it's a Debit. If it rises, it's a Credit.
+        # Use epsilon for float safety
+        diff_epsilon = 0.005
         
-        # Row 0 exception: Keep extracted (cannot calc diff)
-        # Row > 0: Overwrite
+        df.loc[df['Balance_Diff'] < -diff_epsilon, 'Calculated_Debit'] = df['Balance_Diff'].abs()
+        df.loc[df['Balance_Diff'] > diff_epsilon, 'Calculated_Credit'] = df['Balance_Diff']
+
+        # 2. Overwrite the broken columns (leaving the first row's NaN as 0.0 or original)
+        df['Debit'] = df['Calculated_Debit'].fillna(df['Debit'])
+        df['Debit'] = pd.to_numeric(df['Debit'], errors='coerce').fillna(0.0).round(2)
         
-        # Check if we should overwrite extracted D/C with Calculated
-        # Yes, usually safer for Ecobank.
-        df.loc[1:, 'Debit'] = df.loc[1:, 'Calculated_Debit']
-        df.loc[1:, 'Credit'] = df.loc[1:, 'Calculated_Credit']
+        df['Credit'] = df['Calculated_Credit'].fillna(df['Credit'])
+        df['Credit'] = pd.to_numeric(df['Credit'], errors='coerce').fillna(0.0).round(2)
+
+        # 3. Clean up the stray numbers that got thrown into your Date column
+        if 'Date' in df.columns:
+            df['Date'] = df['Date'].astype(str).str.replace(r'\s+\d+$', '', regex=True)
+
+        # Drop temporary columns
+        df.drop(columns=['Balance_Diff', 'Calculated_Debit', 'Calculated_Credit'], inplace=True, errors='ignore')
 
     for i, row in df.iterrows():
         std_txn = {
