@@ -23,11 +23,26 @@ def extract_ecobank_final(pdf_path, metadata: Dict = None) -> List[Dict]:
         "min_words_horizontal": 1,
     }
 
+    def crop_table_area(page):
+        w, h = page.width, page.height
+        # Crop header (top 80) and footer (bottom 60)
+        # Ensure we don't crop if page is too small
+        if h < 150: return page
+        return page.crop((0, 80, w, h - 60))
+
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
-            tables = page.extract_tables(table_settings)
-            for t in (tables or []):
-                all_rows.extend(t)
+            try:
+                p = crop_table_area(page)
+                tables = p.extract_tables(table_settings)
+                for t in (tables or []):
+                    all_rows.extend(t)
+            except Exception as e:
+                print(f"DEBUG: Error cropping/extracting page: {e}")
+                # Fallback to full page if crop fails
+                tables = page.extract_tables(table_settings)
+                for t in (tables or []):
+                    all_rows.extend(t)
 
     df = pd.DataFrame(all_rows)
     if df.empty: return []
