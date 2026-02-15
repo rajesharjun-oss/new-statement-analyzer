@@ -7,55 +7,29 @@ from datetime import datetime
 def extract_ecobank_final(pdf_path, metadata: Dict = None) -> List[Dict]:
     all_rows = []
     
-    # 1. Use strict text-based table extraction with tighter tolerances.
-    table_settings = {
-        "vertical_strategy": "text",
-        "horizontal_strategy": "text",
-        "snap_tolerance": 3,
-        "snap_x_tolerance": 3,
-        "snap_y_tolerance": 3,
-        "join_tolerance": 3,
-        "join_x_tolerance": 3,
-        "join_y_tolerance": 3,
-        "intersection_x_tolerance": 5,
-        "intersection_y_tolerance": 5,
-        "min_words_vertical": 1,
-        "min_words_horizontal": 1,
-    }
-
-    def crop_table_area(page):
-        w, h = page.width, page.height
-        # Crop header (top 80) and footer (bottom 60)
-        # Ensure we don't crop if page is too small
-        if h < 150: return page
-        return page.crop((0, 80, w, h - 60))
-
+    # 1. Use strict default table extraction. This forces wrapped numbers 
+    # to stay inside their column cells based on drawn gridlines.
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
-            try:
-                p = crop_table_area(page)
-                tables = p.extract_tables(table_settings)
-                for t in (tables or []):
-                    all_rows.extend(t)
-            except Exception as e:
-                print(f"DEBUG: Error cropping/extracting page: {e}")
-                # Fallback to full page if crop fails
-                tables = page.extract_tables(table_settings)
-                for t in (tables or []):
-                    all_rows.extend(t)
+            table = page.extract_table() 
+            if table:
+                all_rows.extend(table)
 
     df = pd.DataFrame(all_rows)
     if df.empty: return []
 
     # 2. Map Headers
     # Find header row by looking for 'Transaction Date'
+    # We convert to string and check case-insensitive
     header_idx = df[df.apply(lambda r: r.astype(str).str.contains('Transaction Date', case=False, na=False).any(), axis=1)].index
     
     if not header_idx.empty:
+        # Set header
         df.columns = df.iloc[header_idx[0]].astype(str).str.strip()
+        # Slice data after header
         df = df.iloc[header_idx[0] + 1:].reset_index(drop=True)
 
-    # Normalize column names
+    # Normalize column names for mapping
     col_map = {}
     for c in df.columns:
         c_upper = str(c).upper()
@@ -67,11 +41,15 @@ def extract_ecobank_final(pdf_path, metadata: Dict = None) -> List[Dict]:
     
     df = df.rename(columns=col_map)
 
-    # 3. Clean wrapped numbers
+    # 3. Clean wrapped numbers (e.g., "13,046,880.\n13" -> 13046880.13)
     def clean_amount(val):
         if pd.isna(val) or str(val).strip() == '': return 0.0
+        
+        # Remove newlines, spaces, and commas
         clean_str = str(val).replace('\n', '').replace(' ', '').replace(',', '')
+        # Keep only digits and dots (and minus sign if any, though usually debits are positive in column)
         clean_str = re.sub(r'[^\d.-]', '', clean_str)
+        
         try:
             return float(clean_str) if clean_str else 0.0
         except ValueError:
@@ -81,21 +59,24 @@ def extract_ecobank_final(pdf_path, metadata: Dict = None) -> List[Dict]:
         if col in df.columns:
             df[col] = df[col].apply(clean_amount)
 
-    # Drop rows without financial movement
+    # Drop rows without financial movement (and ensure columns exist)
     if 'Debit' in df.columns and 'Credit' in df.columns:
         df = df[(df['Debit'] > 0) | (df['Credit'] > 0)]
     
     # 4. Final Formatting
     final_txns = []
     for i, row in df.iterrows():
+        # Handle dates that might have wrapped newlines
         date_val = str(row.get('Date', '')).split('\n')[0].strip()
+        # Parse Date
         dt = date_val
         try:
+            # Try parsing DD-Mon-YYYY
             if len(date_val) >= 11:
                 dt_obj = datetime.strptime(date_val[:11], '%d-%b-%Y')
                 dt = dt_obj.strftime('%Y-%m-%d')
         except:
-            pass
+            pass # Keep original string if parse fails
 
         final_txns.append({
             "date": dt,
@@ -109,7 +90,7 @@ def extract_ecobank_final(pdf_path, metadata: Dict = None) -> List[Dict]:
             "balance": float(row.get('Balance', 0)) if 'Balance' in row else 0.0,
             "category": "Unallocated",
             "is_reversal": False,
-            "_page": 0,
+            "_page": 0, # simplified
             "_row": i
         })
 
