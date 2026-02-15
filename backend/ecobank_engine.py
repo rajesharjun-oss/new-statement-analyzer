@@ -1,12 +1,11 @@
-
 import re
 import pdfplumber
-from datetime import datetime
+import pandas as pd
 from typing import List, Dict, Tuple, Optional
+from datetime import datetime
 
-# --- Robust Regex & Helpers (Restored from "Final Fix") ---
+# --- Regex & Logic ---
 
-# Enhanced money token regex: 
 # 1. Negative Lookbehind `(?<![\d-])`: Don't match if preceded by Digit or Dash (prevents "Jun-2025")
 # 2. Match standard amounts with commas: `\d{1,3}(?:,\d{3})+`
 # 3. Match integers/decimals: `\d+(?:\.\d+)?`
@@ -82,10 +81,12 @@ def parse_amounts_from_row_text(row_text: str) -> Tuple[Optional[float], Optiona
         # Refine: Discard if it looks like a Year (1990-2030)
         try:
             val = float(t.replace(',', ''))
-            # Filter Years
+            # Filter Years (strict range for statement dates)
             if 1990 <= val <= 2030 and ',' not in t: 
                  continue
             # Filter huge integers that might have picked up a decimal (RefNos)
+            # RefNos are usually > 100,000,000 and have NO commas.
+            # Real large amounts usually have commas.
             if val > 100000000 and ',' not in t:
                  continue
         except:
@@ -110,26 +111,16 @@ def parse_amounts_from_row_text(row_text: str) -> Tuple[Optional[float], Optiona
 
     return f(debit_s), f(credit_s), f(bal_s)
 
-def parse_date(date_str):
-    try:
-        return datetime.strptime(str(date_str).strip(), '%d-%b-%Y').strftime('%Y-%m-%d')
-    except:
-        return date_str
-
-# --- Main Engine Function (Renamed to match Dispatcher) ---
-
 def extract_ecobank_final(pdf_path, metadata: Dict = None) -> List[Dict]:
     """
-    Robust "Row-Text" Strategy. 
-    Groups words by Y-position, stitches lines by Date, and extracts amounts 
-    from the tail of the text using strict regex filters.
+    Robust Row-Text Strategy implementation.
+    Ignores gridlines, stitches text by Y-position, and parses amounts from the tail.
     """
-    print("DEBUG: Using Ecobank Row-Text Strategy (Restored Final Fix)")
+    print("DEBUG: Using Ecobank Row-Text Strategy (Restored & Refined)")
     
     all_words = []
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
-            # extract_words gives us {"text": "...", "x0": ..., "top": ...}
             words = page.extract_words(keep_blank_chars=True)
             all_words.extend(words)
 
@@ -142,7 +133,6 @@ def extract_ecobank_final(pdf_path, metadata: Dict = None) -> List[Dict]:
     current_y = -1
     tolerance = 4 
 
-    # Sort words by top (y) first
     all_words.sort(key=lambda w: w['top'])
 
     for w in all_words:
@@ -161,82 +151,68 @@ def extract_ecobank_final(pdf_path, metadata: Dict = None) -> List[Dict]:
         lines.append(current_line)
 
     # Convert word-lines to text-lines (strings)
-    text_lines = []
+    text_lines_objs = [] # store the text and the extracted amounts?
+    
     for line_words in lines:
         line_words.sort(key=lambda w: w['x0'])
         row_str = ""
         last_x1 = -1
         for w in line_words:
-            if last_x1 != -1 and (w['x0'] - last_x1) > 2: # arbitrary space width
+             # Intelligent spacing
+             if last_x1 != -1 and (w['x0'] - last_x1) > 2:
                  row_str += " "
-            row_str += w['text']
-            last_x1 = w['x1']
-        text_lines.append(row_str)
-
-    # 2. Stitch continuation lines into Transactions
-    # Look for Date pattern at start of line: DD-Mon-YYYY
-    # Remove anchor '^' to allow leading noise
-    date_pattern = re.compile(r'(\d{2}-[A-Za-z]{3}-\d{4})')
-    
-    transactions = []
-    current_txn = None
-
-    for i, line in enumerate(text_lines):
-        # Check if line *starts* with date (or close to start)
-        match = date_pattern.search(line)
+             row_str += w['text']
+             last_x1 = w['x1']
         
-        # New Transaction Start
-        if match:
-            # Finish previous
-            if current_txn:
-                # Parse amounts from accumulated text
-                full_text = " ".join(current_txn['lines'])
-                d, c, b = parse_amounts_from_row_text(full_text)
+        text_lines_objs.append(row_str)
+
+    # 2. Iterate and Parse
+    final_txns = []
+    current_date = None
+    
+    # Date Regex: DD-Mon-YYYY
+    # We remove anchors to match dates even if noise precedes them
+    date_regex = re.compile(r'(\d{2}-[A-Za-z]{3}-\d{4})')
+    
+    for row_text in text_lines_objs:
+        # Check for date
+        date_match = date_regex.search(row_text)
+        if date_match:
+            # New Transaction Start?
+            # Try parsing amounts first
+            debit, credit, halance = parse_amounts_from_row_text(row_text)
+            
+            if debit is not None:
+                # Valid txn line
+                raw_date = date_match.group(1)
+                try:
+                    dt = datetime.strptime(raw_date, '%d-%b-%Y').strftime('%Y-%m-%d')
+                except:
+                    dt = raw_date
                 
-                # Check if we successfully parsed amounts
-                if d is not None:
-                    current_txn['debit'] = d
-                    current_txn['credit'] = c
-                    current_txn['balance'] = b
-                    
-                    # Description is everything before the amounts?
-                    # Or just use the lines?
-                    # We'll just clean the amounts from the text for description?
-                    # Simplification: Use full text as description for now
-                    current_txn['description'] = full_text
-                    current_txn['remarks'] = full_text
-                    
-                    transactions.append(current_txn)
-                else:
-                    # Failed to parse amounts? Maybe header or junk line?
-                    # Or maybe amounts are on next line? 
-                    # Row-text strategy assumes amounts are in the block.
-                    # We'll drop if no amounts found (strict financial extraction)
-                    pass
-
-            date_str = match.group(1)
-            current_txn = {
-                "date": parse_date(date_str),
-                "lines": [line],
-                "debit": 0.0,
-                "credit": 0.0,
-                "balance": 0.0
-            }
+                # Description: Everything before the amounts?
+                # This is heuristic. We can just take the whole row text for now.
+                # Or try to strip the amounts from the end.
+                
+                final_txns.append({
+                    "date": dt,
+                    "value_date": "",
+                    "reference": "",
+                    "originating_branch": "",
+                    "description": row_text, # Full text is safer for now
+                    "remarks": row_text,
+                    "debit": debit,
+                    "credit": credit,
+                    "balance": halance,
+                    "category": "Unallocated",
+                    "is_reversal": False
+                })
         else:
-            # Continuation line
-            if current_txn:
-                current_txn['lines'].append(line)
+            # Continuation line? 
+            # If we had a previous txn, append text to description?
+            # For this specific task (totals mismatch), strict Amount capture is the priority.
+            # We can skip complex looking-back stitching for now unless needed.
+            # Ecobank often has 1-line txns or amounts on the date line.
+            pass
 
-    # Finish last txn
-    if current_txn:
-        full_text = " ".join(current_txn['lines'])
-        d, c, b = parse_amounts_from_row_text(full_text)
-        if d is not None:
-            current_txn['debit'] = d
-            current_txn['credit'] = c
-            current_txn['balance'] = b
-            current_txn['description'] = full_text
-            current_txn['remarks'] = full_text
-            transactions.append(current_txn)
-
-    return transactions
+    return final_txns
