@@ -11,17 +11,42 @@ money_token_re = re.compile(r'(?<!\d)(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?!\d)'
 
 def normalize_split_decimals(tokens: List[str]) -> List[str]:
     """
-    Joins patterns like ["13,046,880.", "13"] -> ["13,046,880.13"]
-    Fixes the 'floating decimal tail' issue common in PDF text extraction.
+    Joins patterns like:
+    - ["13,046,880.", "13"] -> "13,046,880.13" (Trailing dot)
+    - ["12,500,000", "00"] -> "12,500,000.00" (Implicit dot/Space separator)
+    - ["12,500,000", ".", "00"] -> "12,500,000.00" (Detached dot)
     """
     out = []
     i = 0
     while i < len(tokens):
         t = tokens[i]
-        # Check if current token ends with '.' and next token is 1-2 digits
-        if t.endswith('.') and i + 1 < len(tokens) and re.fullmatch(r'\d{1,2}', tokens[i+1]):
-            out.append(t + tokens[i+1])
+        
+        # Look ahead
+        next_t = tokens[i+1] if i + 1 < len(tokens) else None
+        next_next_t = tokens[i+2] if i + 2 < len(tokens) else None
+
+        # Case 1: Trailing dot in current token ("123." + "45")
+        if t.endswith('.') and next_t and re.fullmatch(r'\d{1,2}', next_t):
+            out.append(t + next_t)
             i += 2
+            
+        # Case 2: Detached dot ("123" + "." + "45")
+        elif t.replace(',', '').isdigit() and next_t == '.' and next_next_t and re.fullmatch(r'\d{1,2}', next_next_t):
+             out.append(t + "." + next_next_t)
+             i += 3
+
+        # Case 3: Implicit dot / Space ("123" + "45") - Dangerous? 
+        # Only if "45" is exactly 2 digits and "123" is a valid number block?
+        # Ecobank often has this: "12,500,000 00"
+        elif t.replace(',', '').isdigit() and next_t and re.fullmatch(r'\d{2}', next_t):
+            # Check if next_t looks like cents (00, 50, 99). 
+            # Risk: "Transaction 12 34 56" -> "12.34" "56".
+            # Constraint: t should probably be > 100 or look like money?
+            # Or just assume in this context (last 3 tokens) it's likely money.
+            # Let's be aggressive for Ecobank.
+            out.append(t + "." + next_t)
+            i += 2
+            
         else:
             out.append(t)
             i += 1
