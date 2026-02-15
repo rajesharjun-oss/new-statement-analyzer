@@ -5,9 +5,8 @@ from typing import List, Dict, Tuple, Optional
 from datetime import datetime
 
 # --- User's Provided Logic & Regex ---
-# Enhanced money token regex to capture "1,234.56", "1234", "12.34"
-# Added handling for possible leading/trailing checks
-money_token_re = re.compile(r'(?<!\d)(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?!\d)')
+# Enhanced money token regex: captures standard numbers AND standalone dashes (for zero)
+money_token_re = re.compile(r'(?<!\d)(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?!\d)|(?<!\w)-(?!\w)')
 
 def normalize_split_decimals(tokens: List[str]) -> List[str]:
     """
@@ -35,15 +34,10 @@ def normalize_split_decimals(tokens: List[str]) -> List[str]:
              out.append(t + "." + next_next_t)
              i += 3
 
-        # Case 3: Implicit dot / Space ("123" + "45") - Dangerous? 
-        # Only if "45" is exactly 2 digits and "123" is a valid number block?
-        # Ecobank often has this: "12,500,000 00"
+        # Case 3: Implicit dot / Space ("123" + "45")
         elif t.replace(',', '').isdigit() and next_t and re.fullmatch(r'\d{2}', next_t):
-            # Check if next_t looks like cents (00, 50, 99). 
-            # Risk: "Transaction 12 34 56" -> "12.34" "56".
-            # Constraint: t should probably be > 100 or look like money?
-            # Or just assume in this context (last 3 tokens) it's likely money.
-            # Let's be aggressive for Ecobank.
+            # Check context: usually money tokens don't follow integers unless it's a date?
+            # But here we are processing row text.
             out.append(t + "." + next_t)
             i += 2
             
@@ -75,6 +69,9 @@ def parse_amounts_from_row_text(row_text: str) -> Tuple[Optional[float], Optiona
     debit_s, credit_s, bal_s = toks[-3], toks[-2], toks[-1]
 
     def f(x):
+        # Handle dash as zero
+        if x.strip() == '-':
+            return 0.0
         # Remove commas, convert to float
         clean = x.replace(',', '')
         try:
@@ -159,7 +156,8 @@ def extract_ecobank_via_row_text_strategy(pdf_path, metadata: Dict) -> List[Dict
 
     # 2. Stitch continuation lines into Transactions
     # Look for Date pattern at start of line: DD-Mon-YYYY
-    date_pattern = re.compile(r'^(\d{2}-[A-Za-z]{3}-\d{4})')
+    # Remove anchor '^' to allow leading noise (page nums etc)
+    date_pattern = re.compile(r'(\d{2}-[A-Za-z]{3}-\d{4})')
     
     transactions = []
     current_txn = None
