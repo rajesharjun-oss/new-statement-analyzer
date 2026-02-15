@@ -5,8 +5,13 @@ from typing import List, Dict, Tuple, Optional
 from datetime import datetime
 
 # --- User's Provided Logic & Regex ---
-# Enhanced money token regex: captures standard numbers AND standalone dashes (for zero)
-money_token_re = re.compile(r'(?<!\d)(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?!\d)|(?<!\w)-(?!\w)')
+# Enhanced money token regex: 
+# 1. Negative Lookbehind `(?<![\d-])`: Don't match if preceded by Digit or Dash (prevents "Jun-2025")
+# 2. Match standard amounts with commas: `\d{1,3}(?:,\d{3})+`
+# 3. Match integers/decimals: `\d+(?:\.\d+)?`
+# 4. Negative Lookahead `(?!\d)`: Don't match if followed by digit.
+# 5. Dash as zero: `(?<!\w)-(?!\w)`
+money_token_re = re.compile(r'(?<![\d-])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?!\d)|(?<!\w)-(?!\w)')
 
 def normalize_split_decimals(tokens: List[str]) -> List[str]:
     """
@@ -66,15 +71,33 @@ def parse_amounts_from_row_text(row_text: str) -> Tuple[Optional[float], Optiona
     toks = normalize_split_decimals(toks)
     
     # FILTER: Keep only tokens that look like Money (have dot OR are dash)
-    # This removes pure integers like "2025", "25062318", "16" that shouldn't be amounts
-    # Exception: Some banks use integers for amounts (500), but Ecobank is consistent with decimals.
-    # We'll requiring a dot OR a dash.
+    # AND are not years or huge ref numbers
     valid_money_toks = []
     for t in toks:
-        if '.' in t or t.strip() == '-':
-            valid_money_toks.append(t)
-        # Optional: risky fallback? If we have "500" and it strongly looks like a column?
-        # For now, strict filter fixes the known bug "25062318" vs "8,000,000.00"
+        is_money_format = '.' in t or t.strip() == '-'
+        if not is_money_format:
+            continue
+            
+        # Refine: Discard if it looks like a Year (1990-2030)
+        # Even if it has a dot? E.g. "2025.01" (created by bad merge? No, regex fix helps).
+        # But let's be safe.
+        try:
+            val = float(t.replace(',', ''))
+            # Filter Years
+            if 1990 <= val <= 2030 and ',' not in t: 
+                 continue
+            # Filter huge integers that might have picked up a decimal (RefNos)
+            # RefNos are usually > 100,000,000 and have NO commas.
+            # Real large amounts usually have commas.
+            # Exception: 12500000.00 might not have commas if extracted poorly?
+            # But pdfplumber usually preserves them.
+            if val > 100000000 and ',' not in t:
+                 continue
+                 
+        except:
+            pass
+
+        valid_money_toks.append(t)
     
     if len(valid_money_toks) < 3:
         return None, None, None
