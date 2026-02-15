@@ -12,6 +12,7 @@ def normalize_split_decimals(tokens: List[str]) -> List[str]:
     """
     Joins patterns like:
     - ["13,046,880.", "13"] -> "13,046,880.13" (Trailing dot)
+    - ["14,156,559.6", "7"] -> "14,156,559.67" (Split decimal part)
     - ["12,500,000", "00"] -> "12,500,000.00" (Implicit dot/Space separator)
     - ["12,500,000", ".", "00"] -> "12,500,000.00" (Detached dot)
     """
@@ -24,20 +25,23 @@ def normalize_split_decimals(tokens: List[str]) -> List[str]:
         next_t = tokens[i+1] if i + 1 < len(tokens) else None
         next_next_t = tokens[i+2] if i + 2 < len(tokens) else None
 
-        # Case 1: Trailing dot in current token ("123." + "45")
+        # Case 1: Trailing dot ("123." + "45")
         if t.endswith('.') and next_t and re.fullmatch(r'\d{1,2}', next_t):
             out.append(t + next_t)
             i += 2
             
-        # Case 2: Detached dot ("123" + "." + "45")
+        # Case 2: Split decimal part ("123.6" + "7") -> "123.67"
+        elif re.search(r'\.\d$', t) and next_t and re.fullmatch(r'\d', next_t):
+            out.append(t + next_t)
+            i += 2
+
+        # Case 3: Detached dot ("123" + "." + "45")
         elif t.replace(',', '').isdigit() and next_t == '.' and next_next_t and re.fullmatch(r'\d{1,2}', next_next_t):
              out.append(t + "." + next_next_t)
              i += 3
 
-        # Case 3: Implicit dot / Space ("123" + "45")
+        # Case 4: Implicit dot / Space ("123" + "45")
         elif t.replace(',', '').isdigit() and next_t and re.fullmatch(r'\d{2}', next_t):
-            # Check context: usually money tokens don't follow integers unless it's a date?
-            # But here we are processing row text.
             out.append(t + "." + next_t)
             i += 2
             
@@ -55,24 +59,32 @@ def parse_amounts_from_row_text(row_text: str) -> Tuple[Optional[float], Optiona
     # Replace newlines with space for cleaner regex matching
     clean_text = row_text.replace('\n', ' ')
     
+    # Capture ALL potential number-like tokens (including noise integers)
     toks = money_token_re.findall(clean_text)
+    
+    # Merge split decimals
     toks = normalize_split_decimals(toks)
     
-    # We need at least 3 numbers for D/C/B. 
-    # Sometimes there are more (if description contains numbers).
-    # We take the *last* 3.
-    if len(toks) < 3:
-        # Check for case where 0.00 might be represented as '-' or blank?
-        # If we have 1 or 2 tokens, it's ambiguous.
+    # FILTER: Keep only tokens that look like Money (have dot OR are dash)
+    # This removes pure integers like "2025", "25062318", "16" that shouldn't be amounts
+    # Exception: Some banks use integers for amounts (500), but Ecobank is consistent with decimals.
+    # We'll requiring a dot OR a dash.
+    valid_money_toks = []
+    for t in toks:
+        if '.' in t or t.strip() == '-':
+            valid_money_toks.append(t)
+        # Optional: risky fallback? If we have "500" and it strongly looks like a column?
+        # For now, strict filter fixes the known bug "25062318" vs "8,000,000.00"
+    
+    if len(valid_money_toks) < 3:
         return None, None, None
 
-    debit_s, credit_s, bal_s = toks[-3], toks[-2], toks[-1]
-
+    # Take last 3 valid tokens
+    debit_s, credit_s, bal_s = valid_money_toks[-3], valid_money_toks[-2], valid_money_toks[-1]
+    
     def f(x):
-        # Handle dash as zero
         if x.strip() == '-':
             return 0.0
-        # Remove commas, convert to float
         clean = x.replace(',', '')
         try:
             return float(clean)
