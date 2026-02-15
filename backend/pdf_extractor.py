@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Any
 from pathlib import Path
 from typing import List, Dict, Tuple, Any
-from backend.ecobank_engine import extract_ecobank_via_row_text_strategy
+from backend.ecobank_engine import extract_ecobank_final
 
 # OCR fallback
 try:
@@ -438,11 +438,11 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
     # --- 0c) Special Case: Ecobank Strategy (Row-Text + Regex)
     if bank_identifier == "ecobank":
         try:
-             # Use the new Row-Text Engine (User's Fix)
-             ecobank_txns = extract_ecobank_via_row_text_strategy(Path(pdf_path), metadata)
+             # Use the new Table Engine (User's Final Fix)
+             ecobank_txns = extract_ecobank_final(Path(pdf_path), metadata)
              if ecobank_txns:
                  return ecobank_txns, metadata
-             print("DEBUG: Ecobank row-text strategy returned no transactions, falling back to standard...")
+             print("DEBUG: Ecobank table strategy returned no transactions, falling back to standard...")
         except Exception as e:
              print(f"DEBUG: Ecobank row-text strategy failed: {e}")
 
