@@ -23,8 +23,8 @@ export const analyzeDocument = async (
 
     return {
         transactions: transactions,
-        reconciliation_failed: summary.validationStatus === "Mismatch",
-        reconciliation_warnings: summary.validationStatus === "Mismatch" ? ["Tail mismatch found"] : [],
+        reconciliation_failed: summary.totalsMatch === false,
+        reconciliation_warnings: summary.totalsMatch === false ? [summary.validationStatus || "Totals mismatch"] : [],
         error_indices: [],
         currency: "NGN",
         organizationName: summary.accountName || "Unknown Org",
