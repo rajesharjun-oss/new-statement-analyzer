@@ -1,394 +1,429 @@
-import { GoogleGenAI } from "@google/genai";
+import * as pdfjsLibProxy from 'pdfjs-dist';
+import { GoogleGenAI, Type } from "@google/genai";
 import { AnalysisResult, Transaction, AnalysisStatistics } from "../types";
 import { categorizeTransaction } from "./categorizationRules";
-import { extractTransactionsFromPdf } from "./pdfService";
-import { PDFDocument } from 'pdf-lib';
 
-const MODEL_NAME = "gemini-2.0-flash";
+// Handle ESM default export structure if necessary
+const pdfjsLib = (pdfjsLibProxy as any).default || pdfjsLibProxy;
 
-const base64ToArrayBuffer = (base64: string) => {
-    const binaryString = window.atob(base64);
-    const len = binaryString.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
+// Initialize PDF.js worker
+if (pdfjsLib.GlobalWorkerOptions) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
+
+const DATE_REGEX = /(?:\b\d{1,2}[-/\.\s](?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|\d{1,2})[-/\.\s](?:\d{2,4})\b)|(?:\b\d{4}[-/\.\s]\d{1,2}[-/\.\s]\d{1,2}\b)/i;
+
+// --- TYPE DEFINITIONS FOR PARSING ---
+interface TextItem {
+    str: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+}
+
+interface LayoutZones {
+    date: { min: number, max: number };
+    debit: { min: number, max: number };
+    credit: { min: number, max: number };
+    balance: { min: number, max: number };
+    mode: '3_COL' | '2_COL' | 'UNKNOWN';
+}
+
+// --- HELPER: GEMINI AI EXTRACTION (FALLBACK) ---
+const extractWithGemini = async (
+    base64Data: string,
+    mimeType: string,
+    apiKey: string
+): Promise<Transaction[]> => {
+    try {
+        const ai = new GoogleGenAI({ apiKey });
+        const model = "gemini-2.5-flash";
+
+        const prompt = `
+        You are a specialized financial OCR engine. Extract all bank transactions from this bank statement.
+        
+        CRITICAL RULES:
+        1. Ignore "Balance Brought Forward" or "Opening Balance" rows unless they are the very first row.
+        2. Ignore page totals, summaries, and headers.
+        3. If a row has no date, strictly inherit the date from the previous row.
+        4. Return raw numbers (e.g. 1500.00), do not include currency symbols.
+        5. Return a JSON array.
+        `;
+
+        const response = await ai.models.generateContent({
+            model: model,
+            contents: {
+                parts: [
+                    { inlineData: { mimeType, data: base64Data } },
+                    { text: prompt }
+                ]
+            },
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.ARRAY,
+                    items: {
+                        type: Type.OBJECT,
+                        properties: {
+                            date: { type: Type.STRING, description: "Format: DD-MMM-YYYY or YYYY-MM-DD" },
+                            description: { type: Type.STRING },
+                            debit: { type: Type.NUMBER },
+                            credit: { type: Type.NUMBER },
+                            balance: { type: Type.NUMBER }
+                        }
+                    }
+                }
+            }
+        });
+
+        const text = response.text || "[]";
+        // Clean potential markdown formatting
+        const cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
+        const raw = JSON.parse(cleanText);
+
+        return raw.map((r: any) => ({
+            date: r.date,
+            description: r.description,
+            debit: r.debit || 0,
+            credit: r.credit || 0,
+            balance: r.balance || 0,
+            category: "Unallocated",
+            decision_source: "AI",
+            confidence: 0.95
+        }));
+    } catch (e) {
+        console.error("Gemini Extraction Failed", e);
+        return [];
     }
-    return bytes.buffer;
 };
 
-// --- CORE: Bank Analysis Service ---
+// --- HELPER: GEMINI CATEGORIZATION ---
+const enhanceTransactionsWithAI = async (
+    transactions: Transaction[],
+    apiKey: string
+): Promise<Transaction[]> => {
+    const unallocated = transactions.filter(t => t.category === "Unallocated" || t.category === "Review Required");
+
+    if (unallocated.length === 0) return transactions;
+
+    const sampleSize = Math.min(unallocated.length, 50);
+    const sample = unallocated.slice(0, sampleSize);
+
+    const descriptionsMap = new Map<string, string>();
+
+    try {
+        const ai = new GoogleGenAI({ apiKey });
+        const model = "gemini-2.5-flash";
+
+        const prompt = `
+      Categorize these bank transactions into: [Bank Charges, Operating Income, Office Rent, Transport, Repairs, Staff Welfare, Salaries, Loans, Unallocated].
+      Return JSON: [{"d": "substring_of_description", "c": "Category"}]
+      
+      Transactions:
+      ${sample.map(t => `- ${t.description} (${t.debit > 0 ? 'DR ' + t.debit : 'CR ' + t.credit})`).join('\n')}
+    `;
+
+        const response = await ai.models.generateContent({
+            model: model,
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.ARRAY,
+                    items: {
+                        type: Type.OBJECT,
+                        properties: {
+                            d: { type: Type.STRING },
+                            c: { type: Type.STRING }
+                        }
+                    }
+                }
+            }
+        });
+
+        const text = response.text || "[]";
+        const cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
+        const results = JSON.parse(cleanText);
+
+        results.forEach((r: any) => {
+            if (r.d && r.c) descriptionsMap.set(r.d, r.c);
+        });
+
+    } catch (e) {
+        console.warn("AI Categorization failed", e);
+    }
+
+    return transactions.map(t => {
+        if (t.category === "Unallocated" || t.category === "Review Required") {
+            for (const [descKey, catVal] of descriptionsMap.entries()) {
+                if (t.description.includes(descKey)) {
+                    return { ...t, category: catVal, decision_source: 'AI', confidence: 0.85 };
+                }
+            }
+        }
+        return t;
+    });
+};
+
+// --- CORE: DETERMINISTIC PARSING ---
+
+const getPageTextItems = async (doc: any, pageNum: number): Promise<TextItem[]> => {
+    const page = await doc.getPage(pageNum);
+    const textContent = await page.getTextContent();
+
+    return textContent.items.map((item: any) => ({
+        str: item.str,
+        x: item.transform[4],
+        y: item.transform[5],
+        width: item.width,
+        height: item.height
+    }));
+};
+
+const parseAmount = (str: string): number => {
+    if (!str) return 0;
+    let clean = str.replace(/\s+/g, '').replace(/,/g, '');
+    if (clean.endsWith('-')) clean = '-' + clean.slice(0, -1);
+    else if (clean.startsWith('(') && clean.endsWith(')')) clean = '-' + clean.slice(1, -1);
+    clean = clean.replace(/dr$|cr$/i, '');
+    const dotCount = (clean.match(/\./g) || []).length;
+    if (dotCount > 1) clean = clean.replace(/\.(?=.*\.)/g, '');
+    const val = parseFloat(clean);
+    return isNaN(val) ? 0 : val;
+};
+
+const isMoneyString = (str: string): boolean => {
+    const clean = str.replace(/[,\s]/g, '');
+    return /^-?\(?\d+(:?\.\d+)?\)?(?:[DC]R)?$/i.test(clean) && clean.length > 0;
+};
+
+const findClusters = (values: number[], tolerance: number = 20) => {
+    if (values.length === 0) return [];
+    values.sort((a, b) => a - b);
+    const clusters: { center: number, count: number, sum: number }[] = [];
+    for (const v of values) {
+        let found = false;
+        for (const c of clusters) {
+            if (Math.abs(c.center - v) <= tolerance) {
+                c.sum += v;
+                c.count++;
+                c.center = c.sum / c.count;
+                found = true;
+                break;
+            }
+        }
+        if (!found) clusters.push({ center: v, count: 1, sum: v });
+    }
+    return clusters.sort((a, b) => b.count - a.count);
+};
+
 export const analyzeBankStatement = async (
     base64Data: string,
     mimeType: string,
     customApiKey?: string,
-    onBatchComplete?: (txns: Transaction[], progress: number, message: string, partialStats?: { orgName: string, bankName: string, currency: string }) => void,
-    forceAI: boolean = false
+    onProgress?: (current: number, total: number) => void
 ): Promise<AnalysisResult> => {
-    const runStats: AnalysisStatistics = {
+
+    const globalStats: AnalysisStatistics = {
         total_txns: 0, rule_hits: 0, memory_hits: 0, ai_txns: 0, ai_calls: 0, human_overrides: 0, ai_rate_percent: 0, auto_rate_percent: 0
     };
 
     try {
-        let transactions: Transaction[] = [];
-        let orgName = "Detected Organization";
-        let bankName = "Detected Bank";
-        let currency = "NGN"; // Default
-        let aiReportedCount = 0;
+        const binaryString = atob(base64Data);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
 
-        // 1. DETERMINISTIC PDF EXTRACTION (Hybrid Approach)
-        let pdfExtractionSuccess = false;
+        const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
+        const totalPages = pdf.numPages;
 
-        if (mimeType === 'application/pdf' && !forceAI) {
-            try {
-                console.log("[GeminiService] Attempting Deterministic PDF Extraction...");
-                const buffer = base64ToArrayBuffer(base64Data);
-                const pdfTxns = await extractTransactionsFromPdf(buffer);
+        let allTransactions: Transaction[] = [];
+        let metadata = { org: "Detected Organization", bank: "Detected Bank" };
+        let layoutFailed = true;
 
-                if (pdfTxns.length > 0) {
-                    // VALIDATION 1: formatting check (dates, amounts)
-                    const totalValue = pdfTxns.reduce((sum, t) => sum + (t.debit || 0) + (t.credit || 0), 0);
+        // --- PHASE 1: DETERMINISTIC LAYOUT DETECTION ---
+        const dateXs: number[] = [];
+        const moneyXs: number[] = [];
+        const scanLimit = Math.min(totalPages, 5);
 
-                    // VALIDATION 2: Reconciliation Math Check
-                    // We check if the extraction is "internally consistent". 
-                    // If the local parser is reading garbage columns, the Balance math will fail.
-                    let mathFailures = 0;
-                    if (pdfTxns.length > 1) {
-                        for (let i = 1; i < pdfTxns.length; i++) {
-                            const prev = pdfTxns[i - 1];
-                            const curr = pdfTxns[i];
-                            const exp = (prev.balance || 0) + (curr.credit || 0) - (curr.debit || 0);
-                            if (Math.abs(exp - (curr.balance || 0)) > 1.0) { // $1 tolerance
-                                mathFailures++;
-                            }
-                        }
-                    }
-
-                    const failureRate = pdfTxns.length > 0 ? (mathFailures / pdfTxns.length) : 0;
-
-                    if (totalValue > 0 && failureRate < 0.2) {
-                        // Accept if total value exists AND < 20% math failures. 
-                        // (20% is generous, usually it's 0% or 100% failure for column shifts)
-
-                        console.log(`[GeminiService] specialized PDF parser found ${pdfTxns.length} transactions. Math failure rate: ${(failureRate * 100).toFixed(1)}%`);
-                        transactions = pdfTxns;
-                        aiReportedCount = pdfTxns.length; // Trusted count
-                        pdfExtractionSuccess = true;
-                        orgName = "PDF Extracted"; // Placeholder
-
-                        // Notify immediately for fast extraction
-                        if (onBatchComplete) onBatchComplete(transactions, 100, "Done", { orgName, bankName, currency });
-                    } else {
-                        console.warn(`[GeminiService] PDF Extraction rejected. Value: ${totalValue.toFixed(2)}, Math Failures: ${mathFailures}/${pdfTxns.length} (${(failureRate * 100).toFixed(1)}%). Falling back to AI.`);
-                    }
+        for (let i = 1; i <= scanLimit; i++) {
+            const items = await getPageTextItems(pdf, i);
+            if (i === 1) {
+                const fullText = items.map(t => t.str).join(' ');
+                const knownBanks = ['GTBank', 'Zenith', 'Access', 'First Bank', 'UBA', 'Fidelity', 'Stanbic', 'Kuda', 'Opay'];
+                for (const b of knownBanks) {
+                    if (new RegExp(b, 'i').test(fullText)) { metadata.bank = b; break; }
                 }
-            } catch (pdfErr) {
-                console.warn("[GeminiService] PDF Extraction failed, falling back to AI:", pdfErr);
             }
+            items.forEach(item => {
+                if (DATE_REGEX.test(item.str)) dateXs.push(item.x);
+                else if (/[\d,]+\.\d{2}|^\d{4,}$/.test(item.str.trim())) moneyXs.push(item.x);
+            });
         }
 
-        // 2. AI GENERATION (Fallback or Non-PDF)
-        if (!pdfExtractionSuccess) {
-            console.log(`[GeminiService] Uploading ${mimeType} to Gemini 2.0 Flash...`);
+        const dateClusters = findClusters(dateXs, 40);
 
-            // If PDF and NOT Forced, we prefer to error out rather than silently use AI,
-            // creating a "Strict Mode" experience.
-            if (mimeType === 'application/pdf' && !forceAI) {
-                throw new Error("Deterministic extraction failed. Please ensure the PDF is a standard bank statement or enable 'Force Deep Scan'.");
-            }
+        // --- DETERMINISTIC EXECUTION ---
+        if (dateClusters.length > 0) {
+            const dateX = dateClusters[0].center;
+            const dateRange = { min: dateX - 30, max: dateX + 80 };
 
-            const getKeys = () => {
-                if (customApiKey) return [customApiKey];
-                let envKeys = "";
-                try {
-                    // Check process.env (injected by Vite define)
-                    if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
-                        envKeys = process.env.API_KEY;
-                    }
-                    // Check import.meta.env (Vite native)
-                    else if (import.meta.env && import.meta.env.VITE_API_KEY) {
-                        envKeys = import.meta.env.VITE_API_KEY;
-                    }
-                } catch (e) { }
-                return envKeys.split(',').map(k => k.trim()).filter(k => k.length > 0);
+            const validMoneyXs = moneyXs.filter(x => x > dateRange.max);
+            const moneyClusters = findClusters(validMoneyXs, 30);
+            const sortedCols = moneyClusters.filter(c => c.count > Math.max(3, scanLimit)).sort((a, b) => a.center - b.center);
+
+            const zones: LayoutZones = {
+                date: dateRange,
+                debit: { min: 0, max: 0 },
+                credit: { min: 0, max: 0 },
+                balance: { min: 0, max: 0 },
+                mode: 'UNKNOWN'
             };
-            const keys = getKeys();
 
-            if (keys.length === 0) {
-                throw new Error("No API Key available. Please configure it in the settings menu.");
+            const getZone = (center: number) => ({ min: center - 40, max: center + 50 });
+
+            if (sortedCols.length >= 3) {
+                zones.mode = '3_COL';
+                zones.debit = getZone(sortedCols[sortedCols.length - 3].center);
+                zones.credit = getZone(sortedCols[sortedCols.length - 2].center);
+                zones.balance = getZone(sortedCols[sortedCols.length - 1].center);
+            } else if (sortedCols.length === 2) {
+                zones.mode = '2_COL';
+                zones.debit = getZone(sortedCols[0].center);
+                zones.balance = getZone(sortedCols[1].center);
             }
 
-            // BATCH PROCESSING LOGIC
-            const BATCH_SIZE = 2; // Process 2 pages at a time to be safe and give frequent updates
-            let chunks: string[] = []; // Base64 chunks
+            // Only proceed with row parsing if we identified a valid layout
+            if (zones.mode !== 'UNKNOWN') {
+                layoutFailed = false;
 
-            if (mimeType === 'application/pdf') {
-                if (forceAI) {
-                    // Only use AI if explicitly forced
-                    try {
-                        const pdfBuffer = base64ToArrayBuffer(base64Data);
-                        const pdfDoc = await PDFDocument.load(pdfBuffer);
-                        const totalPages = pdfDoc.getPageCount();
-                        console.log(`[GeminiService] PDF has ${totalPages} pages. Batch size: ${BATCH_SIZE}`);
+                for (let i = 1; i <= totalPages; i++) {
+                    if (onProgress) onProgress(i, totalPages);
+                    const items = await getPageTextItems(pdf, i);
 
-                        if (totalPages > BATCH_SIZE) {
-                            for (let i = 0; i < totalPages; i += BATCH_SIZE) {
-                                const subDoc = await PDFDocument.create();
-                                const end = Math.min(i + BATCH_SIZE, totalPages);
-                                const pageIndices = Array.from({ length: end - i }, (_, k) => i + k);
-                                const copiedPages = await subDoc.copyPages(pdfDoc, pageIndices);
-                                copiedPages.forEach(page => subDoc.addPage(page));
-                                const base64Chunk = await subDoc.saveAsBase64();
-                                chunks.push(base64Chunk);
-                            }
+                    const rows: TextItem[][] = [];
+                    let currentRow: TextItem[] = [];
+                    const sortedItems = items.sort((a, b) => b.y - a.y);
+                    let lastY = -1;
+
+                    for (const item of sortedItems) {
+                        if (lastY === -1 || Math.abs(item.y - lastY) < 6) currentRow.push(item);
+                        else {
+                            rows.push(currentRow.sort((a, b) => a.x - b.x));
+                            currentRow = [item];
+                        }
+                        lastY = item.y;
+                    }
+                    if (currentRow.length) rows.push(currentRow.sort((a, b) => a.x - b.x));
+
+                    let pendingTransaction: Partial<Transaction> | null = null;
+                    let lastDate = "";
+
+                    for (const row of rows) {
+                        const rowText = row.map(i => i.str).join(' ');
+                        if (/^(DATE|TRANS|VALUE|DETAILS|DESCRIPTION|PARTICULARS|DEBIT|CREDIT|BALANCE)$/i.test(rowText)) continue;
+                        if (/PAGE\s+\d+|CONTINUED/i.test(rowText)) continue;
+                        if (/TOTAL|TURNOVER|SUMMARY/i.test(rowText) && !/OPENING/i.test(rowText)) continue;
+                        if (/BALANCE\s+(BROUGHT|CARRIED)\s+FORWARD|B\/F|C\/F/i.test(rowText) && allTransactions.length > 0) continue;
+
+                        const dateItem = row.find(item => item.x >= zones.date.min && item.x <= zones.date.max && DATE_REGEX.test(item.str));
+                        const isInZone = (item: TextItem, zone: { min: number, max: number }) => item.x >= zone.min && item.x <= zone.max;
+
+                        const debitItem = row.find(item => isInZone(item, zones.debit) && isMoneyString(item.str));
+                        const creditItem = row.find(item => isInZone(item, zones.credit) && isMoneyString(item.str));
+                        const balanceItem = row.find(item => isInZone(item, zones.balance) && isMoneyString(item.str));
+
+                        const descItems = row.filter(item =>
+                            item !== dateItem && item !== debitItem && item !== creditItem && item !== balanceItem &&
+                            item.x > zones.date.max &&
+                            item.x < (zones.debit.min > 0 ? zones.debit.min : zones.balance.min)
+                        );
+                        const descStr = descItems.map(i => i.str).join(' ').trim();
+
+                        if (dateItem) {
+                            if (pendingTransaction) allTransactions.push(pendingTransaction as Transaction);
+                            lastDate = dateItem.str;
+                            pendingTransaction = {
+                                date: dateItem.str,
+                                description: descStr,
+                                debit: parseAmount(debitItem?.str || ""),
+                                credit: parseAmount(creditItem?.str || ""),
+                                balance: parseAmount(balanceItem?.str || ""),
+                                category: "Unallocated"
+                            };
                         } else {
-                            chunks.push(base64Data);
-                        }
-                    } catch (splitErr) {
-                        console.warn("[GeminiService] Failed to split PDF, processing as single file:", splitErr);
-                        chunks.push(base64Data);
-                    }
-                } else {
-                    // If NOT forced, and we reached here, it means Deterministic failed (or returned 0).
-                    // Since user requested "Proper PDF to Excel" without AI, we should fail hard here for feedback.
-                    throw new Error("Deterministic PDF extraction failed to identify valid transactions. The file layout may not be supported yet. Try checking 'Force Deep Scan' to use AI.");
-                }
-            } else {
-                chunks.push(base64Data); // Images are single chunk
-            }
-
-            // PROCESS CHUNKS
-            for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
-                const chunkBase64 = chunks[chunkIdx];
-                const isLastChunk = chunkIdx === chunks.length - 1;
-                const progress = Math.round(((chunkIdx) / chunks.length) * 100);
-
-                if (onBatchComplete) onBatchComplete(transactions, progress, `Processing Batch ${chunkIdx + 1}/${chunks.length}...`);
-
-                // SWITCH TO PIPE-SEPARATED VALUES (PSV) FOR MAXIMUM TOKEN EFFICIENCY
-                // JSON structure overhead causes truncation on long statements.
-                // PSV format: Date|Description|Category|Debit|Credit|Balance
-                const systemPrompt = `
-                    You are an expert financial analyst. Extract all bank transactions from the document into a structured text format.
-                    To ensure all data fits within the output limit, use a strict pipe-separated value (PSV) format.
-
-                    OUTPUT STRUCTURE:
-                    Line 1: ORG: <Organization Name>
-                    Line 2: BANK: <Bank Name>
-                    Line 3: CURR: <Currency Code e.g. NGN, USD>
-                    Line 4: HEADER: Date|Description|Category|Debit|Credit|Balance
-                    Line 5+: <Data Rows>
-                    Last Line: COUNT: <Total Number of Transaction Rows Extracted>
-
-                    RULES:
-                    1. Extract ALL transaction rows. Do not skip any.
-                    2. Separator is | (pipe). Do not use pipes in descriptions (replace with space).
-                    3. Date Format: DD-MMM-YYYY (e.g. 14-Jun-2025).
-                    4. Money Format: 1234.56 (No commas). Use 0 for empty/zero fields.
-                    5. Merge multi-line descriptions into one line.
-                    6. Category: Choose the best fit based on the description/context (e.g., "Bank Charges", "Transfer", "Salary", "Utility"). If unsure, use "Unallocated".
-                    7. Do not use Markdown code blocks. Just raw text.
-                    8. SPECIAL RULE: If a line indicates "Balance Brought Forward", "B/F", or "Opening Balance" for a new page, extract it!
-                       Set Description as "Opening Balance", and put the value in the Balance column. Set Debit/Credit to 0.
-                `;
-
-                let response;
-                let lastError;
-
-                console.log(`[GeminiService] Processing Chunk ${chunkIdx + 1}/${chunks.length}...`);
-
-                for (let i = 0; i < keys.length; i++) {
-                    const key = keys[i];
-                    try {
-                        const ai = new GoogleGenAI({ apiKey: key });
-
-                        response = await ai.models.generateContent({
-                            model: MODEL_NAME,
-                            contents: {
-                                parts: [
-                                    { inlineData: { mimeType: mimeType, data: chunkBase64 } },
-                                    { text: systemPrompt }
-                                ]
-                            },
-                            config: {
-                                // Removing responseSchema to allow raw text generation
-                                // Removing maxOutputTokens to let model use full capacity
+                            const hasActiveFinancials = (debitItem || creditItem);
+                            if (hasActiveFinancials && lastDate) {
+                                if (pendingTransaction) allTransactions.push(pendingTransaction as Transaction);
+                                pendingTransaction = {
+                                    date: lastDate,
+                                    description: descStr,
+                                    debit: parseAmount(debitItem?.str || ""),
+                                    credit: parseAmount(creditItem?.str || ""),
+                                    balance: parseAmount(balanceItem?.str || ""),
+                                    category: "Unallocated"
+                                };
+                            } else if (pendingTransaction && descStr.length > 0 && !/Page\s+\d+/i.test(descStr)) {
+                                pendingTransaction.description += " " + descStr;
                             }
-                        });
-
-                        // If we get here, it succeeded!
-                        break;
-
-                    } catch (error: any) {
-                        console.warn(`[GeminiService] Key #${i + 1} failed: ${error.message || error}`);
-                        lastError = error;
-                        // Continue to next key
-                    }
-                }
-
-                if (!response) {
-                    throw new Error(`All keys failed on batch ${chunkIdx + 1}. Last error: ${lastError?.message}`);
-                }
-
-                runStats.ai_calls++;
-
-                const rawText = response.text || "";
-                console.log("[GeminiService] Raw response length:", rawText.length);
-
-                // Parse Chunk Results
-                const lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-                let chunkTxns: Transaction[] = [];
-
-                for (const line of lines) {
-                    // Metadata parsing - only set if not already set by a previous chunk
-                    if (line.startsWith("ORG:") && orgName === "Detected Organization") {
-                        orgName = line.replace("ORG:", "").trim();
-                    }
-                    else if (line.startsWith("BANK:") && bankName === "Detected Bank") {
-                        bankName = line.replace("BANK:", "").trim();
-                    }
-                    else if (line.startsWith("CURR:") && currency === "NGN") { // Only set if default
-                        currency = line.replace("CURR:", "").trim();
-                    }
-                    else if (line.startsWith("COUNT:")) {
-                        const countStr = line.replace("COUNT:", "").trim();
-                        aiReportedCount += parseInt(countStr, 10) || 0;
-                    }
-                    else if (line.startsWith("HEADER:") || line.startsWith("Date|")) {
-                        continue;
-                    }
-                    else if (line.includes("|")) {
-                        // Transaction Row
-                        const parts = line.split('|').map(p => p.trim());
-
-                        if (parts.length >= 6) {
-                            const date = parts[0];
-                            if (date.toLowerCase() === 'date') continue;
-
-                            const desc = parts[1];
-                            const category = parts[2];
-                            const drStr = parts[3].replace(/,/g, '');
-                            const crStr = parts[4].replace(/,/g, '');
-                            const balStr = parts[5].replace(/,/g, '');
-
-                            const debit = parseFloat(drStr) || 0;
-                            const credit = parseFloat(crStr) || 0;
-                            const balance = parseFloat(balStr) || 0;
-
-                            chunkTxns.push({
-                                date,
-                                description: desc,
-                                category: category || "Unallocated",
-                                debit,
-                                credit,
-                                balance,
-                                is_reversal: false
-                            });
                         }
                     }
+                    if (pendingTransaction) allTransactions.push(pendingTransaction as Transaction);
                 }
-
-                // Add chunk transactions to main list
-                transactions = [...transactions, ...chunkTxns];
-
-                // NOTIFY PROGRESS
-                if (onBatchComplete) {
-                    // We perform a light categorization pass here for visual feedback?
-                    // Or just pass raw and let final pass do it?
-                    // Let's do a quick pass so UI looks correct.
-
-                    // Helper to categorize a list
-                    // We can't update `transactions` array with categorized versions yet because we do a full pass at the end?
-                    // Actually, we can just categorize them now and store them categorized.
-
-                    // Let's keep `transactions` as the accumulator of RAW transactions for the final pass (reconciliation check across boundaries),
-                    // BUT send a "preview" to UI.
-                    onBatchComplete(
-                        transactions,
-                        Math.round(((chunkIdx + 1) / chunks.length) * 100),
-                        `Analyzed Batch ${chunkIdx + 1}/${chunks.length}`,
-                        { orgName, bankName, currency }
-                    );
-                }
-            }
-
-            console.log(`[GeminiService] Extracted ${transactions.length} transactions via AI (CSV Mode). AI Reported Count: ${aiReportedCount}`);
-
-            if (transactions.length === 0) {
-                console.warn("No transactions found. Raw text dump:", rawText);
-                throw new Error("AI could not find any transaction rows in the expected format.");
             }
         }
 
+        // --- PHASE 2: FALLBACK TO GEMINI (IF DETERMINISTIC FAILED) ---
+        // Trigger if: 0 transactions found OR layout detection explicitly failed.
+        if ((allTransactions.length === 0 || layoutFailed) && customApiKey) {
+            console.log("Deterministic parsing failed or yielded 0 results. Switching to Gemini 2.5 Flash Fallback.");
+            allTransactions = []; // Clear any partial garbage
+            allTransactions = await extractWithGemini(base64Data, mimeType, customApiKey);
+        }
 
-        // 2. POST-PROCESS: Categorization & Validation (FULL PASS)
+        // --- POST PROCESSING ---
+        let processed = allTransactions.map(t => categorizeTransaction(t));
+
+        if (customApiKey) {
+            processed = await enhanceTransactionsWithAI(processed, customApiKey);
+        }
+
+        // Reconciliation Validation
         const warnings: string[] = [];
         const errorIndices: number[] = [];
         let failed = false;
-        const TOLERANCE = 0.05;
 
-        // COUNT VALIDATION
-        if (aiReportedCount > 0 && transactions.length !== aiReportedCount) {
-            // In batch mode, this might be less accurate if headers repeat, but still a good signal.
-            warnings.push(`AI reported ${aiReportedCount} transactions, but extracted ${transactions.length}. Check for missing rows.`);
-            // We don't fail reconciliation just for this, but we warn the user.
-        }
+        processed.forEach((t, i) => {
+            if (i === 0) return;
+            const prev = processed[i - 1];
+            if (Math.abs(prev.balance) < 0.01 && Math.abs(t.balance) < 0.01) return;
 
-        const processedTransactions = transactions.map((t, index) => {
-            runStats.total_txns++;
+            const expectedBalance = Math.round((prev.balance + t.credit - t.debit) * 100) / 100;
+            const actualBalance = Math.round(t.balance * 100) / 100;
+            const diff = Math.abs(expectedBalance - actualBalance);
 
-            // Normalize values
-            const safeTxn: Transaction = {
-                date: t.date || "",
-                description: (t.description || "Unknown").replace(/\s+/g, ' ').trim(),
-                category: t.category || "Unallocated",
-                debit: Number(t.debit) || 0,
-                credit: Number(t.credit) || 0,
-                balance: Number(t.balance) || 0,
-                is_reversal: false
-            };
-
-            // Categorize
-            let categorized = categorizeTransaction(safeTxn);
-            if (categorized.decision_source === 'RULE') runStats.rule_hits++;
-            else runStats.ai_txns++;
-
-            // Reconciliation Math Check (Skip for first row of entire set? Or first row of each chunk?)
-            // We treat the whole set as one stream.
-            if (index > 0) {
-                const prev = transactions[index - 1]; // Use previous RAW/SAFE transaction
-                const prevBal = Number(prev.balance) || 0;
-                const currBal = safeTxn.balance;
-
-                // Logic: PrevBal + Credit - Debit = CurrBal
-                const expected = prevBal + safeTxn.credit - safeTxn.debit;
-                const diff = Math.abs(expected - currBal);
-
-                if (diff > TOLERANCE) {
-                    // Ignore Opening Balance rows for math check as they reset the chain
-                    if (!categorized.category.includes("Opening Balance")) {
-                        errorIndices.push(index);
-                        warnings.push(`Row ${index + 1} (${safeTxn.date}): Math Mismatch. Exp ${expected.toFixed(2)}, Found ${currBal.toFixed(2)}`);
-                        failed = true;
-                    }
-                }
+            if (diff > 0.02 && !t.description.toUpperCase().includes("OPENING")) {
+                errorIndices.push(i);
+                warnings.push(`Row ${i + 1} (${t.date}): Exp ${expectedBalance}, Got ${actualBalance}`);
+                failed = true;
             }
-
-            return categorized;
         });
+
+        globalStats.total_txns = processed.length;
 
         return {
             reconciliation_failed: failed,
             reconciliation_warnings: warnings,
             error_indices: errorIndices,
-            currency: currency,
-            transactions: processedTransactions,
-            organizationName: orgName,
-            bankName: bankName,
-            stats: runStats
+            currency: "NGN",
+            transactions: processed,
+            organizationName: metadata.org,
+            bankName: metadata.bank,
+            stats: globalStats
         };
 
-    } catch (error: any) {
-        console.error("Analysis Error:", error);
-        throw new Error("Analysis Failed: " + (error.message || "Unknown error"));
+    } catch (e: any) {
+        console.error("Analysis Error:", e);
+        throw new Error("Analysis Failed: " + e.message);
     }
 };

@@ -8,17 +8,23 @@ import os
 import pandas as pd
 from pathlib import Path
 from typing import List, Dict, Tuple, Any
-from pathlib import Path
-from typing import List, Dict, Tuple, Any
-from backend.ecobank_engine import extract_ecobank_final
+
+from uba_engine import detect_uba_columns, parse_uba_ocr_text
+try:
+    from gemini_vision import extract_text_with_gemini_vision, extract_transactions_via_ai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+    def extract_transactions_via_ai(*args, **kwargs): return []
 
 # OCR fallback
 try:
-    from ocr_helper import extract_header_with_openai_vision, VISION_AVAILABLE
+    from ocr_helper import extract_text_with_ocr
+    OCR_MODULE_AVAILABLE = True
 except ImportError:
-    VISION_AVAILABLE = False
-    def extract_header_with_openai_vision(*args, **kwargs):
-        return ""
+    OCR_MODULE_AVAILABLE = False
+    def extract_text_with_ocr(*args, **kwargs):
+        raise ImportError("ocr_helper module not found")
 
 # Define OCR availability based on OpenAI API key presence
 OCR_AVAILABLE = bool(os.getenv("OPENAI_API_KEY"))
@@ -37,6 +43,7 @@ def looks_like_ref(tok: str) -> bool:
 DATE_DMY_RE = re.compile(r"^\d{1,2}-[A-Za-z]{3}-\d{4}$")       # 01-Jan-2023 OR 1-JAN-2026
 DATE_MDY_SL_RE = re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$")      # 10/1/2025 (Access)
 DATE_DMY_YY_RE = re.compile(r"^\d{2}-[A-Za-z]{3}-\d{2}$")    # 15-Jan-21 (Fidelity)
+MONEY_RE = re.compile(r"^-?[\d,]+(?:\.\d{2})?$")             # Standard money pattern
 
 from datetime import datetime
 import pandas as pd
@@ -121,18 +128,18 @@ def detect_providus_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[floa
         return None
 
     # Build columns
-    cols = [("TransDate", x_txn)]
+    cols = [("date", x_txn)]
     
     if x_val is not None:
-        cols.append(("ValueDate", x_val))
+        cols.append(("value_date", x_val))
     if x_rem is not None:
-        cols.append(("Remarks", x_rem))
+        cols.append(("description", x_rem))
     if x_deb is not None:
-        cols.append(("Debit", x_deb))
+        cols.append(("debit", x_deb))
     if x_cred is not None:
-        cols.append(("Credit", x_cred))
+        cols.append(("credit", x_cred))
     if x_bal is not None:
-        cols.append(("Balance", x_bal))
+        cols.append(("balance", x_bal))
         
     # Sort by X
     cols = sorted(cols, key=lambda x: x[1])
@@ -233,83 +240,29 @@ def detect_column_cuts_from_header(words: List[Dict[str, Any]], bank_identifier:
 
 def parse_date_smart(date_str: str) -> str | None:
     """
-    Parse various date formats into standard DD-MM-YYYY string.
-    Returns None if invalid.
+    Parse various date formats robustly.
+    Normalization: DD-MMM-YYYY (e.g., 15-Jan-2023)
     """
     s = (date_str or "").strip()
-    if not s:
+    if not s or len(s) < 6:
         return None
-        
-    # Standard: 01-Jan-2023 -> Keep as is (backend handles it)
+    
+    # Standard: 01-Jan-2023
     if DATE_DMY_RE.match(s):
         return s
         
-    # Access: 10/1/2025 (MM/DD/YYYY) -> 01-Oct-2025
-    if DATE_MDY_SL_RE.match(s):
-        try:
-            parts = s.split('/')
-            mm, dd, yyyy = int(parts[0]), int(parts[1]), int(parts[2])
-            # Convert to standard format for consistency if needed, 
-            # or just return as is if the frontend/excel handles it.
-            # Let's normalize to DD-MMM-YYYY for consistency with existing regexes
-            months = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-            if 1 <= mm <= 12:
-                return f"{dd:02d}-{months[mm]}-{yyyy}"
-        except:
-            pass
-            
-    # Fidelity: 15-Jan-21 (DD-MMM-YY) -> 15-Jan-2021
-    if DATE_DMY_YY_RE.match(s):
-        parts = s.split('-')
-        if len(parts) == 3:
-            # Assume 20xx for 2-digit year
-            return f"{parts[0]}-{parts[1]}-20{parts[2]}"
-
-    return None
-
-# Date Regexes
-DATE_DMY_DOT_RE = re.compile(r"^\d{1,2}\.\d{1,2}\.\d{4}$")      # 13.01.2023
-DATE_DMY_SL_RE = re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$")         # 13/01/2023 (Zenith/Generic)
-
-def parse_date_smart(date_str: str) -> str | None:
-    """
-    Parse various date formats into standard DD-MM-YYYY string.
-    Returns None if invalid.
-    """
-    s = (date_str or "").strip()
-    if not s:
+    try:
+        # Use pandas for robust parsing. dayfirst=True is critical for Nigerian banks.
+        dt = pd.to_datetime(s, dayfirst=True, errors='coerce')
+        if pd.isna(dt):
+            # Check for DD-MMM-YY (Fidelity 15-Jan-21)
+            if DATE_DMY_YY_RE.match(s):
+                parts = s.split('-')
+                return f"{parts[0]}-{parts[1]}-20{parts[2]}"
+            return None
+        return dt.strftime("%d-%b-%Y")
+    except:
         return None
-        
-    # Standard: 01-Jan-2023 -> Keep as is
-    if DATE_DMY_RE.match(s):
-        return s
-        
-    # Zenith/Generic: 13/01/2023 (DD/MM/YYYY)
-    if DATE_DMY_SL_RE.match(s):
-        try:
-            parts = s.split('/')
-            p0, p1, p2 = int(parts[0]), int(parts[1]), int(parts[2])
-            
-            # Heuristic: If first part > 12, it's definitely DD/MM
-            # If both <= 12, assume DD/MM for Nigerian banks (British standard)
-            # UNLESS it's specifically marked as Access Bank which might use MDY (rare here but kept in mind)
-            
-            dd, mm, yyyy = p0, p1, p2
-            
-            # Basic validation
-            months = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-            if 1 <= mm <= 12 and 1 <= dd <= 31:
-                return f"{dd:02d}-{months[mm]}-{yyyy}"
-        except:
-            pass
-            
-    # Fidelity: 15-Jan-21 (DD-MMM-YY) -> 15-Jan-2021
-    if DATE_DMY_YY_RE.match(s):
-        parts = s.split('-')
-        if len(parts) == 3:
-            return f"{parts[0]}-{parts[1]}-20{parts[2]}"
-
-    return None
 
 # Strict money parsing
 MONEY_RE = re.compile(r"^-?\d{1,3}(?:,\d{3})*(?:\.\d{2})$|^-?\d+(?:\.\d{2})$")
@@ -341,14 +294,13 @@ def _try_merge_split_decimal(base: str, tail: str):
     return None
 def is_txn_start(row: dict) -> bool:
     """Check if row starts with a valid transaction date"""
-    return DATE_RE.match((row.get("TransDate") or row.get("Date") or "").strip()) is not None
+    return parse_date_smart(row.get("date")) is not None
 
 def is_noise_row(row: dict) -> bool:
     """Check if row is Account Summary/totals block"""
     text = " ".join([
-        row.get("Remarks","") or "",
-        row.get("Description","") or "",
-        row.get("Reference","") or "",
+        row.get("description","") or "",
+        row.get("reference","") or "",
     ]).upper()
 
     return any(k in text for k in [
@@ -414,16 +366,28 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
                 bank_identifier = "gtbank"  # Default to GTBank
             print(f"DEBUG: Auto-detected bank: {bank_identifier}")
         
-    # --- 0) Special Case: Zenith Table Strategy
+    # --- 0a) Special Case: Access Bank Deterministic Global Layout Consensus
+    if bank_identifier == "accessbank":
+        try:
+             return extract_access_consensus(Path(pdf_path), metadata)
+        except Exception as e:
+             print(f"DEBUG: Access Bank consensus engine failed: {e}. Triggering Hybrid AI Fallback...")
+             if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+                 txns = extract_transactions_via_ai(str(pdf_path))
+                 if txns: return txns, metadata
+
+    # --- 0b) Special Case: Zenith Table Strategy
     if bank_identifier == "zenith":
         try:
              # Try table strategy first
              zenith_txns = extract_zenith_via_tables(Path(pdf_path), metadata)
              if zenith_txns:
                  return zenith_txns, metadata
-             print("DEBUG: Zenith table strategy returned no transactions, falling back to standard...")
         except Exception as e:
-             print(f"DEBUG: Zenith table strategy failed: {e}")
+             print(f"DEBUG: Zenith table strategy failed: {e}. Trying Hybrid AI Fallback...")
+             if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+                 txns = extract_transactions_via_ai(str(pdf_path))
+                 if txns: return txns, metadata
 
     # --- 0b) Special Case: FCMB Table Strategy
     if bank_identifier == "fcmb":
@@ -431,20 +395,11 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
              fcmb_txns = extract_fcmb_via_tables(Path(pdf_path), metadata)
              if fcmb_txns:
                  return fcmb_txns, metadata
-             print("DEBUG: FCMB table strategy returned no transactions, falling back to standard...")
         except Exception as e:
-             print(f"DEBUG: FCMB table strategy failed: {e}")
-
-    # --- 0c) Special Case: Ecobank Strategy (Row-Text + Regex)
-    if bank_identifier == "ecobank":
-        try:
-             # Use the new Table Engine (User's Final Fix)
-             ecobank_txns = extract_ecobank_final(Path(pdf_path), metadata)
-             if ecobank_txns:
-                 return ecobank_txns, metadata
-             print("DEBUG: Ecobank table strategy returned no transactions, falling back to standard...")
-        except Exception as e:
-             print(f"DEBUG: Ecobank row-text strategy failed: {e}")
+             print(f"DEBUG: FCMB table strategy failed: {e}. Trying Hybrid AI Fallback...")
+             if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+                 txns = extract_transactions_via_ai(str(pdf_path))
+                 if txns: return txns, metadata
 
     # Reset metadata["_debug"] if fallback is used
     column_debug = {}
@@ -485,37 +440,42 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
                 print(f"DEBUG: FOUND CUTS: {base_cuts}")
                 break
                 
-        # --- OpenAI Vision OCR Fallback: Try if standard detection completely failed ---
+        # --- OCR Fallback: Try if standard detection completely failed ---
         if not base_cuts:
-            print("DEBUG: Standard detection failed on all pages. Trying OpenAI Vision OCR fallback...")
+            print(f"DEBUG: Standard detection failed on all pages. Trying Gemini Multimodal fallback...")
             
-            # Check if OpenAI API key is available
-            if not os.getenv("OPENAI_API_KEY"):
-                raise ValueError("Could not detect column header after scanning all pages. OpenAI Vision not available (set OPENAI_API_KEY in .env for OCR fallback)")
-            
+            if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+                try:
+                    transactions = extract_transactions_via_ai(str(pdf_path))
+                    if transactions:
+                         print(f"DEBUG: Gemini Multimodal extracted {len(transactions)} txns")
+                         return transactions, {}
+                except Exception as e:
+                    print(f"DEBUG: Gemini Multimodal fallback failed: {e}")
+
+            # Legacy OCR fallback as last resort
+            print(f"DEBUG: Falling back to legacy OCR engine (Engine: {os.getenv('OCR_ENGINE', 'openai')})...")
+            if not OCR_MODULE_AVAILABLE:
+                 raise ValueError("Could not detect column header and Gemini Multimodal is not available.")
+
             try:
-                from pdf_render import render_page_png
-                from openai_vision import ocr_pdf_page_image
-                
                 ocr_text = ""
+                # Try first 2 pages
                 for i in range(min(2, len(pdf.pages))):
-                    print(f"DEBUG: Attempting Vision OCR on page {i}...")
-                    png = render_page_png(str(pdf_path), i)
-                    ocr_text += "\n" + ocr_pdf_page_image(png)
+                    print(f"DEBUG: Attempting OCR on page {i}...")
+                    ocr_text += "\n" + extract_text_with_ocr(str(pdf_path), i)
                 
-                print("DEBUG: OCR TEXT SAMPLE:", ocr_text[:800])
-                
-                # Convert OCR text to fake 'words' is hard; fastest approach:
-                # use OCR only to identify bank + header variant OR just error clearly.
+                if bank_identifier == "uba":
+                    transactions = parse_uba_ocr_text(ocr_text)
+                    if transactions: return transactions, {}
+
                 raise ValueError(
-                    "Header not detected by pdfplumber. OCR successfully extracted text (see DEBUG output), "
-                    "but OCR-to-rows parsing is not yet implemented. Please use text-based PDFs or contact support."
+                    f"Header not detected by pdfplumber. Legacy OCR ({os.getenv('OCR_ENGINE', 'openai')}) used as fail-safe, "
+                    "but parsing failed. Please use text-based PDFs or check Gemini API connectivity."
                 )
-            except ImportError as ie:
-                raise ValueError(f"Could not detect column header and OCR fallback unavailable: {ie}")
-            except Exception as vision_error:
-                print(f"DEBUG: Vision OCR fallback failed: {vision_error}")
-                raise ValueError(f"Could not detect column header after scanning all pages. Vision OCR also failed: {vision_error}")
+            except Exception as e:
+                print(f"DEBUG: Legacy OCR fallback failed: {e}")
+                raise ValueError(f"Could not detect column header after scanning all pages. AI and Legacy OCR also failed: {e}")
         
         # DEBUG: Store column info for debugging
         column_debug = {col: f"{bounds[0]:.1f} to {bounds[1]:.1f}" for col, bounds in base_cuts.items()}
@@ -612,21 +572,31 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
             desc_parts.append(txn["reference"])
         if txn.get("branch"):
             desc_parts.append(txn["branch"])
-        if txn.get("remarks"):
-            desc_parts.append(txn["remarks"])
+        if txn.get("description"):
+            desc_parts.append(txn["description"])
         description = " ".join(desc_parts).strip()
         
+        # Parse amounts
+        deb_val = parse_money(txn.get("debit", ""))
+        cred_val = parse_money(txn.get("credit", ""))
+        
+        # USER REQUEST: Filter non-zero transactions (especially for Access Bank logic)
+        # We skip rows where BOTH debit and credit are 0.0, unless it's a specific balance-only row we want to keep?
+        # Standard bank behavior is to only show transactions with movement.
+        if deb_val == 0.0 and cred_val == 0.0:
+            continue
+
         # Keep fields SEPARATE for Excel, but include description for categorization
         final_transactions.append({
             "date": txn["date"],
             "value_date": txn.get("value_date", ""),
             "reference": txn.get("reference", ""),
             "originating_branch": txn.get("branch", ""),  # Note: internally "branch", externally "originating_branch"
-            "remarks": txn.get("remarks", ""),
+            "remarks": txn.get("description", ""), # Use description for remarks here
             "description": description,  # For categorization only
-            "debit": parse_money(txn["debit"]),
-            "credit": parse_money(txn["credit"]),
-            "balance": parse_money(txn["balance"]),
+            "debit": deb_val,
+            "credit": cred_val,
+            "balance": parse_money(txn.get("balance", "")),
             "category": "Unallocated",
             "is_reversal": False,
             "_page": txn.get("_page"),
@@ -654,16 +624,11 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
 
 def build_description(tx: dict) -> str:
     """
-    Build structured transaction description from reference, branch, and remarks
-    
-    Rules:
-    - Ignore placeholder refs like '', "'", "'GAP", "GAP"
-    - Don't duplicate branch if already in remarks
-    - Keep long reference IDs
+    Build structured transaction description from reference, branch, and description
     """
     ref = (tx.get("reference") or "").strip()
     branch = (tx.get("branch") or "").strip()
-    remarks = (tx.get("remarks") or "").strip()
+    rem = (tx.get("description") or "").strip()
 
     # Ignore placeholder references
     if ref in {"", "'", "'GAP", "GAP"}:
@@ -672,28 +637,23 @@ def build_description(tx: dict) -> str:
     parts = []
     if ref:
         parts.append(ref)
-    if branch and branch not in remarks:  # Don't duplicate branch
+    if branch and branch not in rem:
         parts.append(branch)
-    if remarks:
-        parts.append(remarks)
+    if rem:
+        parts.append(rem)
 
     return " ".join(parts).strip()
 
 
 def repair_ref_branch_remarks(tx: dict) -> dict:
     """
-    Repair column mixing between Reference, Originating Branch, and Remarks (GTBank-specific)
-    
-    This handles common issues where:
-    - Branch code (e.g., "635 AKIN ADESOLA") spills into Remarks or Reference
-    - Reference ID spills into Remarks
-    - Multi-part references get split across columns
+    Repair column mixing between reference, branch, and description (GTBank-specific)
     """
     ref = (tx.get("reference") or "").strip()
-    br = (tx.get("originating_branch") or tx.get("branch") or "").strip()
-    rm = (tx.get("remarks") or "").strip()
+    br = (tx.get("branch") or "").strip()
+    rm = (tx.get("description") or "").strip()
 
-    # 1) If branch is at the start of remarks, move it out
+    # 1) If branch is at the start of description, move it out
     m = BRANCH_PREFIX.match(rm)
     if m and (not br or not BRANCH_LIKE.match(br)):
         br = m.group(1).strip()
@@ -703,14 +663,13 @@ def repair_ref_branch_remarks(tx: dict) -> dict:
     if BRANCH_LIKE.match(ref) and not br:
         br, ref = ref, ""
 
-    # 3) If remarks starts with a reference token and ref is empty/placeholder, extract it
-    # Use looks_like_ref to ensure it contains digits (prevents VATCHARGES, etc.)
+    # 3) If description starts with a reference token and ref is empty/placeholder, extract it
     first = rm.split()[0] if rm else ""
     if (not ref or ref in {"'", "GAP", "'GAP"}) and first and looks_like_ref(first):
         ref = first
         rm = rm[len(first):].strip()
 
-    # 4) If ref contains multiple tokens, keep first as ref, push rest into remarks
+    # 4) If ref contains multiple tokens, keep first as ref, push rest into description
     if ref and " " in ref:
         parts = ref.split()
         ref = parts[0]
@@ -722,10 +681,9 @@ def repair_ref_branch_remarks(tx: dict) -> dict:
     if ref in {"'", "GAP", "'GAP"}:
         ref = ""
 
-    # Update transaction with INTERNAL field names (branch, not originating_branch)
     tx["reference"] = ref
-    tx["branch"] = br  # Use 'branch' internally
-    tx["remarks"] = rm
+    tx["branch"] = br
+    tx["description"] = rm
     return tx
 
 
@@ -805,170 +763,7 @@ def parse_statement_metadata(text: str) -> Dict[str, Any]:
     return meta
 
 
-def group_words_to_rows(words: List[Dict[str, Any]], y_tol: float = 3.5) -> List[Dict[str, Any]]:
-    """
-    Group words into physical rows (by Y coordinate)
-    Increased tolerance to capture slightly misaligned text (e.g. scanners)
-    """
-    rows: List[Dict[str, Any]] = []
-    for w in sorted(words, key=lambda d: (d["top"], d["x0"])):
-        placed = False
-        for r in rows:
-            if abs(w["top"] - r["top"]) <= y_tol:
-                r["words"].append(w)
-                r["top"] = (r["top"] + w["top"]) / 2
-                placed = True
-                break
-        if not placed:
-            rows.append({"top": w["top"], "words": [w]})
-    for r in rows:
-        r["words"].sort(key=lambda d: d["x0"])
-    return rows
 
-
-# ... (keep other functions) ...
-
-def assign_row_to_cols(row_words: List[Dict[str, Any]], cuts: Dict[str, Tuple[float, float]]) -> Dict[str, str]:
-
-    # Capture full raw text for fallback parsing
-    row_words.sort(key=lambda w: w["x0"])
-    full_line_text = " ".join([w["text"] for w in row_words])
-
-    """
-    Assign words using Smart Anchoring logic (x0/x1) AND Content-Aware Repair:
-    - Text columns (Date, Ref, Desc, Branch) use x0 (Start)
-    - Numeric columns use x1 (End)
-    - If geometric assignment fails (e.g. bad cuts), content checks move 
-      Date/Ref tokens from Remarks back to their correct columns.
-    """
-    # Create bucket list for each column
-    bucket = {k: [] for k in cuts.keys()}
-    
-    right_aligned_cols = {
-        "Debit", "Credit", "Balance", 
-        "Withdrawal", "Lodgement", "Lodgements", "Withdrawals",
-        "Debits", "Credits", "Pay Out", "Pay In"
-    }
-
-    # Ensure words are sorted left-to-right
-    row_words = sorted(row_words, key=lambda w: w["x0"])
-
-    # 1. Geometric Assignment
-    for w in row_words:
-        x0, x1 = w["x0"], w["x1"]
-        for col, (l, r) in cuts.items():
-            if col in right_aligned_cols:
-                ref_point = x1
-            else:
-                ref_point = x0
-            
-            if l <= ref_point < r:
-                bucket[col].append(w["text"])
-                break
-
-    # 2. Content-Aware Repair (Fix mixed columns due to bad cuts)
-    
-    # REPAIR 1: TransDate mixed into Remarks (Ecobank/GTBank/Zenith)
-    if "TransDate" in bucket and not bucket["TransDate"] and bucket.get("Remarks"):
-        w_text = bucket["Remarks"][0]
-        # Regex update: Allow numeric month (e.g. 13/01/2023) or alpha month (DD-MMM-YYYY)
-        if re.match(r"^\d{1,2}[-/\.]\w+[-/\.]\d{2,4}$", w_text): 
-            bucket["TransDate"].append(bucket["Remarks"].pop(0))
-            
-    # REPAIR 2: Reference mixed into Remarks (GTBank)
-    if "Reference" in bucket and not bucket["Reference"] and bucket.get("Remarks"):
-        w_text = bucket["Remarks"][0]
-        if looks_like_ref(w_text) and re.search(r"\d", w_text):
-             bucket["Reference"].append(bucket["Remarks"].pop(0))
-
-    # REPAIR 3: Branch Code mixed into Remarks (GTBank)
-    if "Branch" in bucket and not bucket["Branch"] and bucket.get("Remarks"):
-        w_text = bucket["Remarks"][0]
-        if re.match(r"^\d{3}$", w_text):
-            bucket["Branch"].append(bucket["Remarks"].pop(0))
-
-    # REPAIR 4: Orphan Amount in Remarks (e.g. Debit shifted left into Remarks)
-    # Check if Remarks ends with something that looks like money, and Debit/Credit are empty
-    # This happens when the column cut is slightly too far to the right
-    if bucket.get("Remarks") and (not bucket.get("Debit") or not bucket.get("Credit")):
-        w_text = bucket["Remarks"][-1]
-        
-        # Is it a money value? (simple check: digits, dot/comma, no letters)
-        if re.match(r"^-?[\d,]+\.\d{2}$", w_text):
-            # Check geometric proximity to Debit/Credit column LEFT edge
-            # We need the word object for this... but we only stored text in buckets.
-            # Workaround: Find the word in row_words that matches this text and is generally at the end
-            # This is slightly risky if the same amount appears twice, but acceptable for repair.
-            
-            # Find candidate word (last one matching text)
-            candidate_word = None
-            for w in reversed(row_words):
-                if w["text"] == w_text:
-                    candidate_word = w
-                    break
-            
-            if candidate_word:
-                x1 = candidate_word["x1"]
-                
-                # Check Debit
-                if "Debit" in cuts and not bucket["Debit"]:
-                    deb_l, deb_r = cuts["Debit"]
-                    # If the word ends *near* the debit column (within 30px of left edge, or inside it)
-                    if deb_l - 30 <= x1 <= deb_r:
-                        print(f"DEBUG: Moved orphan Debit from Remarks: {w_text}")
-                        bucket["Debit"].append(bucket["Remarks"].pop())
-
-                # Check Credit (only if we didn't just move it to Debit)
-                elif "Credit" in cuts and not bucket["Credit"]:
-                    cred_l, cred_r = cuts["Credit"]
-                    if cred_l - 30 <= x1 <= cred_r:
-                        print(f"DEBUG: Moved orphan Credit from Remarks: {w_text}")
-                        bucket["Credit"].append(bucket["Remarks"].pop())
-
-    # REPAIR 5: Aggressive Numeric Snapping
-    # If Debit/Credit still empty, look for ANY unassigned word (or words in Remarks) 
-    # that strongly resemble amounts and are geometrically closest to the column.
-    # This covers cases where the column boundary is wildly off.
-    for target_col in ["Debit", "Credit", "Balance"]:
-        if target_col in cuts and not bucket[target_col]:
-            target_center = (cuts[target_col][0] + cuts[target_col][1]) / 2
-            
-            # Look at words in Remarks (often where they end up if cuts are wrong)
-            # or any other bucket? No, usually just Remarks or "unassigned" if we had that.
-            if bucket.get("Remarks"):
-                best_word_idx = -1
-                min_dist = float('inf')
-                
-                for i, w_text in enumerate(bucket["Remarks"]):
-                    # Is it a money value?
-                    if re.match(r"^-?[\d,]+\.\d{2}$", w_text):
-                        # Find the word object
-                        cand_w = next((w for w in reversed(row_words) if w["text"] == w_text), None)
-                        if cand_w:
-                            # Distance from word center to column center
-                            w_center = (cand_w["x0"] + cand_w["x1"]) / 2
-                            dist = abs(w_center - target_center)
-                            
-                            # Threshold: must be reasonably close (e.g. within 50pts)
-                            if dist < 50 and dist < min_dist:
-                                min_dist = dist
-                                best_word_idx = i
-                
-                if best_word_idx != -1:
-                    print(f"DEBUG: Snapped {bucket['Remarks'][best_word_idx]} to {target_col} (dist={min_dist:.1f})")
-                    bucket[target_col].append(bucket["Remarks"].pop(best_word_idx))
-
-
-    # CLEANUP: Remove internal spaces from numeric columns (e.g. "1, 500, 000.00" -> "1,500,000.00")
-    for col in ["Debit", "Credit", "Balance"]:
-        if col in bucket and bucket[col]:
-            # Join parts, then remove spaces
-            full_str = "".join(bucket[col])
-            # If it's a valid number with spaces, clean it
-            # But be careful not to merge completely separate numbers (though typicaly only one amount per col)
-            bucket[col] = [full_str.replace(" ", "")]
-
-    return {col: " ".join(vals).strip() for col, vals in bucket.items()}
 
 
 def detect_column_cuts_from_header(words: List[Dict[str, Any]], bank_identifier: str = "gtbank") -> Dict[str, Tuple[float, float]] | None:
@@ -1041,31 +836,24 @@ def detect_zenith_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float,
                 return i, sorted_words[i]
         return -1, None
 
-    # 1. TransDate (DATE POSTED or just DATE at start)
+    # 1. date (DATE POSTED or just DATE at start)
     # Usually the first "DATE"
     idx_td, w_td = find_word_x("DATE")
     if w_td: 
-        bounds["TransDate"] = (w_td["x0"], w_td["x1"])
+        bounds["date"] = (w_td["x0"], w_td["x1"])
     
-    # 2. ValueDate (Look for "VALUE")
+    # 2. value_date (Look for "VALUE")
     idx_vd, w_vd = find_word_x("VALUE")
     if w_vd:
-        bounds["ValueDate"] = (w_vd["x0"], w_vd["x1"])
-        
-        # Refine TransDate: ensure TransDate is to the LEFT of ValueDate
-        if w_td and w_td["x0"] > w_vd["x0"]:
-             # Oops, we picked the "DATE" from "VALUE DATE" as transdate?
-             # But "VALUE" is usually before "DATE".
-             # If we mapped TransDate to the DATE in VALUE DATE, fix it.
-             pass 
+        bounds["value_date"] = (w_vd["x0"], w_vd["x1"])
 
-    # 3. Remarks (NARRATION / DESCRIPTION)
+    # 3. description (NARRATION / DESCRIPTION)
     idx_rem, w_rem = find_word_x("NARRATION")
     if not w_rem: idx_rem, w_rem = find_word_x("DESCRIPTION")
     if not w_rem: idx_rem, w_rem = find_word_x("PARTICULARS")
-    if w_rem: bounds["Remarks"] = (w_rem["x0"], w_rem["x1"])
+    if w_rem: bounds["description"] = (w_rem["x0"], w_rem["x1"])
 
-    # 4. Debit/Credit/Balance
+    # 4. debit/credit/balance
     for col in ["DEBIT", "CREDIT", "BALANCE"]:
         idx, w = find_word_x(col)
         # Handle "DR" or "CR"
@@ -1074,10 +862,10 @@ def detect_zenith_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float,
         if not w and col == "BALANCE": idx, w = find_word_x("BAL")
         
         if w:
-            bounds[col.title()] = (w["x0"], w["x1"])
+            bounds[col.lower()] = (w["x0"], w["x1"])
 
     # Mandatory check
-    if "TransDate" not in bounds or "Debit" not in bounds:
+    if "date" not in bounds or "debit" not in bounds:
         return None
 
     # Sort columns by X position
@@ -1117,12 +905,12 @@ def detect_ecobank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float
 
     # --- 1) Find a header band that contains MANY header tokens together ---
     header_terms = {
-        "TransDate": r"(?:Trans(?:action)?\s*Date|Trans\.?\s*Date|Trn\s*Date|Date\b)",
-        "ValueDate": r"(?:Value\s*Date|Val\s*Date)",
-        "Remarks": r"(?:Description|Narration|Remarks?|Details|Particulars)",
-        "Debit": r"(?:Debit|Withdrawal|Dr\b)",
-        "Credit": r"(?:Credit|Deposit|Cr\b)",
-        "Balance": r"(?:Balance|Bal\b)"
+        "date": r"(?:Trans(?:action)?\s*Date|Trans\.?\s*Date|Trn\s*Date|Date\b)",
+        "value_date": r"(?:Value\s*Date|Val\s*Date)",
+        "description": r"(?:Description|Narration|Remarks?|Details|Particulars)",
+        "debit": r"(?:Debit|Withdrawal|Dr\b)",
+        "credit": r"(?:Credit|Deposit|Cr\b)",
+        "balance": r"(?:Balance|Bal\b)"
     }
 
     # collect candidate tops where any header term appears
@@ -1172,12 +960,12 @@ def detect_ecobank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float
 
     # anchor points
     # Detect Value Date FIRST to constrain TransDate
-    x_value_l = find_left(header_terms["ValueDate"])
-    x_value_r = find_right(header_terms["ValueDate"])
+    x_value_l = find_left(header_terms["value_date"])
+    x_value_r = find_right(header_terms["value_date"])
 
     # Detect TransDate, but exclude matches that overlap ValueDate
     # (Because regex "Date" matches "Value Date")
-    trans_words = [w for w in header_words if re.search(header_terms["TransDate"], w["text"], re.I)]
+    trans_words = [w for w in header_words if re.search(header_terms["date"], w["text"], re.I)]
     
     # Filter out words that belong to Value Date column (if detected)
     if x_value_l is not None:
@@ -1220,30 +1008,30 @@ def detect_ecobank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float
         print(f"DEBUG: Clamping wide TransDate ({x_trans_r - x_trans_l:.1f}pts) to 130pts")
         x_trans_r = x_trans_l + 130
 
-    x_desc_l  = find_left(header_terms["Remarks"])
-    x_desc_r  = find_right(header_terms["Remarks"])
+    x_desc_l  = find_left(header_terms["description"])
+    x_desc_r  = find_right(header_terms["description"])
 
-    x_deb_l   = find_left(header_terms["Debit"])
-    x_deb_r   = find_right(header_terms["Debit"])
+    x_deb_l   = find_left(header_terms["debit"])
+    x_deb_r   = find_right(header_terms["debit"])
 
-    x_cred_l  = find_left(header_terms["Credit"])
-    x_cred_r  = find_right(header_terms["Credit"])
+    x_cred_l  = find_left(header_terms["credit"])
+    x_cred_r  = find_right(header_terms["credit"])
 
-    x_bal_l   = find_left(header_terms["Balance"])
-    x_bal_r   = find_right(header_terms["Balance"])
+    x_bal_l   = find_left(header_terms["balance"])
+    x_bal_r   = find_right(header_terms["balance"])
 
     # require core columns
     if any(v is None for v in [x_trans_l, x_desc_l, x_deb_l, x_cred_l, x_bal_l]):
         return None
 
     cols = []
-    cols.append(("TransDate", x_trans_l, x_trans_r))
-    cols.append(("Remarks", x_desc_l, x_desc_r))
+    cols.append(("date", x_trans_l, x_trans_r))
+    cols.append(("description", x_desc_l, x_desc_r))
     if x_value_l is not None:
-        cols.append(("ValueDate", x_value_l, x_value_r))
-    cols.append(("Debit", x_deb_l, x_deb_r))
-    cols.append(("Credit", x_cred_l, x_cred_r))
-    cols.append(("Balance", x_bal_l, x_bal_r))
+        cols.append(("value_date", x_value_l, x_value_r))
+    cols.append(("debit", x_deb_l, x_deb_r))
+    cols.append(("credit", x_cred_l, x_cred_r))
+    cols.append(("balance", x_bal_l, x_bal_r))
 
     cols.sort(key=lambda c: c[1])  # sort by left edge
 
@@ -1264,32 +1052,12 @@ def detect_ecobank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float
         #    "Debit/Withdrawal" header is narrow, but data can be wide.
         #    Shift boundary LEFT to give Debit more space.
         # 1. "TransDate" -> "Debit"
-        if name1 == "TransDate" and name2 == "Debit":
-            # "Transaction Date" header is wide (contains "Transaction" + "Date").
-            # Detection only caught "Date" (at ~324).
-            # "Debit" header is narrow but data spills left.
-            
-            # Anchor: Right edge of "Date" word (r1).
-            # We want to cut slightly left of the "Date" word ends?
-            # No, keep the "Date" word. Cut left of "One space after Date".
-            # Shift left by 25pts from r1.
+        if name1 == "date" and name2 == "debit":
             proposed_cut = r1 - 25
-            
-            # Safety: Ensure we don't cut into the "Date" word itself too much.
-            # l1 is start of "Date".
-            # Allow at least 20pts for "Date".
             if (proposed_cut - l1) < 20:
                  proposed_cut = l1 + 20
-                 
             mid = proposed_cut
-            
-        # 2. "Remarks" -> "TransDate"
-        elif name1 == "Remarks" and name2 == "TransDate":
-            # TransDate detected only "Date" at ~324.
-            # But the column really starts at "Transaction" (~257) or data (~260).
-            # Standard mid (r1 + l2)/2 = (200 + 324)/2 = 262.
-            # 262 might clip '31-May'.
-            # We treat l2 as if it were 'Transaction' start (e.g. l2 - 30).
+        elif name1 == "description" and name2 == "date":
             l2_effective = l2 - 30
             mid = (r1 + l2_effective) / 2
 
@@ -1337,30 +1105,30 @@ def detect_access_columns(words: List[Dict], bank_identifier: str) -> Dict[str, 
     cuts = {}
     
     # Date: 0 to Details
-    cuts["Date"] = (0, x_details - 5)
+    cuts["date"] = (0, x_details - 5)
     
     # Details: Date to Ref (or Value if Ref missing)
     next_col = x_ref if x_ref else x_val
-    cuts["Remarks"] = (x_details - 5, next_col - 5)
+    cuts["description"] = (x_details - 5, next_col - 5)
     
     # Reference
     if x_ref and x_val:
-        cuts["Reference"] = (x_ref - 5, x_val - 5)
+        cuts["reference"] = (x_ref - 5, x_val - 5)
     elif x_ref:
-        cuts["Reference"] = (x_ref - 5, x_with - 50) # Fallback
+        cuts["reference"] = (x_ref - 5, x_with - 50) # Fallback
 
     # Value Date
     if x_val:
-        cuts["ValueDate"] = (x_val - 5, x_with - 10)
+        cuts["value_date"] = (x_val - 5, x_with - 10)
 
     # Withdrawals (Debit)
-    cuts["Debit"] = (x_with - 80, x_with + 5)
+    cuts["debit"] = (x_with - 80, x_with + 5)
     
     # Lodgements (Credit)
-    cuts["Credit"] = (x_lodge - 80, x_lodge + 5)
+    cuts["credit"] = (x_lodge - 80, x_lodge + 5)
     
     # Balance
-    cuts["Balance"] = (x_bal - 80, x_bal + 5)
+    cuts["balance"] = (x_bal - 80, x_bal + 5)
 
     print(f"DEBUG: ACCESS columns: {cuts.keys()}")
     return cuts
@@ -1390,20 +1158,14 @@ def detect_fidelity_columns(words: List[Dict], bank_identifier: str) -> Dict[str
         return None
 
     cols = []
-    cols.append(("TransDate", trans_date.get("x0", 0)))
-    if val_date: cols.append(("ValueDate", val_date.get("x0", 0)))
-    if channel: cols.append(("Channel", channel.get("x0", 0)))
-    cols.append(("Remarks", details.get("x0", 0)))
+    cols.append(("date", trans_date.get("x0", 0)))
+    if val_date: cols.append(("value_date", val_date.get("x0", 0)))
+    if channel: cols.append(("channel", channel.get("x0", 0)))
+    cols.append(("description", details.get("x0", 0)))
     
-    # Note: Fidelity puts Pay In (Credit) before Pay Out? Check template?
-    # Template: Pay In | Pay Out | Balance
-    # Wait, template img shows: Pay In | Pay Out | Balance
-    # But wait, usually Pay Out is Debit.
-    # Let's map robustly by x-coord
-    
-    if pay_in: cols.append(("Credit", pay_in.get("x0", 0)))
-    if pay_out: cols.append(("Debit", pay_out.get("x0", 0)))
-    cols.append(("Balance", bal.get("x0", 0)))
+    if pay_in: cols.append(("credit", pay_in.get("x0", 0)))
+    if pay_out: cols.append(("debit", pay_out.get("x0", 0)))
+    cols.append(("balance", bal.get("x0", 0)))
 
     cols.sort(key=lambda x: x[1])
     
@@ -1449,97 +1211,18 @@ def detect_apt_columns(words: List[Dict], bank_identifier: str) -> Dict[str, Tup
     x_gl = min(w["x0"] for w in gl)
     
     cuts = {}
-    cuts["Txn Date"] = (0, x_gl - 10) # call it Txn Date to match standard map later
-    cuts["Remarks"] = (x_gl - 10, x_deb - 100) # GL Description
+    cuts["date"] = (0, x_gl - 10) 
+    cuts["description"] = (x_gl - 10, x_deb - 100) 
     
-    cuts["Debit"] = (x_deb - 80, x_deb + 5)
-    cuts["Credit"] = (x_cred - 80, x_cred + 5)
-    cuts["Balance"] = (x_bal - 80, x_bal + 5)
+    cuts["debit"] = (x_deb - 80, x_deb + 5)
+    cuts["credit"] = (x_cred - 80, x_cred + 5)
+    cuts["balance"] = (x_bal - 80, x_bal + 5)
 
     print(f"DEBUG: APT columns: {cuts.keys()}")
     return cuts
 
 
-def detect_uba_columns(words: List[Dict], bank_identifier: str) -> Dict[str, Tuple[float, float]] | None:
-    """
-    Detect UBA column boundaries
-    Headers: TRANS DATE | VALUE DATE | NARRATION | CHQ NO | DEBIT | CREDIT | BALANCE
-    """
-    if bank_identifier != "uba":
-        return None
-    
-    # Look for UBA header tokens (7 columns)
-    header_tokens = {
-        "TRANS": [], "DATE": [], "VALUE": [], "NARRATION": [],
-        "CHQ": [], "NO": [], "DEBIT": [], "CREDIT": [], "BALANCE": []
-    }
-    
-    for w in words:
-        txt = w["text"].upper().strip()
-        if txt in header_tokens:
-            header_tokens[txt].append(w)
-    
-    # Build column candidates
-    # TRANS DATE = 1 column, VALUE DATE = 1 column, NARRATION = 1, CHQ NO = 1, DEBIT = 1, CREDIT = 1, BALANCE = 1
-    columns = []
-    
-    # Find "TRANS" + "DATE" pair
-    if header_tokens["TRANS"] and header_tokens["DATE"]:
-        trans = min(header_tokens["TRANS"], key=lambda w: w["x0"])
-        date1 = [d for d in header_tokens["DATE"] if d["x0"] > trans["x0"]]
-        if date1:
-            date1 = min(date1, key=lambda w: w["x0"])
-            columns.append(("TransDate", trans["x0"], date1["x1"]))
-    
-    # Find "VALUE" + "DATE" pair
-    if header_tokens["VALUE"] and len(header_tokens["DATE"]) >= 2:
-        value = min(header_tokens["VALUE"], key=lambda w: w["x0"])
-        date2 = [d for d in header_tokens["DATE"] if d["x0"] > value["x0"]]
-        if date2:
-            date2 = min(date2, key=lambda w: w["x0"])
-            columns.append(("ValueDate", value["x0"], date2["x1"]))
-    
-    # Find single-word columns
-    if header_tokens["NARRATION"]:
-        narr = header_tokens["NARRATION"][0]
-        columns.append(("Remarks", narr["x0"], narr["x1"]))
-    
-    # Find "CHQ" + "NO" pair
-    if header_tokens["CHQ"] and header_tokens["NO"]:
-        chq = min(header_tokens["CHQ"], key=lambda w: w["x0"])
-        no = [n for n in header_tokens["NO"] if n["x0"] > chq["x0"]]
-        if no:
-            no = min(no, key=lambda w: w["x0"])
-            columns.append(("Reference", chq["x0"], no["x1"]))
-    
-    if header_tokens["DEBIT"]:
-        deb = header_tokens["DEBIT"][0]
-        columns.append(("Debit", deb["x0"], deb["x1"]))
-    
-    if header_tokens["CREDIT"]:
-        cred = header_tokens["CREDIT"][0]
-        columns.append(("Credit", cred["x0"], cred["x1"]))
-    
-    if header_tokens["BALANCE"]:
-        bal = header_tokens["BALANCE"][0]
-        columns.append(("Balance", bal["x0"], bal["x1"]))
-    
-    if len(columns) < 6:  # Need at least 6 columns for valid UBA format
-        return None
-    
-    # Sort by x0 and build edge-based boundaries
-    columns.sort(key=lambda c: c[1])
-    
-    cuts = {}
-    for i, (name, left, right) in enumerate(columns):
-        # Left boundary: previous column's right edge or page start
-        left_bound = columns[i-1][2] if i > 0 else 0
-        # Right boundary: next column's left edge or current right
-        right_bound = columns[i+1][1] if i < len(columns) - 1 else right + 50
-        cuts[name] = (left_bound, right_bound)
-    
-    print(f"DEBUG: UBA columns detected: {list(cuts.keys())}")
-    return cuts
+
 
 
 def detect_gtbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
@@ -1586,39 +1269,31 @@ def detect_gtbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float,
     if any(v is None for v in [x_trans, x_deb, x_cred, x_bal]):
         return None
 
-    # Build column list - only include columns that exist
-    # Use ACTUAL header positions (not adjusted) for correct boundary calculation
     cols = [
-        ("TransDate", x_trans),
+        ("date", x_trans),
     ]
     
     if x_value is not None:
-        cols.append(("ValueDate", x_value))
+        cols.append(("value_date", x_value))
     
     if x_ref is not None:
-        cols.append(("Reference", x_ref))
+        cols.append(("reference", x_ref))
     
-    # For right-aligned numeric columns, use the actual header position
-    # The boundary calculation will handle the midpoints correctly
     cols.extend([
-        ("Debit", x_deb),      # Use actual right edge position
-        ("Credit", x_cred),    # Use actual right edge position
-        ("Balance", x_bal),    # Use actual right edge position
+        ("debit", x_deb),
+        ("credit", x_cred),
+        ("balance", x_bal),
     ])
     
-    # Add Originating Branch if present (comes AFTER Balance, BEFORE Remarks)
     if x_branch is not None:
-        cols.append(("Branch", x_branch))
+        cols.append(("branch", x_branch))
     
-    # Estimate Remarks column position if not explicitly found
     if x_rem is not None:
-        cols.append(("Remarks", x_rem))
+        cols.append(("description", x_rem))
     elif x_branch is not None:
-        # Remarks typically comes after Branch
-        cols.append(("Remarks", x_branch + 100))
+        cols.append(("description", x_branch + 100))
     elif x_bal is not None:
-        # Fallback: place Remarks after Balance
-        cols.append(("Remarks", x_bal + 120))
+        cols.append(("description", x_bal + 120))
     
     # CRITICAL: Sort columns by X position to ensure correct left-to-right order
     # This prevents column boundary overlap
@@ -1677,33 +1352,24 @@ def assign_row_to_cols(row_words: List[Dict[str, Any]], cuts: Dict[str, Tuple[fl
 
     # 2. Content-Aware Repair (Fix mixed columns due to bad cuts)
     
-    # REPAIR 1: TransDate mixed into Remarks (Ecobank/GTBank)
-    # If TransDate empty but Remarks starts with a Date-like token -> Move it
-    if "TransDate" in bucket and not bucket["TransDate"] and bucket.get("Remarks"):
-        w_text = bucket["Remarks"][0]
-        # Regex for dd-MMM-yy, dd/mm/yyyy, etc.
-        if re.match(r"^\d{1,2}[-/\.]\w{3,}[-/\.]\d{2,4}$", w_text):
-            bucket["TransDate"].append(bucket["Remarks"].pop(0))
+    # Sources of mixed text (Details, Remarks, Narration - standard as 'description')
+    source_col = "description"
+    
+    # REPAIR 1: date mixed into description
+    if "date" in bucket and not bucket["date"] and bucket.get(source_col):
+        w_text = bucket[source_col][0]
+        if is_date(w_text):
+            bucket["date"].append(bucket[source_col].pop(0))
             
-    # REPAIR 2: Reference mixed into Remarks (GTBank)
-    # If Reference empty but Remarks starts with a Ref-like token -> Move it
-    if "Reference" in bucket and not bucket["Reference"] and bucket.get("Remarks"):
-        w_text = bucket["Remarks"][0]
-        # Use robust check (must have digits to avoid moving words like "PAYMENT")
-        # looks_like_ref is defined globally in this file
+    # REPAIR 2: reference mixed into description
+    if "reference" in bucket and not bucket["reference"] and bucket.get(source_col):
+        w_text = bucket[source_col][0]
         if looks_like_ref(w_text) and re.search(r"\d", w_text):
-             bucket["Reference"].append(bucket["Remarks"].pop(0))
+             bucket["reference"].append(bucket[source_col].pop(0))
 
-    # REPAIR 3: Branch Code mixed into Remarks (GTBank)
-    # If Branch empty but Remarks starts with "001" etc. -> Move it
-    if "Branch" in bucket and not bucket["Branch"] and bucket.get("Remarks"):
-        w_text = bucket["Remarks"][0]
-        if re.match(r"^\d{3}$", w_text):
-            bucket["Branch"].append(bucket["Remarks"].pop(0))
-
-    # REPAIR 4: Orphan Amount in Remarks (e.g. Debit shifted left into Remarks)
-    if bucket.get("Remarks") and (not bucket.get("Debit") or not bucket.get("Credit")):
-        w_text = bucket["Remarks"][-1]
+    # REPAIR 4: Orphan Amount in description (e.g. debit shifted left into description)
+    if bucket.get(source_col) and (not bucket.get("debit") or not bucket.get("credit")):
+        w_text = bucket[source_col][-1]
         if re.match(r"^-?[\d,]+\.\d{2}$", w_text):
             candidate_word = None
             for w in reversed(row_words):
@@ -1713,41 +1379,37 @@ def assign_row_to_cols(row_words: List[Dict[str, Any]], cuts: Dict[str, Tuple[fl
             
             if candidate_word:
                 x1 = candidate_word["x1"]
-                if "Debit" in cuts and not bucket["Debit"]:
-                    deb_l, deb_r = cuts["Debit"]
+                if "debit" in cuts and not bucket["debit"]:
+                    deb_l, deb_r = cuts["debit"]
                     if deb_l - 30 <= x1 <= deb_r:
-                        print(f"DEBUG: Moved orphan Debit from Remarks: {w_text}")
-                        bucket["Debit"].append(bucket["Remarks"].pop())
-                elif "Credit" in cuts and not bucket["Credit"]:
-                    cred_l, cred_r = cuts["Credit"]
+                        bucket["debit"].append(bucket[source_col].pop())
+                elif "credit" in cuts and not bucket["credit"]:
+                    cred_l, cred_r = cuts["credit"]
                     if cred_l - 30 <= x1 <= cred_r:
-                        print(f"DEBUG: Moved orphan Credit from Remarks: {w_text}")
-                        bucket["Credit"].append(bucket["Remarks"].pop())
+                        bucket["credit"].append(bucket[source_col].pop())
 
     # REPAIR 5: Aggressive Numeric Snapping
-    for target_col in ["Debit", "Credit", "Balance"]:
+    for target_col in ["debit", "credit", "balance"]:
         if target_col in cuts and not bucket[target_col]:
             target_center = (cuts[target_col][0] + cuts[target_col][1]) / 2
-            if bucket.get("Remarks"):
+            if bucket.get(source_col):
                 best_word_idx = -1
                 min_dist = float('inf')
-                for i, w_text in enumerate(bucket["Remarks"]):
-                    # FIX 1: Flexible money regex (no digit limit, optional decimal)
+                for i, w_text in enumerate(bucket[source_col]):
                     if re.match(r"^-?[\d,]+(\.\d+)?$", w_text):
                         cand_w = next((w for w in reversed(row_words) if w["text"] == w_text), None)
                         if cand_w:
                             w_center = (cand_w["x0"] + cand_w["x1"]) / 2
                             dist = abs(w_center - target_center)
-                            if dist < 60 and dist < min_dist: # Increased reach to 60
+                            if dist < 60 and dist < min_dist:
                                 min_dist = dist
                                 best_word_idx = i
                 
                 if best_word_idx != -1:
-                    print(f"DEBUG: Snapped {bucket['Remarks'][best_word_idx]} to {target_col} (dist={min_dist:.1f})")
-                    bucket[target_col].append(bucket["Remarks"].pop(best_word_idx))
+                    bucket[target_col].append(bucket[source_col].pop(best_word_idx))
 
-    # CLEANUP: Remove internal spaces
-    for col in ["Debit", "Credit", "Balance"]:
+    # CLEANUP: Remove internal spaces in numeric fields
+    for col in ["debit", "credit", "balance"]:
         if col in bucket and bucket[col]:
             full_str = "".join(bucket[col])
             bucket[col] = [full_str.replace(" ", "")]
@@ -1796,14 +1458,14 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     while i < len(rows):
         r = rows[i]
         
-        # Extract fields
-        tdate = (r.get("TransDate") or r.get("Date") or "").strip()
-        ref = (r.get("Reference") or "").strip()
-        rem = (r.get("Remarks") or "").strip()
-        deb = (r.get("Debit") or "").strip()
-        cred = (r.get("Credit") or "").strip()
-        bal = (r.get("Balance") or "").strip()
-        branch = (r.get("Branch") or "").strip()
+        # Standardized keys
+        tdate = (r.get("date") or "").strip()
+        ref = (r.get("reference") or "").strip()
+        rem = (r.get("description") or "").strip()
+        deb = (r.get("debit") or "").strip()
+        cred = (r.get("credit") or "").strip()
+        bal = (r.get("balance") or "").strip()
+        branch = (r.get("branch") or "").strip()
         
         # Access raw text if available
         raw_text = r.get("_raw_text", "")
@@ -1822,9 +1484,9 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         # --- FIX 2: SPLIT DECIMAL MERGE ---
         if i + 1 < len(rows):
             next_r = rows[i+1]
-            next_deb = (next_r.get("Debit") or "").strip()
-            next_cred = (next_r.get("Credit") or "").strip()
-            next_bal = (next_r.get("Balance") or "").strip()
+            next_deb = (next_r.get("debit") or "").strip()
+            next_cred = (next_r.get("credit") or "").strip()
+            next_bal = (next_r.get("balance") or "").strip()
             
             def try_merge_dec(curr_val, next_val):
                 if not curr_val or not next_val: return None
@@ -1837,11 +1499,11 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 return None
 
             m_d = try_merge_dec(deb, next_deb)
-            if m_d: deb = m_d; rows[i+1]["Debit"] = ""
+            if m_d: deb = m_d; rows[i+1]["debit"] = ""
             m_c = try_merge_dec(cred, next_cred)
-            if m_c: cred = m_c; rows[i+1]["Credit"] = ""
+            if m_c: cred = m_c; rows[i+1]["credit"] = ""
             m_b = try_merge_dec(bal, next_bal)
-            if m_b: bal = m_b; rows[i+1]["Balance"] = ""
+            if m_b: bal = m_b; rows[i+1]["balance"] = ""
 
         # --- FIX 1: STRICT ANCHOR LOGIC ---
         has_date = bool(parse_date_smart(tdate))
@@ -1878,12 +1540,12 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "_page": r.get("_page"),
                 "_row": r.get("_row"),
                 "date": parse_date_smart(tdate),
-                "value_date": (r.get("ValueDate") or "").strip(),
+                "value_date": (r.get("value_date") or "").strip(),
                 "reference": ref,
                 "debit": deb,
                 "credit": cred,
                 "balance": bal,
-                "remarks": rem,
+                "description": rem,
                 "branch": branch,
                 "raw_text": raw_text
             }
@@ -1898,7 +1560,7 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 
                 if ref: current["reference"] = (current["reference"] + " " + ref).strip()
                 if not assigned_dt and rem: 
-                    current["remarks"] = (current["remarks"] + " " + rem).strip()
+                    current["description"] = (current["description"] + " " + rem).strip()
                 if branch: current["branch"] = (current["branch"] + " " + branch).strip()
                 
         i += 1
@@ -2065,23 +1727,22 @@ def detect_firstbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[flo
 
     bounds = {}
 
-    # 1. Trans Date
+    # 1. date
     idx_td, w_td = find_word_x("TRANS")
     if not w_td: idx_td, w_td = find_word_x("DATE") # Fallback
-    if w_td: bounds["TransDate"] = (w_td["x0"], w_td["x1"])
+    if w_td: bounds["date"] = (w_td["x0"], w_td["x1"])
 
-    # 2. Ref Number 
+    # 2. reference 
     idx_ref, w_ref = find_word_x("REF")
-    if w_ref: bounds["Reference"] = (w_ref["x0"], w_ref["x1"])
+    if w_ref: bounds["reference"] = (w_ref["x0"], w_ref["x1"])
 
-    # 3. Remarks (Transaction Details)
+    # 3. description (Transaction Details)
     idx_rem, w_rem = find_word_x("DETAILS")
-    if w_rem: bounds["Remarks"] = (w_rem["x0"], w_rem["x1"])
+    if w_rem: bounds["description"] = (w_rem["x0"], w_rem["x1"])
 
-    # 4. Value Date
-    # Find "VALUE" specifically
+    # 4. value_date
     idx_vd, w_vd = find_word_x("VALUE")
-    if w_vd: bounds["ValueDate"] = (w_vd["x0"], w_vd["x1"])
+    if w_vd: bounds["value_date"] = (w_vd["x0"], w_vd["x1"])
 
     # 5. Withdrawal (Debit)
     idx_deb, w_deb = find_word_x("WITHDRAWAL") 
@@ -2183,42 +1844,42 @@ def detect_wema_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, f
 
     bounds = {}
 
-    # 1. Tran Date
+    # 1. date
     idx_td, w_td = find_word_x("TRAN")
     if w_td:
-         bounds["TransDate"] = (w_td["x0"], w_td["x1"])
+         bounds["date"] = (w_td["x0"], w_td["x1"])
     else:
          idx_td, w_td = find_word_x("DATE") # Fallback
-         if w_td: bounds["TransDate"] = (w_td["x0"], w_td["x1"])
+         if w_td: bounds["date"] = (w_td["x0"], w_td["x1"])
 
-    # 2. Value Date (Find VALUE)
+    # 2. value_date (Find VALUE)
     idx_vd, w_vd = find_word_x("VALUE")
-    if w_vd: bounds["ValueDate"] = (w_vd["x0"], w_vd["x1"])
+    if w_vd: bounds["value_date"] = (w_vd["x0"], w_vd["x1"])
 
-    # 3. Narration
+    # 3. description
     idx_rem, w_rem = find_word_x("NARRATION")
-    if w_rem: bounds["Remarks"] = (w_rem["x0"], w_rem["x1"])
+    if w_rem: bounds["description"] = (w_rem["x0"], w_rem["x1"])
 
-    # 4. Tran ID & Cheque No (Optional but good for bounding)
+    # 4. reference (ID or No)
     idx_ref, w_ref = find_word_x("ID") # TRAN ID
-    if w_ref: bounds["Reference"] = (w_ref["x0"], w_ref["x1"])
+    if w_ref: bounds["reference"] = (w_ref["x0"], w_ref["x1"])
     
-    # 5. Withdrawals (Debit) - Match WITHDRAWAL or WITHDRAWALS or DR
+    # 5. debit
     idx_deb, w_deb = find_word_x("WITHDRAWAL") 
     if not w_deb: idx_deb, w_deb = find_word_x("DR")
-    if w_deb: bounds["Debit"] = (w_deb["x0"], w_deb["x1"])
+    if w_deb: bounds["debit"] = (w_deb["x0"], w_deb["x1"])
 
-    # 6. Deposits (Credit) - Match DEPOSIT or DEPOSITS or CR
+    # 6. credit
     idx_cred, w_cred = find_word_x("DEPOSIT")
     if not w_cred: idx_cred, w_cred = find_word_x("CR")
-    if w_cred: bounds["Credit"] = (w_cred["x0"], w_cred["x1"])
+    if w_cred: bounds["credit"] = (w_cred["x0"], w_cred["x1"])
 
-    # 7. Balance
+    # 7. balance
     idx_bal, w_bal = find_word_x("BALANCE")
-    if w_bal: bounds["Balance"] = (w_bal["x0"], w_bal["x1"])
+    if w_bal: bounds["balance"] = (w_bal["x0"], w_bal["x1"])
 
     # Mandatory
-    if "TransDate" not in bounds or "Debit" not in bounds:
+    if "date" not in bounds or "debit" not in bounds:
         print("DEBUG: Wema detected header but missing TransDate or Debit column")
         return None
 
@@ -2298,40 +1959,40 @@ def detect_fcmb_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, f
 
     bounds = {}
 
-    # 1. Tran. Date (tran. date in image)
+    # 1. date
     idx_td, w_td = find_word_x("TRAN")
     if w_td:
-         bounds["TransDate"] = (w_td["x0"], w_td["x1"])
+         bounds["date"] = (w_td["x0"], w_td["x1"])
     else:
          idx_td, w_td = find_word_x("DATE") # Fallback
-         if w_td: bounds["TransDate"] = (w_td["x0"], w_td["x1"])
+         if w_td: bounds["date"] = (w_td["x0"], w_td["x1"])
 
-    # 2. Value Date (Find VALUE)
+    # 2. value_date (Find VALUE)
     idx_vd, w_vd = find_word_x("VALUE")
-    if w_vd: bounds["ValueDate"] = (w_vd["x0"], w_vd["x1"])
+    if w_vd: bounds["value_date"] = (w_vd["x0"], w_vd["x1"])
 
-    # 3. Ref
+    # 3. reference
     idx_ref, w_ref = find_word_x("REF")
-    if w_ref: bounds["Reference"] = (w_ref["x0"], w_ref["x1"])
+    if w_ref: bounds["reference"] = (w_ref["x0"], w_ref["x1"])
 
-    # 4. Remarks (Transaction Details)
+    # 4. description
     idx_rem, w_rem = find_word_x("DETAILS")
-    if w_rem: bounds["Remarks"] = (w_rem["x0"], w_rem["x1"])
+    if w_rem: bounds["description"] = (w_rem["x0"], w_rem["x1"])
     
-    # 5. Debit
+    # 5. debit
     idx_deb, w_deb = find_word_x("DEBIT") 
-    if w_deb: bounds["Debit"] = (w_deb["x0"], w_deb["x1"])
+    if w_deb: bounds["debit"] = (w_deb["x0"], w_deb["x1"])
 
-    # 6. Credit
+    # 6. credit
     idx_cred, w_cred = find_word_x("CREDIT")
-    if w_cred: bounds["Credit"] = (w_cred["x0"], w_cred["x1"])
+    if w_cred: bounds["credit"] = (w_cred["x0"], w_cred["x1"])
 
-    # 7. Balance
+    # 7. balance
     idx_bal, w_bal = find_word_x("BALANCE")
-    if w_bal: bounds["Balance"] = (w_bal["x0"], w_bal["x1"])
+    if w_bal: bounds["balance"] = (w_bal["x0"], w_bal["x1"])
 
     # Mandatory
-    if "TransDate" not in bounds or "Debit" not in bounds:
+    if "date" not in bounds or "debit" not in bounds:
         print("DEBUG: FCMB detected header but missing TransDate or Debit column")
         return None
 
@@ -2464,17 +2125,16 @@ def extract_zenith_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
 
         txn = {
             "date": date_parsed,
-            "value_date": "", # Skipped for now or could parse row_list[1]
+            "value_date": "",
             "reference": "",
-            "originating_branch": "",
-            "remarks": description,
+            "branch": "",
             "description": description,
             "debit": d_float,
             "credit": c_float,
             "balance": b_float,
             "category": "Unallocated",
             "is_reversal": False,
-            "_page": 0,
+            "_page": page_num,
             "_row": i
         }
         
@@ -2568,8 +2228,7 @@ def extract_fcmb_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
             "date": date_parsed,
             "value_date": parse_date(row[1]) if start_desc == 2 else "",
             "reference": "",
-            "originating_branch": "",
-            "remarks": description,
+            "branch": "",
             "description": description,
             "debit": d_float,
             "credit": c_float,
@@ -2583,277 +2242,166 @@ def extract_fcmb_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
 
     print(f"DEBUG: Extracted {len(final_txns)} transactions via FCMB Table strategy")
     return final_txns
-
-
-def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
-    """
-    Extract Ecobank transactions using 'Date Anchor' grouping with table extraction.
-    Replaces word-based logic for Ecobank to handle split decimals via row stitching.
-    """
-    print("DEBUG: Using Ecobank Table-Based Extraction Strategy (Date Anchor)")
-    transactions = []
-    
-    # EcoBank Date Format is usually DD-Mon-YYYY (e.g., 31-May-2025)
-    date_pattern = re.compile(r'^\d{2}-[A-Za-z]{3}-\d{4}')
-    
-    with pdfplumber.open(pdf_path) as pdf:
-        all_rows = []
-        
-        # 1. Extract all table rows across all pages
-        for page in pdf.pages:
-            # table_settings usually help with "ghost columns"
-            # vertical_strategy="text" helps when columns aren't ruled lines
-            table = page.extract_table({
-                "vertical_strategy": "text", 
-                "horizontal_strategy": "text",
-                "intersection_y_tolerance": 5 
-            })
-            
-            if table:
-                all_rows.extend(table)
-
-    # 2. Iterate and Group (The "Stitching" Logic)
-    current_txn = None
-    headers_found = False
-    
-    # Defaults
-    idx_date = 0
-    idx_desc = 1
-    # value date is usually 2, but we might skip it in capture if not needed
-    idx_debit = 3 # Typical
-    idx_credit = 4 # Typical
-    idx_bal = 5 # Typical
-    
-    for row in all_rows:
-        # Clean row: remove None values
-        row = [str(x).strip() if x else '' for x in row]
-        
-        # Safety: Need at least a few columns
-        if len(row) < 3:
-            continue
-
-        # A. Detect Header
-        if not headers_found:
-            row_upper = [x.upper() for x in row]
-            if 'DATE' in row_upper and ('BALANCE' in row_upper or 'BAL' in row_upper):
-                headers_found = True
-                print(f"DEBUG: Found Ecobank Header: {row}")
-                try:
-                    # Find indices dynamically
-                    for i, col in enumerate(row_upper):
-                        if 'TRANS' in col and 'DATE' in col: idx_date = i
-                        elif 'DATE' in col and i == 0: idx_date = i 
-                        
-                        if 'DESCRIPTION' in col or 'PARTICULARS' in col or 'NARRATION' in col: idx_desc = i
-                        if 'DEBIT' in col or 'WITHDRAWAL' in col: idx_debit = i
-                        if 'CREDIT' in col or 'DEPOSIT' in col: idx_credit = i
-                        if 'BALANCE' in col: idx_bal = i
-                except ValueError:
-                    pass
-            continue 
-
-        # B. Check if this is a "New Transaction" (starts with a valid date)
-        # Check boundary
-        if idx_date >= len(row): continue
-        
-        first_col_val = row[idx_date]
-        is_new_date = date_pattern.match(first_col_val)
-        
-        # Helper to get safe value
-        def get_val(idx): return row[idx] if idx < len(row) else ""
-        
-        desc = get_val(idx_desc)
-        debit = get_val(idx_debit)
-        credit = get_val(idx_credit)
-        bal = get_val(idx_bal)
-
-        # --- IMPLICIT DATE LOGIC START ---
-        # Check if it's a "Same Day" transaction (No date, but has Money)
-        is_implicit_date_txn = False
-        if not is_new_date and current_txn:
-            # Heuristic: If Date is empty, but Debit OR Credit has a value that looks like money (or balance)
-            # AND it's not just a wrapped description line.
-            # A wrapped line usually has empty Debit/Credit/Balance OR partial text.
-            # A new txn usually has a clear Debit/Credit/Balance.
-            
-            has_money = (debit and any(c.isdigit() for c in debit)) or \
-                        (credit and any(c.isdigit() for c in credit)) or \
-                        (bal and any(c.isdigit() for c in bal) and len(bal) > 3)
-            
-            # If we align with columns, it's likely a new txn
-            if has_money:
-                 is_implicit_date_txn = True
-        # --- IMPLICIT DATE LOGIC END ---
-
-        if is_new_date or is_implicit_date_txn:
-            # Save previous
-            if current_txn:
-                transactions.append(current_txn)
-            
-            # Start new
-            # If implicit, use the Last Known Date from the current_txn (or a tracked variable)
-            txn_date = first_col_val if is_new_date else (current_txn['Date'] if current_txn else "")
-            
-            current_txn = {
-                'Date': txn_date,
-                'Description': desc,
-                'Debit_Raw': debit, 
-                'Credit_Raw': credit,
-                'Balance_Raw': bal
-            }
-        
-        # C. Wrapped Row (Stitching)
-        elif current_txn:
-            # Append text
-            if desc: current_txn['Description'] += " " + desc
-            if debit: current_txn['Debit_Raw'] += debit   # Concatenate for split decimals
-            if credit: current_txn['Credit_Raw'] += credit
-            if bal: current_txn['Balance_Raw'] += bal
-
-    # Last one
-    if current_txn:
-        transactions.append(current_txn)
-
-    # 3. Clean and Standardize for Backend using Pandas (Aggressive Cleaning)
-    if not transactions:
-        print("DEBUG: No transactions found for Ecobank table strategy.")
-        return []
-
-    # Rename keys to map to user's desired column names for processing then to standard output
-    cleaned_txns_data = []
-    for t in transactions:
-        cleaned_txns_data.append({
-            'Date': t['Date'],
-            'Description': t['Description'],
-            'Debit': t['Debit_Raw'],
-            'Credit': t['Credit_Raw'],
-            'Balance': t['Balance_Raw']
-        })
-
-    df = pd.DataFrame(cleaned_txns_data)
-    
-    # --- USER CLEANUP LOGIC START ---
-    # 1. Drop the junk rows that interrupt page breaks
-    invalid_noise = ['Account Statement', 'Transaction Date', 'Opening Balance', 'Page', 'Ecobank']
-    # Ensure Date is string for contains check
-    df = df[~df['Date'].astype(str).str.contains('|'.join(invalid_noise), case=False, na=False)]
-
-    # 2. Fix shifted columns at page breaks
-    # If Debit is empty/0 but we know it's a valid row, check if the amount shifted into the Description or Value Date
-    # Note: Our dataframe keys are Date, Description, Debit, Credit, Balance (all from _Raw)
-    # The user's code references 'Value Date' which we didn't map in the DF yet.
-    # We will map 'Description' as the primary search area since we concatenated everything there.
-    
-    def recover_shifted_amounts(row):
-        debit_val = str(row.get('Debit', '0')).strip()
-        
-        # If Debit looks empty or zero, but it's a real transaction
-        if debit_val in ['', '0', '0.0', 'None', 'nan']:
-            # Search the Description column for orphaned large numbers (e.g., 8,000,000.00)
-            # The user's snippet checked 'Value Date' + 'Description'. 
-            # We only have 'Description' populated in our keymap currently, so we use that.
-            search_area = str(row.get('Description', ''))
-            
-            # Regex finds numbers with commas and two decimal places (e.g., 8,000,000.00)
-            hidden_amount = re.search(r'\b\d{1,3}(?:,\d{3})*\.\d{2}\b', search_area)
-            if hidden_amount:
-                print(f"DEBUG: Recovered shifted debit: {hidden_amount.group()} from {search_area[:20]}...")
-                return hidden_amount.group() # Return the found amount to the Debit column
-                
-        return debit_val
-
-    # Apply the recovery function
-    df['Debit'] = df.apply(recover_shifted_amounts, axis=1)
-    # --- USER CLEANUP LOGIC END ---
-    
-    def fix_ecobank_amounts(val):
-        # 1. Fix numbers that wrap vertically (e.g., "13,000,000.\n00")
-        val = str(val).replace('\n', '') 
-        
-        # 2. Fix columns that merge horizontally (e.g., "8,000,000.00 0.00")
-        # This splits by space and grabs only the first amount
-        first_amount = val.split()[0] if val.strip() else ''
-        
-        # 3. Strip commas and convert
-        clean_str = re.sub(r'[^\d.]', '', first_amount)
-        
-        try:
-            return float(clean_str) if clean_str else 0.0
-        except ValueError:
-            return 0.0
-
-    # Apply this to your extracted columns before saving to Excel
-    for col in ['Debit', 'Credit', 'Balance']:
-        if col in df.columns:
-            df[col] = df[col].apply(fix_ecobank_amounts)
-        else:
-            df[col] = 0.0
-
-    # 4. Recalculate Debits and Credits based on the row-to-row Balance change (User Request)
-    # The "Nuclear Option": Trust Balance column implicitly.
-    
-    # Ensure numeric types first (already done by fix_ecobank_amounts loop above for D/C/B)
-    # We strictly enforce Balance as float for diff
-    df['Balance'] = pd.to_numeric(df['Balance'], errors='coerce').fillna(0.0)
-    
-    df['Balance_Diff'] = df['Balance'].diff()
-    # Note: .diff() is [i] - [i-1].
-    # Balance Drops (negative diff) -> Money Left (Debit)
-    # Balance Rises (positive diff) -> Money Entered (Credit)
-
-    df['Calculated_Debit'] = pd.NA
-    df['Calculated_Credit'] = pd.NA
-
-    # Threshold for float noise
-    diff_epsilon = 0.005 
-
-    # If balance drops, it's a Debit. 
-    mask_debit = df['Balance_Diff'] < -diff_epsilon
-    df.loc[mask_debit, 'Calculated_Debit'] = df.loc[mask_debit, 'Balance_Diff'].abs()
-
-    # If balance rises, it's a Credit.
-    mask_credit = df['Balance_Diff'] > diff_epsilon
-    df.loc[mask_credit, 'Calculated_Credit'] = df.loc[mask_credit, 'Balance_Diff']
-
-    # 2. Overwrite the broken columns (leaving the first row's NaN as 0.0 or original)
-    # We fillna with the original extracted values, so if diff is NaN (row 0), we keep extraction.
-    # But if diff exists, we use it to overwrite extraction (fixing 0s or empty extractions).
-    df['Debit'] = df['Calculated_Debit'].fillna(df['Debit'])
-    df['Debit'] = pd.to_numeric(df['Debit'], errors='coerce').fillna(0.0).round(2)
-    
-    df['Credit'] = df['Calculated_Credit'].fillna(df['Credit'])
-    df['Credit'] = pd.to_numeric(df['Credit'], errors='coerce').fillna(0.0).round(2)
-
-    # 3. Clean up the stray numbers that got thrown into your Date column
-    if 'Date' in df.columns:
-        df['Date'] = df['Date'].astype(str).str.replace(r'\s+\d+$', '', regex=True)
-
-    # Drop temporary columns
-    df.drop(columns=['Balance_Diff', 'Calculated_Debit', 'Calculated_Credit'], inplace=True, errors='ignore')
-
-    final_txns = []
-    
-    # Convert back to standard list of dicts for the application
-    for i, row in df.iterrows():
-        std_txn = {
-            "date": parse_date(row.get('Date', '')),
-            "value_date": "", 
-            "reference": "",
-            "originating_branch": "",
-            "remarks": row.get('Description', ''),
-            "description": row.get('Description', ''),
-            "debit": row['Debit'],
-            "credit": row['Credit'],
-            "balance": row['Balance'],
-            "category": "Unallocated",
-            "is_reversal": False,
-            "_page": 0,
-            "_row": i
-        }
-        final_txns.append(std_txn)
-
-    print(f"DEBUG: Extracted {len(final_txns)} transactions via Ecobank Table strategy")
-    return final_txns
              
 
 
+
+def extract_access_consensus(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict], Dict]:
+    """
+    Deterministic Global Layout Consensus Engine for Access Bank.
+    Phase 1: Statistical scan to lock column zones.
+    Phase 2: Deterministic extraction using locked zones.
+    Phase 3: Mathematical reconciliation.
+    """
+    print("DEBUG: Using Deterministic Global Layout Consensus for Access Bank")
+    
+    date_coords = []
+    money_coords = []
+    
+    # helper for mode calculation
+    from collections import Counter
+    
+    with pdfplumber.open(pdf_path) as pdf:
+        # Phase 1: Global Column Locking (Scan first 5 pages)
+        scan_pages = pdf.pages[:5]
+        for p in scan_pages:
+            words = p.extract_words(x_tolerance=2, y_tolerance=2)
+            for w in words:
+                txt = w["text"].strip()
+                # Track Date-like tokens
+                if is_date(txt):
+                    date_coords.append(round(w["x0"], 0))
+                # Track Money-like tokens
+                if MONEY_RE.match(txt):
+                     money_coords.append(round(w["x1"], 0))
+
+        if not date_coords:
+            raise ValueError("Consensus Engine Error: No date columns found in scan.")
+
+        # Lock Date Zone (Mode X0)
+        date_mode = Counter(date_coords).most_common(1)[0][0]
+        date_zone = (date_mode - 10, date_mode + 50)
+        
+        # Lock Financial Zones (Cluster X1s right of Date)
+        potential_fin = [x for x in money_coords if x > date_zone[1]]
+        if not potential_fin:
+             raise ValueError("Consensus Engine Error: No financial columns found in scan.")
+             
+        # Simple Clustering: Group by proximity
+        fin_clusters = []
+        for x in sorted(set(potential_fin)):
+            if not fin_clusters or x - fin_clusters[-1][-1] > 40:
+                fin_clusters.append([x])
+            else:
+                fin_clusters[-1].append(x)
+        
+        # Take the mode of each cluster
+        fin_modes = []
+        for cluster in fin_clusters:
+            counts = Counter([x for x in potential_fin if x in cluster])
+            fin_modes.append(counts.most_common(1)[0][0])
+        
+        # Sort left to right
+        fin_modes.sort()
+        
+        # Zones with ±30px tolerance
+        TOL = 30
+        zones = {
+            "date": date_zone,
+            "debit": (fin_modes[-3] - TOL, fin_modes[-3] + 10) if len(fin_modes) >= 3 else (0,0),
+            "credit": (fin_modes[-2] - TOL, fin_modes[-2] + 10) if len(fin_modes) >= 2 else (0,0),
+            "balance": (fin_modes[-1] - TOL, fin_modes[-1] + 10) if len(fin_modes) >= 1 else (0,0)
+        }
+        
+        print(f"DEBUG: LOCKED ZONES: {zones}")
+
+        # Phase 2: Deterministic Extraction
+        all_transactions = []
+        current_txn = None
+        
+        for page_num, page in enumerate(pdf.pages, 1):
+            words = page.extract_words(x_tolerance=2, y_tolerance=2)
+            row_groups = group_words_to_rows(words, y_tol=2.5)
+            
+            for rg in row_groups:
+                row_text = " ".join([w["text"] for w in rg["words"]])
+                
+                # Noise Filtering
+                if any(k in row_text.upper() for k in ["BALANCE BROUGHT FORWARD", "PAGE ", "TOTAL TURNOVER", "OPENING BALANCE", "CLOSING BALANCE"]):
+                    continue
+                
+                # Assign words to zones
+                row_data = {"date": "", "description_parts": [], "debit": "", "credit": "", "balance": ""}
+                
+                # First pass: Identify Date and Financials
+                for w in rg["words"]:
+                    x0, x1 = w["x0"], w["x1"]
+                    txt = w["text"].strip()
+                    
+                    if zones["date"][0] <= x0 <= zones["date"][1] and is_date(txt):
+                        row_data["date"] = txt
+                    elif zones["debit"][0] <= x1 <= zones["debit"][1] and MONEY_RE.match(txt):
+                        row_data["debit"] = txt
+                    elif zones["credit"][0] <= x1 <= zones["credit"][1] and MONEY_RE.match(txt):
+                        row_data["credit"] = txt
+                    elif zones["balance"][0] <= x1 <= zones["balance"][1] and MONEY_RE.match(txt):
+                        row_data["balance"] = txt
+                    elif x0 > zones["date"][1] and (not fin_modes or x1 < fin_modes[0] - TOL):
+                        # Description zone is between Date and first Financial
+                        row_data["description_parts"].append(txt)
+                
+                description = " ".join(row_data["description_parts"]).strip()
+                
+                if row_data["date"]:
+                    if current_txn:
+                        all_transactions.append(current_txn)
+                    
+                    current_txn = {
+                        "date": parse_date_smart(row_data["date"]),
+                        "description": description,
+                        "debit": parse_money(row_data["debit"]),
+                        "credit": parse_money(row_data["credit"]),
+                        "balance": parse_money(row_data["balance"]),
+                        "_page": page_num,
+                        "reconciliation_status": "Pending"
+                    }
+                elif current_txn and description:
+                    current_txn["description"] = (current_txn["description"] + " " + description).strip()
+        
+        if current_txn:
+            all_transactions.append(current_txn)
+
+        # Phase 3: Mathematical Reconciliation
+        reconciled_txns = []
+        prev_bal = None
+        
+        if metadata.get("opening_balance"):
+            prev_bal = clean_currency_str(metadata["opening_balance"])
+            
+        for txn in all_transactions:
+            curr_deb = txn["debit"]
+            curr_cred = txn["credit"]
+            curr_bal = txn["balance"]
+            
+            if prev_bal is not None and curr_bal != 0:
+                expected = round(prev_bal - curr_deb + curr_cred, 2)
+                actual = round(curr_bal, 2)
+                
+                if abs(expected - actual) <= 0.02:
+                    txn["reconciliation_status"] = "Success"
+                else:
+                    txn["reconciliation_status"] = "Anomaly"
+                    print(f"DEBUG: Reconciliation FAIL at page {txn['_page']}: Expected {expected}, Got {actual}")
+            
+            if curr_bal != 0:
+                prev_bal = curr_bal
+            
+            # Final formatting
+            txn["originating_branch"] = ""
+            txn["remarks"] = txn["description"]
+            txn["category"] = "Unallocated"
+            txn["is_reversal"] = False
+            txn["_row"] = 0
+            reconciled_txns.append(txn)
+
+    return reconciled_txns, metadata
