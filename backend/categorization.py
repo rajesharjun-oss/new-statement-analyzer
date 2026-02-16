@@ -6,7 +6,6 @@ import re
 import os
 import math
 from typing import List, Dict, Any, Optional
-from openai import OpenAI
 
 # --- 1. CONFIGURATION ---
 
@@ -238,6 +237,12 @@ def categorize_single_transaction(txn: Dict) -> Dict:
     return txn
 
 
+from openai import OpenAI
+import google.generativeai as genai
+from gemini_vision import _clean_ai_json
+
+# ... (keep existing imports and rules)
+
 def categorize_transactions(transactions: List[Dict]) -> List[Dict]:
     """
     Categorize transactions using rules + AI fallback
@@ -246,31 +251,38 @@ def categorize_transactions(transactions: List[Dict]) -> List[Dict]:
     
     for i, txn in enumerate(transactions):
         categorize_single_transaction(txn)
-        if txn.get('category') == 'Unallocated':
+        if txn.get('category') in ['Unallocated', 'Uncategorized Expense', 'Uncategorized Income']:
             unallocated_indices.append(i)
             
     # AI fallback for unallocated (batch processing)
-    # Only try if we have an API key AND it looks like we extracted something valid
-    # (heuristic: don't waste quota on 1-2 garbage rows if possible, or do?)
-    if unallocated_indices and os.getenv('OPENAI_API_KEY'):
+    # Prefer OpenAI for categorization if available, else Gemini
+    if unallocated_indices:
         try:
             unallocated = [transactions[i] for i in unallocated_indices]
             if unallocated:
-                categorize_with_ai(unallocated)
+                if os.getenv('OPENAI_API_KEY'):
+                    categorize_with_openai(unallocated)
+                elif os.getenv('GEMINI_API_KEY'):
+                    categorize_with_gemini(unallocated)
         except Exception as e:
-            # LOG and CONTINUE. Do not crash the app.
-            print(f"AI categorization skipped/failed (Quota or Error): {e}")
+            print(f"AI categorization failed: {e}")
             
     return transactions
 
-def categorize_with_ai(transactions: List[Dict]):
+def categorize_with_openai(transactions: List[Dict]):
     """
     Use OpenAI to categorize unallocated transactions
     """
-    client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key: return
+    
+    client = OpenAI(api_key=api_key)
     
     # Batch descriptions
-    descriptions = [t.get('description', '') for t in transactions]
+    input_data = [
+        f"Desc: {t.get('description', '')} | Amount: {t.get('debit', 0) or t.get('credit', 0)}" 
+        for t in transactions
+    ]
     
     prompt = f"""Categorize these bank transactions into one of these categories:
 - Salaries & Wages
@@ -287,7 +299,7 @@ def categorize_with_ai(transactions: List[Dict]):
 - Unallocated
 
 Transactions:
-{chr(10).join(f'{i+1}. {desc}' for i, desc in enumerate(descriptions))}
+{chr(10).join(f'{i+1}. {data}' for i, data in enumerate(input_data))}
 
 Return only a JSON array of categories in order, like: ["Income", "Rent", "Utilities", ...]
 """
@@ -302,7 +314,6 @@ Return only a JSON array of categories in order, like: ["Income", "Rent", "Utili
         # Parse response
         import json
         content = response.choices[0].message.content
-        # robust json fix
         if "```json" in content:
             content = content.replace("```json", "").replace("```", "")
         
@@ -315,4 +326,55 @@ Return only a JSON array of categories in order, like: ["Income", "Rent", "Utili
                 transactions[i]['confidence'] = 0.85
                 
     except Exception as e:
-        print(f"OpenAI Call Error: {e}")
+        print(f"OpenAI Categorization Error: {e}")
+
+def categorize_with_gemini(transactions: List[Dict]):
+    """
+    Use secondary Gemini fallback for categorization
+    """
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key: return
+
+    input_data = [
+        f"Desc: {t.get('description', '')} | Amount: {t.get('debit', 0) or t.get('credit', 0)}" 
+        for t in transactions
+    ]
+    
+    prompt = f"""Categorize these bank transactions into one of these categories:
+- Salaries & Wages
+- Rent
+- Utilities
+- Fuel
+- Office Supplies
+- Professional Fees
+- Bank Charges
+- Tax
+- Income
+- Transfer Out
+- Transfer In
+- Unallocated
+
+Transactions:
+{chr(10).join(f'{i+1}. {data}' for i, data in enumerate(input_data))}
+
+Return ONLY a JSON array of categories in order, like: ["Income", "Rent", "Utilities", ...]
+"""
+    
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        
+        response = model.generate_content(prompt)
+        
+        import json
+        content = _clean_ai_json(response.text)
+        categories = json.loads(content)
+        
+        for i, category in enumerate(categories):
+            if i < len(transactions):
+                transactions[i]['category'] = category
+                transactions[i]['decision_source'] = "AI"
+                transactions[i]['confidence'] = 0.85
+                
+    except Exception as e:
+        print(f"Gemini Categorization Fallback Error: {e}")

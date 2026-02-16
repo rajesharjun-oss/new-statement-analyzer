@@ -13,6 +13,7 @@ Create a `.env` file in the `backend/` directory:
 
 ```env
 OPENAI_API_KEY=your_openai_api_key_here
+OCR_ENGINE=openai  # or 'tesseract'
 ```
 
 ## 3. Start the Backend Server

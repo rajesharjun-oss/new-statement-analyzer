@@ -1,0 +1,476 @@
+INFO:     Started server process [10004]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+DEBUG: Auto-detected bank: gtbank
+DEBUG: Page 0 words count: 0
+DEBUG: Page 0 has no words, skipping...
+DEBUG: Page 1 words count: 0
+DEBUG: Page 1 has no words, skipping...
+DEBUG: Page 2 words count: 0
+DEBUG: Page 2 has no words, skipping...
+DEBUG: Page 3 words count: 0
+DEBUG: Page 3 has no words, skipping...
+DEBUG: Page 4 words count: 0
+DEBUG: Page 4 has no words, skipping...
+DEBUG: Page 5 words count: 0
+DEBUG: Page 5 has no words, skipping...
+DEBUG: Page 6 words count: 0
+DEBUG: Page 6 has no words, skipping...
+DEBUG: Standard detection failed on all pages. Trying OCR fallback (Engine: openai)...
+DEBUG: Attempting OCR on page 0...
+DEBUG: Using OCR_ENGINE=openai
+DEBUG: OpenAI Vision Error: Client.__init__() got an unexpected keyword argument 'proxies'
+DEBUG: Attempting OCR on page 1...
+DEBUG: Using OCR_ENGINE=openai
+DEBUG: OpenAI Vision Error: Client.__init__() got an unexpected keyword argument 'proxies'
+DEBUG: OCR TEXT SAMPLE: 
+
+
+DEBUG: OCR TEXT SAMPLE: 
+
+
+DEBUG: OCR fallback failed: Header not detected by pdfplumber. OCR (openai) successfully extracted text (see DEBUG log), but OCR-to-rows parsing failed or is not not implemented for this bank. Please use text-based PDFs or contact support.
+ERROR in /analyze: Traceback (most recent call last):
+  File "C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\pdf_extractor.py", line 514, in extract_transactions
+    raise ValueError(
+ValueError: Header not detected by pdfplumber. OCR (openai) successfully extracted text (see DEBUG log), but OCR-to-rows parsing failed or is not not implemented for this bank. Please use text-based PDFs or contact support.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\main.py", line 80, in analyze_statement
+    categorized_transactions = categorize_transactions(transactions)
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\pdf_extractor.py", line 520, in extract_transactions
+    raise ValueError(f"Could not detect column header after scanning all pages. OCR fallback also failed: {e}")
+ValueError: Could not detect column header after scanning all pages. OCR fallback also failed: Header not detected by pdfplumber. OCR (openai) successfully extracted text (see DEBUG log), but OCR-to-rows parsing failed or is not not implemented for this bank. Please use text-based PDFs or contact support.
+
+INFO:     127.0.0.1:49716 - "POST /analyze HTTP/1.1" 500 Internal Server Error
+DEBUG: Auto-detected bank: uba
+DEBUG: Page 0 words count: 298
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 1 words count: 338
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 2 words count: 355
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 3 words count: 342
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 4 words count: 331
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 5 words count: 334
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 6 words count: 342
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 7 words count: 337
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 8 words count: 321
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 9 words count: 354
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 10 words count: 335
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 11 words count: 342
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 12 words count: 346
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 13 words count: 362
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 14 words count: 330
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 15 words count: 352
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 16 words count: 339
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 17 words count: 332
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 18 words count: 327
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 19 words count: 356
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 20 words count: 341
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 21 words count: 346
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 22 words count: 322
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 23 words count: 336
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 24 words count: 324
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 25 words count: 329
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 26 words count: 320
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 27 words count: 347
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 28 words count: 314
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 29 words count: 331
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 30 words count: 327
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 31 words count: 338
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 32 words count: 334
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 33 words count: 328
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 34 words count: 339
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 35 words count: 315
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Page 36 words count: 172
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for uba
+DEBUG: Standard detection failed on all pages. Trying OCR fallback (Engine: openai)...
+DEBUG: Attempting OCR on page 0...
+DEBUG: Using OCR_ENGINE=openai
+DEBUG: OpenAI Vision Error: Client.__init__() got an unexpected keyword argument 'proxies'
+DEBUG: Attempting OCR on page 1...
+DEBUG: Using OCR_ENGINE=openai
+DEBUG: OpenAI Vision Error: Client.__init__() got an unexpected keyword argument 'proxies'
+DEBUG: OCR TEXT SAMPLE: 
+
+
+DEBUG: OCR TEXT SAMPLE: 
+
+
+DEBUG: Using UBA OCR Parser...
+DEBUG: JSON parse error: Expecting value: line 3 column 1 (char 2)
+DEBUG: Raw text was not valid JSON.
+DEBUG: UBA OCR Parser found 0 transactions
+DEBUG: OCR fallback failed: Header not detected by pdfplumber. OCR (openai) successfully extracted text (see DEBUG log), but OCR-to-rows parsing failed or is not not implemented for this bank. Please use text-based PDFs or contact support.
+ERROR in /analyze: Traceback (most recent call last):
+  File "C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\pdf_extractor.py", line 514, in extract_transactions
+    raise ValueError(
+ValueError: Header not detected by pdfplumber. OCR (openai) successfully extracted text (see DEBUG log), but OCR-to-rows parsing failed or is not not implemented for this bank. Please use text-based PDFs or contact support.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\main.py", line 80, in analyze_statement
+    categorized_transactions = categorize_transactions(transactions)
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\pdf_extractor.py", line 520, in extract_transactions
+    raise ValueError(f"Could not detect column header after scanning all pages. OCR fallback also failed: {e}")
+ValueError: Could not detect column header after scanning all pages. OCR fallback also failed: Header not detected by pdfplumber. OCR (openai) successfully extracted text (see DEBUG log), but OCR-to-rows parsing failed or is not not implemented for this bank. Please use text-based PDFs or contact support.
+
+INFO:     127.0.0.1:65181 - "POST /analyze HTTP/1.1" 500 Internal Server Error
+DEBUG: Auto-detected bank: gtbank
+DEBUG: Page 0 words count: 328
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Standard detection failed on all pages. Trying OCR fallback (Engine: openai)...
+DEBUG: Attempting OCR on page 0...
+DEBUG: Using OCR_ENGINE=openai
+DEBUG: OpenAI Vision Error: Client.__init__() got an unexpected keyword argument 'proxies'
+DEBUG: OCR TEXT SAMPLE: 
+
+DEBUG: OCR TEXT SAMPLE: 
+
+DEBUG: OCR fallback failed: Header not detected by pdfplumber. OCR (openai) successfully extracted text (see DEBUG log), but OCR-to-rows parsing failed or is not not implemented for this bank. Please use text-based PDFs or contact support.
+ERROR in /analyze: Traceback (most recent call last):
+  File "C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\pdf_extractor.py", line 514, in extract_transactions
+    raise ValueError(
+ValueError: Header not detected by pdfplumber. OCR (openai) successfully extracted text (see DEBUG log), but OCR-to-rows parsing failed or is not not implemented for this bank. Please use text-based PDFs or contact support.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\main.py", line 80, in analyze_statement
+    categorized_transactions = categorize_transactions(transactions)
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\pdf_extractor.py", line 520, in extract_transactions
+    raise ValueError(f"Could not detect column header after scanning all pages. OCR fallback also failed: {e}")
+ValueError: Could not detect column header after scanning all pages. OCR fallback also failed: Header not detected by pdfplumber. OCR (openai) successfully extracted text (see DEBUG log), but OCR-to-rows parsing failed or is not not implemented for this bank. Please use text-based PDFs or contact support.
+
+INFO:     127.0.0.1:54718 - "POST /analyze HTTP/1.1" 500 Internal Server Error
+DEBUG: Auto-detected bank: zenith
+DEBUG: Using Zenith Table-Based Extraction Strategy
+DEBUG: Extracted 458 transactions via Zenith Table strategy (Split Merge)
+INFO:     127.0.0.1:61488 - "POST /analyze HTTP/1.1" 200 OK
+ERROR in /analyze: Traceback (most recent call last):
+  File "C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\main.py", line 80, in analyze_statement
+    categorized_transactions = categorize_transactions(transactions)
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\pdf_extractor.py", line 393, in extract_transactions
+    first_text = pdf.pages[0].extract_text() or ""
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ionawoga\AppData\Local\Programs\Python\Python311\Lib\site-packages\pdfplumber\page.py", line 457, in extract_text
+    return self.get_textmap(**kwargs).as_string
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ionawoga\AppData\Local\Programs\Python\Python311\Lib\site-packages\pdfplumber\page.py", line 434, in _get_textmap
+    return utils.chars_to_textmap(self.chars, **full_kwargs)
+                                  ^^^^^^^^^^
+  File "C:\Users\ionawoga\AppData\Local\Programs\Python\Python311\Lib\site-packages\pdfplumber\container.py", line 50, in chars
+    return self.objects.get("char", [])
+           ^^^^^^^^^^^^
+  File "C:\Users\ionawoga\AppData\Local\Programs\Python\Python311\Lib\site-packages\pdfplumber\page.py", line 289, in objects
+    self._objects: Dict[str, T_obj_list] = self.parse_objects()
+                                           ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ionawoga\AppData\Local\Programs\Python\Python311\Lib\site-packages\pdfplumber\page.py", line 372, in parse_objects
+    for obj in self.iter_layout_objects(self.layout._objs):
+                                        ^^^^^^^^^^^
+  File "C:\Users\ionawoga\AppData\Local\Programs\Python\Python311\Lib\site-packages\pdfplumber\page.py", line 235, in layout
+    interpreter.process_page(self.page_obj)
+  File "C:\Users\ionawoga\AppData\Local\Programs\Python\Python311\Lib\site-packages\pdfminer\pdfinterp.py", line 997, in process_page
+    self.render_contents(page.resources, page.contents, ctm=ctm)
+  File "C:\Users\ionawoga\AppData\Local\Programs\Python\Python311\Lib\site-packages\pdfminer\pdfinterp.py", line 1016, in render_contents
+    self.execute(list_value(streams))
+  File "C:\Users\ionawoga\AppData\Local\Programs\Python\Python311\Lib\site-packages\pdfminer\pdfinterp.py", line 1045, in execute
+    func()
+  File "C:\Users\ionawoga\AppData\Local\Programs\Python\Python311\Lib\site-packages\pdfminer\pdfinterp.py", line 580, in do_f
+    self.device.paint_path(self.graphicstate, False, True, False, self.curpath)
+  File "C:\Users\ionawoga\AppData\Local\Programs\Python\Python311\Lib\site-packages\pdfplumber\page.py", line 167, in paint_path
+    self.tag_cur_item()
+  File "C:\Users\ionawoga\AppData\Local\Programs\Python\Python311\Lib\site-packages\pdfplumber\page.py", line 149, in tag_cur_item
+    cur_obj = self.cur_item._objs[-1]
+              ~~~~~~~~~~~~~~~~~~~^^^^
+IndexError: list index out of range
+
+INFO:     127.0.0.1:61774 - "POST /analyze HTTP/1.1" 500 Internal Server Error
+DEBUG: Auto-detected bank: gtbank
+DEBUG: Page 0 words count: 244
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 1 words count: 252
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 2 words count: 254
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 3 words count: 288
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 4 words count: 268
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 5 words count: 260
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 6 words count: 276
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 7 words count: 293
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 8 words count: 276
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 9 words count: 241
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 10 words count: 321
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 11 words count: 321
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 12 words count: 314
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 13 words count: 323
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 14 words count: 289
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 15 words count: 292
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 16 words count: 271
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 17 words count: 299
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 18 words count: 290
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 19 words count: 313
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 20 words count: 312
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 21 words count: 317
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 22 words count: 314
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 23 words count: 295
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 24 words count: 260
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 25 words count: 273
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 26 words count: 250
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 27 words count: 269
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 28 words count: 269
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 29 words count: 300
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 30 words count: 273
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 31 words count: 274
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 32 words count: 249
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 33 words count: 246
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Page 34 words count: 179
+DEBUG: Generic detect result: None
+DEBUG: Trying specific detector for gtbank
+DEBUG: Standard detection failed on all pages. Trying OCR fallback (Engine: openai)...
+DEBUG: Attempting OCR on page 0...
+DEBUG: Using OCR_ENGINE=openai
+DEBUG: OpenAI Vision Error: Client.__init__() got an unexpected keyword argument 'proxies'
+DEBUG: Attempting OCR on page 1...
+DEBUG: Using OCR_ENGINE=openai
+DEBUG: OpenAI Vision Error: Client.__init__() got an unexpected keyword argument 'proxies'
+DEBUG: OCR TEXT SAMPLE: 
+
+
+DEBUG: OCR TEXT SAMPLE: 
+
+
+DEBUG: OCR fallback failed: Header not detected by pdfplumber. OCR (openai) successfully extracted text (see DEBUG log), but OCR-to-rows parsing failed or is not not implemented for this bank. Please use text-based PDFs or contact support.
+ERROR in /analyze: Traceback (most recent call last):
+  File "C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\pdf_extractor.py", line 514, in extract_transactions
+    raise ValueError(
+ValueError: Header not detected by pdfplumber. OCR (openai) successfully extracted text (see DEBUG log), but OCR-to-rows parsing failed or is not not implemented for this bank. Please use text-based PDFs or contact support.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\main.py", line 80, in analyze_statement
+    categorized_transactions = categorize_transactions(transactions)
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\pdf_extractor.py", line 520, in extract_transactions
+    raise ValueError(f"Could not detect column header after scanning all pages. OCR fallback also failed: {e}")
+ValueError: Could not detect column header after scanning all pages. OCR fallback also failed: Header not detected by pdfplumber. OCR (openai) successfully extracted text (see DEBUG log), but OCR-to-rows parsing failed or is not not implemented for this bank. Please use text-based PDFs or contact support.
+
+INFO:     127.0.0.1:62130 - "POST /analyze HTTP/1.1" 500 Internal Server Error
+DEBUG: Auto-detected bank: ecobank
+DEBUG: Page 0 words count: 147
+DEBUG: Entering detect_ecobank_columns
+DEBUG: TransDate detected late at 324.00600000000003. Check if it is actually ValueDate.
+DEBUG: Promoting late TransDate to ValueDate and checking for missing TransDate.
+DEBUG: Injected placeholder TransDate at 40.0-120.0
+DEBUG: TransDate raw width: 120.0 - 40.0 = 80.0
+DEBUG: ECOBANK HEADER TOP: 430.7
+DEBUG: ECOBANK CUTS: {'TransDate': (-inf, 125.6), 'Remarks': (125.6, 257.8), 'ValueDate': (257.8, 368.1), 'Debit': (368.1, 431.4), 'Credit': (431.4, 491.5), 'Balance': (491.5, inf)}
+DEBUG: Generic detect result: {'TransDate': (-inf, 125.575), 'Remarks': (125.575, 257.8335), 'ValueDate': (257.8335, 368.0715), 'Debit': (368.0715, 431.4105), 'Credit': (431.4105, 491.5325), 'Balance': (491.5325, inf)}
+DEBUG: Header detected on page 1
+DEBUG: FOUND CUTS: {'TransDate': (-inf, 125.575), 'Remarks': (125.575, 257.8335), 'ValueDate': (257.8335, 368.0715), 'Debit': (368.0715, 431.4105), 'Credit': (431.4105, 491.5325), 'Balance': (491.5325, inf)}
+DEBUG: Detected columns: {'TransDate': '-inf to 125.6', 'Remarks': '125.6 to 257.8', 'ValueDate': '257.8 to 368.1', 'Debit': '368.1 to 431.4', 'Credit': '431.4 to 491.5', 'Balance': '491.5 to inf'}
+DEBUG: Skipped noise row: {'TransDate': '01-Jun-2025', 'Remarks': 'OPENING BALANCE', 'ValueDate': '01-Jun-2025', 'Debit': '0.00', 'Credit': '0.00', 'Balance': '4,513,380.72'}
+DEBUG: kept tail row page 3: {'TransDate': '', 'Remarks': '250607180ZDZ:Operations,THE', 'ValueDate': '16', 'Debit': '', 'Credit': '', 'Balance': ''}
+DEBUG: kept tail row page 3: {'TransDate': '', 'Remarks': '250607180ZDZ:Operations,THE', 'ValueDate': '16', 'Debit': '', 'Credit': '', 'Balance': ''}
+DEBUG: kept tail row page 3: {'TransDate': '', 'Remarks': '250607180ZDZ:Operations,THE', 'ValueDate': '16', 'Debit': '', 'Credit': '', 'Balance': ''}
+DEBUG: kept tail row page 4: {'TransDate': '', 'Remarks': 'IBIDUN/NIP TRANSFER TO THE', 'ValueDate': '16', 'Debit': '', 'Credit': '', 'Balance': ''}
+DEBUG: kept tail row page 7: {'TransDate': '', 'Remarks': 'DEPOSIT FT', 'ValueDate': '', 'Debit': '', 'Credit': '13', 'Balance': '7'}
+DEBUG: kept tail row page 7: {'TransDate': '', 'Remarks': 'SMTENGDTMZHJPQPE IFO THE', 'ValueDate': '16', 'Debit': '', 'Credit': '', 'Balance': ''}
+DEBUG: kept tail row page 7: {'TransDate': '', 'Remarks': 'ELECTRONIC MONEY TRANSFER', 'ValueDate': '', 'Debit': '', 'Credit': '', 'Balance': '7'}
+DEBUG: kept tail row page 7: {'TransDate': '', 'Remarks': 'FROM NWANWENE UCHEBENU', 'ValueDate': '', 'Debit': '', 'Credit': '', 'Balance': '7'}
+DEBUG: kept tail row page 7: {'TransDate': '', 'Remarks': '25062318OLV5:June Sal and Ops,', 'ValueDate': '', 'Debit': '', 'Credit': '', 'Balance': '7'}
+DEBUG: Total rows before merge: 361
+DEBUG: Total transactions after merge: 57
+DEBUG: Desc='REFNO A01ECTS251810032 25063018SKUF UNIFORM UPDATE CMAN VENTURE ABBA COLLINS CHUKWUEMEKA THE 16 PLUS SCHOOL LIMITED' | Amt=100000.0 | Cat='Uncategorized Expense' | Rule='None' | Source='AI'
+INFO:     127.0.0.1:51082 - "POST /analyze HTTP/1.1" 200 OK
+DEBUG: Auto-detected bank: gtbank
+DEBUG: Page 0 words count: 0
+DEBUG: Page 0 has no words, skipping...
+DEBUG: Page 1 words count: 0
+DEBUG: Page 1 has no words, skipping...
+DEBUG: Page 2 words count: 0
+DEBUG: Page 2 has no words, skipping...
+DEBUG: Page 3 words count: 0
+DEBUG: Page 3 has no words, skipping...
+DEBUG: Page 4 words count: 0
+DEBUG: Page 4 has no words, skipping...
+DEBUG: Page 5 words count: 0
+DEBUG: Page 5 has no words, skipping...
+DEBUG: Page 6 words count: 0
+DEBUG: Page 6 has no words, skipping...
+DEBUG: Standard detection failed on all pages. Trying OCR fallback (Engine: openai)...
+DEBUG: Attempting OCR on page 0...
+DEBUG: Using OCR_ENGINE=openai
+DEBUG: OpenAI Vision Error: Client.__init__() got an unexpected keyword argument 'proxies'
+DEBUG: Attempting OCR on page 1...
+DEBUG: Using OCR_ENGINE=openai
+DEBUG: OpenAI Vision Error: Client.__init__() got an unexpected keyword argument 'proxies'
+DEBUG: OCR TEXT SAMPLE: 
+
+
+DEBUG: OCR TEXT SAMPLE: 
+
+
+DEBUG: OCR fallback failed: Header not detected by pdfplumber. OCR (openai) successfully extracted text (see DEBUG log), but OCR-to-rows parsing failed or is not not implemented for this bank. Please use text-based PDFs or contact support.
+ERROR in /analyze: Traceback (most recent call last):
+  File "C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\pdf_extractor.py", line 514, in extract_transactions
+    raise ValueError(
+ValueError: Header not detected by pdfplumber. OCR (openai) successfully extracted text (see DEBUG log), but OCR-to-rows parsing failed or is not not implemented for this bank. Please use text-based PDFs or contact support.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\main.py", line 80, in analyze_statement
+    categorized_transactions = categorize_transactions(transactions)
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\pdf_extractor.py", line 520, in extract_transactions
+    raise ValueError(f"Could not detect column header after scanning all pages. OCR fallback also failed: {e}")
+ValueError: Could not detect column header after scanning all pages. OCR fallback also failed: Header not detected by pdfplumber. OCR (openai) successfully extracted text (see DEBUG log), but OCR-to-rows parsing failed or is not not implemented for this bank. Please use text-based PDFs or contact support.
+
+INFO:     127.0.0.1:50176 - "POST /analyze HTTP/1.1" 500 Internal Server Error

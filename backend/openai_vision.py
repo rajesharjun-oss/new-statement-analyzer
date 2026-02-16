@@ -1,97 +1,51 @@
-"""
-OpenAI Vision OCR for PDF page extraction fallback
-"""
-import os
 import base64
+import os
 from openai import OpenAI
 
-import random
+def encode_image(image_bytes):
+    """Encode image bytes to base64 string"""
+    return base64.b64encode(image_bytes).decode('utf-8')
 
-def get_api_key():
-    keys = os.getenv("OPENAI_API_KEY", "").split(",")
-    keys = [k.strip() for k in keys if k.strip()]
-    return random.choice(keys) if keys else None
-
-client = OpenAI(api_key=get_api_key())
-
-def ocr_pdf_page_image(png_bytes: bytes) -> str:
+def extract_header_with_vision(image_bytes):
     """
-    OCR a single page image (PNG/JPG bytes) using OpenAI GPT-4 Vision.
-    Returns plain text extracted from the image.
-    
-    Args:
-        png_bytes: Image bytes (PNG or JPEG format)
-    
-    Returns:
-        Extracted text from the image
+    Extract text/headers from an image using OpenAI Vision.
     """
-    # Convert image bytes to base64
-    b64 = base64.b64encode(png_bytes).decode("utf-8")
-    
-    # Call OpenAI Vision API
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{
-            "role": "user",
-            "content": [
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        print("DEBUG: OPENAI_API_KEY not found in env")
+        return ""
+
+    try:
+        client = OpenAI(api_key=api_key)
+        
+        base64_image = encode_image(image_bytes)
+
+        print("DEBUG: Sending image to OpenAI Vision...")
+        response = client.chat.completions.create(
+            model="gpt-4o", 
+            messages=[
                 {
-                    "type": "text",
-                    "text": (
-                        "Extract the bank statement table text exactly. "
-                        "Preserve row order and column structure. "
-                        "Include ALL transaction rows. "
-                        "Output plain text only with columns clearly separated."
-                    )
-                },
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/png;base64,{b64}"
-                    }
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Extract table data from this bank statement image. Return ONLY valid JSON with no markdown formatting. Structure: { \"header\": [col1, col2...], \"rows\": [ {col1: val1, col2: val2...} ] }. Use exact column names from the image where possible. If a value is missing or empty, use null or empty string."},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{base64_image}"
+                            },
+                        },
+                    ],
                 }
-            ]
-        }],
-        max_tokens=4096
-    )
-    
-    return response.choices[0].message.content
-
-
-def extract_header_with_vision(png_bytes: bytes) -> str:
-    """
-    Extract only the table header from a bank statement page using OpenAI Vision.
-    
-    Args:
-        png_bytes: Image bytes of the bank statement page
-    
-    Returns:
-        Extracted column headers as plain text
-    """
-    b64 = base64.b64encode(png_bytes).decode("utf-8")
-    
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        "Find and extract ONLY the transaction table column headers from this bank statement. "
-                        "Look for headers like: Date, Transaction Date, Value Date, Description, "
-                        "Narration, Reference, Debit, Credit, Withdrawals, Lodgements, Balance, etc. "
-                        "Return only the column header names, separated by spaces."
-                    )
-                },
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/png;base64,{b64}"
-                    }
-                }
-            ]
-        }],
-        max_tokens=256
-    )
-    
-    return response.choices[0].message.content
+            ],
+            max_tokens=2000,
+            temperature=0,
+            response_format={ "type": "json_object" }
+        )
+        
+        content = response.choices[0].message.content
+        print(f"DEBUG: Vision returned {len(content)} chars")
+        return content
+        
+    except Exception as e:
+        print(f"DEBUG: OpenAI Vision Error: {e}")
+        return ""
