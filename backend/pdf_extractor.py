@@ -2454,17 +2454,33 @@ def extract_access_consensus(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict]
 
 def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
     """
-    Dedicated Ecobank extractor.
+    Dedicated Ecobank extractor — delegates to ecobank_extractor.py first.
 
-    Tries word-based extraction first (more reliable for Ecobank because
-    x-position-based assignment correctly separates description from date).
-    Falls back to pdfplumber table extraction if word-based yields nothing.
+    Strategy:
+      1. New standalone extractor (midpoint x-assignment, use_text_flow=True)
+      2. Word-based fallback using detect_ecobank_columns
+      3. pdfplumber table fallback
     Does NOT call repair_ref_branch_remarks (GTBank-specific).
     """
     print("DEBUG: Using Ecobank Dedicated Extractor")
 
     # ------------------------------------------------------------------ #
-    # ATTEMPT 1 — word-based (preferred: x-position assigns correctly)    #
+    # ATTEMPT 1 — new standalone extractor (most reliable)                #
+    # ------------------------------------------------------------------ #
+    try:
+        from ecobank_extractor import extract_ecobank_transactions, df_to_transactions
+        df = extract_ecobank_transactions(str(pdf_path))
+        if not df.empty:
+            txns = df_to_transactions(df)
+            print(f"DEBUG: ecobank_extractor yielded {len(txns)} transactions")
+            _attach_metadata(txns)
+            return txns
+        print("DEBUG: ecobank_extractor returned empty DataFrame")
+    except Exception as e:
+        print(f"DEBUG: ecobank_extractor failed: {e}")
+
+    # ------------------------------------------------------------------ #
+    # ATTEMPT 2 — word-based with detect_ecobank_columns                  #
     # ------------------------------------------------------------------ #
     word_txns = _ecobank_from_words(pdf_path, metadata)
     if word_txns:
@@ -2473,16 +2489,16 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
         return word_txns
 
     # ------------------------------------------------------------------ #
-    # ATTEMPT 2 — pdfplumber table extraction (fallback)                  #
+    # ATTEMPT 3 — pdfplumber table extraction                             #
     # ------------------------------------------------------------------ #
-    print("DEBUG: Word extractor yielded nothing, trying table extraction")
+    print("DEBUG: Trying pdfplumber table fallback")
     table_txns = _ecobank_from_tables(pdf_path)
     if table_txns:
         print(f"DEBUG: Ecobank table strategy yielded {len(table_txns)} transactions")
         _attach_metadata(table_txns)
         return table_txns
 
-    print("DEBUG: Ecobank dedicated extractor: both strategies returned nothing")
+    print("DEBUG: Ecobank dedicated extractor: all strategies returned nothing")
     return []
 
 
