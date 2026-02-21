@@ -946,8 +946,8 @@ def detect_ecobank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float
 
         score = len(found)
 
-        # require at least 4 columns present to be considered a real table header
-        if score >= 4:
+        # require at least 3 columns present to be considered a real table header
+        if score >= 3:
             # also reject obvious summary bands
             band_text = " ".join(w["text"] for w in hw).upper()
             if "ACCOUNT SUMMARY" in band_text or "TOTAL CREDIT" in band_text or "TOTAL DEBIT" in band_text:
@@ -2637,7 +2637,8 @@ def _ecobank_from_words(pdf_path: Path, metadata: Dict) -> List[Dict]:
                 break
 
         if not base_cuts:
-            raise ValueError("Ecobank word-based extractor: could not detect column header")
+            print("DEBUG: Ecobank word-based extractor: could not detect column header — returning empty")
+            return []
 
         # --- Phase 2: extract rows per page ---
         for page_num, page in enumerate(pdf.pages, 1):
