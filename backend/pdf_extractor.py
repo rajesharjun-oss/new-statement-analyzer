@@ -1076,24 +1076,35 @@ def detect_ecobank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float
         # Start with standard midpoint
         mid = (r1 + l2) / 2
         
-        # ADJUSTMENTS based on known Ecobank layout quirks:
-        # For right-aligned numeric columns (debit, credit, balance), the data can
-        # be wider than the column header.  Using the left edge of the NEXT column
-        # as the cut point (instead of the midpoint) gives each column maximum room
-        # and prevents amounts from overflowing into the adjacent right bucket.
-        if name1 in ("debit", "credit") and name2 in ("credit", "balance"):
-            mid = l2  # left edge of next column header = hard boundary
+        # ADJUSTMENTS: use column RIGHT/LEFT edges instead of midpoints for text columns
+        # so that data which starts at the column's physical left border is not
+        # accidentally assigned to the preceding column.
+        if name1 == "date" and name2 == "description":
+            # Give description data as much room as possible:
+            # cut immediately after the date column header's right edge.
+            mid = r1 + 2
+        elif name1 == "description" and name2 == "value_date":
+            # Cut just before the value_date column header's left edge.
+            mid = l2 - 2
+        elif name1 == "description" and name2 == "debit":
+            # 5-column layout (no value_date): cut just before debit header.
+            mid = l2 - 2
+        elif name1 in ("debit", "credit") and name2 in ("credit", "balance"):
+            # Numeric column boundary: use left edge of next col header so that
+            # large right-aligned amounts don't overflow into the next bucket.
+            mid = l2
         elif name1 == "value_date" and name2 == "debit":
-            # value_date→debit: push cut to value_date right edge so debit gets full column
+            # Give debit full room starting right after value_date.
             mid = r1 + 3
         elif name1 == "date" and name2 == "debit":  # legacy 5-col layout
             proposed_cut = r1 - 25
             if (proposed_cut - l1) < 20:
                 proposed_cut = l1 + 20
             mid = proposed_cut
-        elif name1 == "description" and name2 == "date":  # legacy layout
+        elif name1 == "description" and name2 == "date":  # legacy layout (desc first)
             l2_effective = l2 - 30
             mid = (r1 + l2_effective) / 2
+
 
         cut_points.append(mid)
 
