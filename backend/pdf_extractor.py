@@ -975,15 +975,32 @@ def detect_ecobank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float
     x_value_l = find_left(header_terms["value_date"])
     x_value_r = find_right(header_terms["value_date"])
 
+    # Also try to catch "Value Date" when the two words are split into separate word objects
+    if x_value_l is None:
+        for w1 in sorted(header_words, key=lambda w: w["x0"]):
+            if re.search(r"^Value$", w1["text"], re.I):
+                # Look for a 'Date' word immediately to the right
+                for w2 in header_words:
+                    if re.search(r"^Date$", w2["text"], re.I) and 0 < w2["x0"] - w1["x1"] < 25:
+                        x_value_l = w1["x0"]
+                        x_value_r = w2["x1"]
+                        break
+                if x_value_l is not None:
+                    break
+
     # Detect TransDate, but exclude matches that overlap ValueDate
     # (Because regex "Date" matches "Value Date")
     trans_words = [w for w in header_words if re.search(header_terms["date"], w["text"], re.I)]
     
-    # Filter out words that belong to Value Date column (if detected)
+    # Filter trans_words: only keep 'Date' words in the LEFT portion of the page
+    # (Transaction Date is always the leftmost column — x0 < 150).
+    # This prevents Value Date's 'Date' word from inflating x_trans_r.
     if x_value_l is not None:
-        # Keep words significantly to the left of Value Date
         trans_words = [w for w in trans_words if w["x1"] < x_value_l + 5]
-        
+    else:
+        # No explicit Value Date detected — restrict to leftmost 150pt
+        trans_words = [w for w in trans_words if w["x0"] < 150]
+
     x_trans_l = min([w["x0"] for w in trans_words]) if trans_words else None
     x_trans_r = max([w["x1"] for w in trans_words]) if trans_words else None
     
@@ -1060,16 +1077,21 @@ def detect_ecobank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float
         mid = (r1 + l2) / 2
         
         # ADJUSTMENTS based on known Ecobank layout quirks:
-        # 1. "Transaction Date" header is very wide, but data (dd-mmm-yyyy) is narrow.
-        #    "Debit/Withdrawal" header is narrow, but data can be wide.
-        #    Shift boundary LEFT to give Debit more space.
-        # 1. "TransDate" -> "Debit"
-        if name1 == "date" and name2 == "debit":
+        # For right-aligned numeric columns (debit, credit, balance), the data can
+        # be wider than the column header.  Using the left edge of the NEXT column
+        # as the cut point (instead of the midpoint) gives each column maximum room
+        # and prevents amounts from overflowing into the adjacent right bucket.
+        if name1 in ("debit", "credit") and name2 in ("credit", "balance"):
+            mid = l2  # left edge of next column header = hard boundary
+        elif name1 == "value_date" and name2 == "debit":
+            # value_date→debit: push cut to value_date right edge so debit gets full column
+            mid = r1 + 3
+        elif name1 == "date" and name2 == "debit":  # legacy 5-col layout
             proposed_cut = r1 - 25
             if (proposed_cut - l1) < 20:
-                 proposed_cut = l1 + 20
+                proposed_cut = l1 + 20
             mid = proposed_cut
-        elif name1 == "description" and name2 == "date":
+        elif name1 == "description" and name2 == "date":  # legacy layout
             l2_effective = l2 - 30
             mid = (r1 + l2_effective) / 2
 
@@ -2518,33 +2540,66 @@ def _ecobank_from_tables(pdf_path: Path) -> List[Dict]:
     df = pd.DataFrame(all_rows)
 
     # ── Locate the transaction table header ───────────────────────────────
-    # Must contain a date-related word AND at least one of debit/credit/balance
+    # The header may be split across TWO rows (e.g., "Transaction" + "Date" on separate rows).
+    # Strategy: check single rows first, then consecutive row pairs.
     header_idx = -1
     col_date = col_desc = col_value_date = col_debit = col_credit = col_balance = None
 
-    for i, row in df.iterrows():
-        row_upper = [str(x).upper().strip() for x in row]
-        row_joined = " ".join(row_upper)
-        has_date  = bool(re.search(r"\bDATE\b|\bTRANS\b", row_joined))
-        has_money = bool(re.search(r"\bDEBIT\b|\bWITHDRAWAL\b|\bCREDIT\b|\bBALANCE\b", row_joined))
-        if has_date and has_money:
-            header_idx = i
-            # Map column indices from header text (left-to-right)
-            # "Transaction Date" is encountered before "Value Date"
-            for j, cell in enumerate(row_upper):
-                if re.search(r"REMARKS?|NARRATION|DESCRIPTION|PARTICULARS|DETAILS", cell) and col_desc is None:
-                    col_desc = j
-                elif re.search(r"VALUE\s*DATE|VAL\.?\s*DATE", cell) and col_value_date is None:
-                    col_value_date = j
-                elif re.search(r"TRANS(?:ACTION)?\s*DATE|TRN\s*DATE|\bDATE\b", cell) and col_date is None:
-                    col_date = j
-                elif re.search(r"\bDEBIT\b|WITHDRAWAL\b|\bDR\b", cell) and col_debit is None:
-                    col_debit = j
-                elif re.search(r"\bCREDIT\b|\bDEPOSIT\b|\bCR\b", cell) and col_credit is None:
-                    col_credit = j
-                elif re.search(r"\bBALANCE\b|\bBAL\b", cell) and col_balance is None:
-                    col_balance = j
-            break
+    rows_list = [(i, [str(x).upper().strip() for x in row]) for i, row in df.iterrows()]
+
+    def _try_map_header(row_cells):
+        """Return (col_date, col_desc, col_vdate, col_deb, col_cred, col_bal) or None."""
+        d = de = vd = deb = cred = bal = None
+        for j, cell in enumerate(row_cells):
+            if re.search(r"REMARKS?|NARRATION|DESCRIPTION|PARTICULARS|DETAILS", cell) and de is None:
+                de = j
+            elif re.search(r"VALUE\s*DATE|VAL\.?\s*DATE", cell) and vd is None:
+                vd = j
+            elif re.search(r"TRANS(?:ACTION)?\s*DATE|TRN\s*DATE|\bTRANSACTION\b|\bTRANS\b", cell) and d is None:
+                d = j
+            elif re.search(r"\bDATE\b", cell) and d is None and vd is None:
+                d = j  # bare 'DATE' only if no more specific match yet
+            elif re.search(r"\bDEBIT\b|WITHDRAWAL\b|\bDR\b", cell) and deb is None:
+                deb = j
+            elif re.search(r"\bCREDIT\b|\bDEPOSIT\b|\bCR\b", cell) and cred is None:
+                cred = j
+            elif re.search(r"\bBALANCE\b|\bBAL\b", cell) and bal is None:
+                bal = j
+        if all(v is not None for v in [d, deb, cred, bal]):
+            return d, de, vd, deb, cred, bal
+        return None
+
+    def _has_date_token(row_cells):
+        return any(re.search(r"\bDATE\b|\bTRANS\b|\bTRANSACTION\b", c) for c in row_cells)
+
+    def _has_money_token(row_cells):
+        return any(re.search(r"\bDEBIT\b|\bWITHDRAWAL\b|\bCREDIT\b|\bBALANCE\b", c) for c in row_cells)
+
+    # Pass 1: single rows
+    for i, row_upper in rows_list:
+        if _has_date_token(row_upper) and _has_money_token(row_upper):
+            result = _try_map_header(row_upper)
+            if result:
+                header_idx = i
+                col_date, col_desc, col_value_date, col_debit, col_credit, col_balance = result
+                break
+
+    # Pass 2: consecutive row pairs (handles two-row column headers)
+    if header_idx == -1:
+        for k in range(len(rows_list) - 1):
+            i1, row1 = rows_list[k]
+            i2, row2 = rows_list[k + 1]
+            # Merge the two rows cell-by-cell
+            merged = [
+                (row1[j] + " " + row2[j]).strip() if j < len(row2) else row1[j]
+                for j in range(len(row1))
+            ]
+            if _has_date_token(merged) and _has_money_token(merged):
+                result = _try_map_header(merged)
+                if result:
+                    header_idx = i2  # data starts after the second header row
+                    col_date, col_desc, col_value_date, col_debit, col_credit, col_balance = result
+                    break
 
     # Need at minimum: date + debit + credit + balance to be useful
     if header_idx == -1 or any(v is None for v in [col_date, col_debit, col_credit, col_balance]):
@@ -2564,6 +2619,7 @@ def _ecobank_from_tables(pdf_path: Path) -> List[Dict]:
         f"date={col_date}, desc={col_desc}, vdate={col_value_date}, "
         f"deb={col_debit}, cred={col_credit}, bal={col_balance}"
     )
+
 
     df_data = df.iloc[header_idx + 1:]
     txns: List[Dict] = []
