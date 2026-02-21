@@ -21,11 +21,12 @@ ENV PYTHONUNBUFFERED 1
 ENV PYTHONPATH=/app/backend
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     libtesseract-dev \
     poppler-utils \
-    libgl1-mesa-glx \
+    libgl1 \
+    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
