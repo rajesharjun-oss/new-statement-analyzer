@@ -389,7 +389,19 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
                  txns = extract_transactions_via_ai(str(pdf_path))
                  if txns: return txns, metadata
 
-    # --- 0b) Special Case: FCMB Table Strategy
+    # --- 0c) Special Case: Ecobank Dedicated Extractor
+    if bank_identifier == "ecobank":
+        try:
+             eco_txns = extract_ecobank_via_tables(Path(pdf_path), metadata)
+             if eco_txns:
+                 return eco_txns, metadata
+        except Exception as e:
+             print(f"DEBUG: Ecobank table strategy failed: {e}. Trying Hybrid AI Fallback...")
+             if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+                 txns = extract_transactions_via_ai(str(pdf_path))
+                 if txns: return txns, metadata
+
+    # --- 0d) Special Case: FCMB Table Strategy
     if bank_identifier == "fcmb":
         try:
              fcmb_txns = extract_fcmb_via_tables(Path(pdf_path), metadata)
@@ -712,8 +724,8 @@ def parse_statement_metadata(text: str) -> Dict[str, Any]:
         m = re.search(r"(?:Account Name|Name)[:\s]*(.*?)(?:\n|$)", text, re.I)
     if m:
         raw_name = m.group(1)
-        # Clean up: stop at "Total Debit" or "Total Credit" or "Currency" or "Account No" if captured
-        stop_patterns = ["TOTAL DEBIT", "TOTAL CREDIT", "CURRENCY", "ACCOUNT NO", "ACC NO"]
+        # Clean up: stop at "Total Debit" or "Total Credit" or "Currency", "Account No", or a bare date keyword
+        stop_patterns = ["TOTAL DEBIT", "TOTAL CREDIT", "CURRENCY", "ACCOUNT NO", "ACC NO", " DATE ", "\nDATE"]
         upper_raw = raw_name.upper()
         
         min_idx = len(raw_name)
@@ -2405,3 +2417,299 @@ def extract_access_consensus(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict]
             reconciled_txns.append(txn)
 
     return reconciled_txns, metadata
+
+
+def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
+    """
+    Dedicated Ecobank extractor.
+
+    Ecobank column layout (unusual — description comes FIRST):
+        Remarks/Narration | Trans. Date | Debit | Credit | Balance
+
+    Strategy:
+        1. Try pdfplumber table extraction (works if PDF has grid lines).
+        2. Fall back to word-based extraction using detect_ecobank_columns().
+    Does NOT call repair_ref_branch_remarks (GTBank-specific — would corrupt Ecobank data).
+    """
+    print("DEBUG: Using Ecobank Dedicated Extractor")
+
+    # ------------------------------------------------------------------ #
+    # ATTEMPT 1 — pdfplumber table extraction                             #
+    # ------------------------------------------------------------------ #
+    table_txns = _ecobank_from_tables(pdf_path)
+    if table_txns:
+        print(f"DEBUG: Ecobank table strategy yielded {len(table_txns)} transactions")
+        _attach_metadata(table_txns)
+        return table_txns
+
+    # ------------------------------------------------------------------ #
+    # ATTEMPT 2 — word-based extraction with detect_ecobank_columns       #
+    # ------------------------------------------------------------------ #
+    print("DEBUG: Ecobank table extraction found no data, trying word-based fallback")
+    return _ecobank_from_words(pdf_path, metadata)
+
+
+def _attach_metadata(txns: List[Dict]) -> None:
+    """Ensure every transaction has the mandatory output fields."""
+    for t in txns:
+        t.setdefault("value_date", "")
+        t.setdefault("reference", "")
+        t.setdefault("originating_branch", "")
+        t.setdefault("remarks", t.get("description", ""))
+        t.setdefault("category", "Unallocated")
+        t.setdefault("is_reversal", False)
+        t.setdefault("_page", 0)
+        t.setdefault("_row", 0)
+
+
+def _ecobank_from_tables(pdf_path: Path) -> List[Dict]:
+    """
+    Try pdfplumber's extract_table() for Ecobank.
+    Returns [] if no usable tables are found.
+
+    Expected column order in the table:
+        Remarks | Trans Date | Debit | Credit | Balance
+    """
+    all_rows: List[List[str]] = []
+    page_map: List[int] = []
+
+    with pdfplumber.open(pdf_path) as pdf:
+        for page_num, page in enumerate(pdf.pages, 1):
+            tables = page.extract_tables()
+            for table in tables:
+                for row in table:
+                    clean = [str(c or "").strip().replace("\n", " ") for c in row]
+                    if any(clean):
+                        all_rows.append(clean)
+                        page_map.append(page_num)
+
+    if not all_rows:
+        return []
+
+    df = pd.DataFrame(all_rows)
+
+    # Locate table header — must contain DATE and (DEBIT or CREDIT)
+    header_idx = -1
+    col_date = col_desc = col_debit = col_credit = col_balance = None
+
+    for i, row in df.iterrows():
+        row_upper = [str(x).upper() for x in row]
+        row_joined = " ".join(row_upper)
+        if ("DATE" in row_joined or "TRANS" in row_joined) and (
+            "DEBIT" in row_joined or "WITHDRAWAL" in row_joined
+        ):
+            header_idx = i
+            # Map column indices from header text
+            for j, cell in enumerate(row_upper):
+                if re.search(r"REMARKS?|NARRATION|DESCRIPTION|PARTICULARS", cell):
+                    col_desc = j
+                elif re.search(r"TRANS|TRN\s*DATE|DATE", cell) and col_date is None:
+                    col_date = j
+                elif re.search(r"DEBIT|WITHDRAWAL|DR\b", cell):
+                    col_debit = j
+                elif re.search(r"CREDIT|DEPOSIT|CR\b", cell):
+                    col_credit = j
+                elif re.search(r"BALANCE|BAL\b", cell):
+                    col_balance = j
+            break
+
+    # Validate: need at least date + debit + credit + balance
+    if header_idx == -1 or any(v is None for v in [col_date, col_debit, col_credit, col_balance]):
+        print(f"DEBUG: Ecobank table header map incomplete: date={col_date} deb={col_debit} cred={col_credit} bal={col_balance}")
+        return []
+
+    # If no description column found, guess it's the first column that isn't date/debit/credit/balance
+    if col_desc is None:
+        reserved = {col_date, col_debit, col_credit, col_balance}
+        col_desc = next((j for j in range(len(df.columns)) if j not in reserved), None)
+
+    df_data = df.iloc[header_idx + 1 :]
+    txns: List[Dict] = []
+
+    current: Dict = {}  # used for multi-line description merge
+
+    for i, row in df_data.iterrows():
+        row_list = row.tolist()
+        if not any(str(x).strip() for x in row_list):
+            continue  # blank row
+
+        raw_date = str(row_list[col_date]).strip() if col_date is not None else ""
+        raw_desc = str(row_list[col_desc]).strip() if col_desc is not None else ""
+        raw_deb = str(row_list[col_debit]).strip() if col_debit is not None else ""
+        raw_cred = str(row_list[col_credit]).strip() if col_credit is not None else ""
+        raw_bal = str(row_list[col_balance]).strip() if col_balance is not None else ""
+
+        # Sanitise
+        raw_date = raw_date.replace("None", "").strip()
+        raw_desc = raw_desc.replace("None", "").strip()
+        raw_deb  = raw_deb.replace("None", "").strip()
+        raw_cred = raw_cred.replace("None", "").strip()
+        raw_bal  = raw_bal.replace("None", "").strip()
+
+        # Stop at closing/opening balance rows
+        combined_upper = " ".join([raw_date, raw_desc, raw_deb, raw_cred, raw_bal]).upper()
+        if "CLOSING BALANCE" in combined_upper:
+            break
+        if "OPENING BALANCE" in combined_upper:
+            continue
+
+        parsed_date = parse_date_smart(raw_date)
+
+        deb_val = clean_currency_str(raw_deb)
+        cred_val = clean_currency_str(raw_cred)
+        bal_val = clean_currency_str(raw_bal)
+
+        if parsed_date:
+            # New transaction anchor
+            if current:
+                txns.append(current)
+            current = {
+                "date": parsed_date,
+                "description": raw_desc,
+                "debit": deb_val,
+                "credit": cred_val,
+                "balance": bal_val,
+                "_page": page_map[i] if i < len(page_map) else 0,
+                "_row": i,
+            }
+        else:
+            # Continuation line (multi-line narration)
+            if current and raw_desc:
+                current["description"] = (current["description"] + " " + raw_desc).strip()
+            # Merge any amounts that appeared on continuation line
+            if current:
+                if not current["debit"] and deb_val:
+                    current["debit"] = deb_val
+                if not current["credit"] and cred_val:
+                    current["credit"] = cred_val
+                if not current["balance"] and bal_val:
+                    current["balance"] = bal_val
+
+    if current:
+        txns.append(current)
+
+    # Final filter: skip rows with zero movement
+    result = []
+    for t in txns:
+        if t["debit"] == 0.0 and t["credit"] == 0.0:
+            continue
+        result.append({
+            "date": t["date"],
+            "value_date": "",
+            "reference": "",
+            "originating_branch": "",
+            "remarks": t["description"],
+            "description": t["description"],
+            "debit": t["debit"],
+            "credit": t["credit"],
+            "balance": t["balance"],
+            "category": "Unallocated",
+            "is_reversal": False,
+            "_page": t["_page"],
+            "_row": t["_row"],
+        })
+    return result
+
+
+def _ecobank_from_words(pdf_path: Path, metadata: Dict) -> List[Dict]:
+    """
+    Word-based Ecobank extraction using detect_ecobank_columns().
+    Mirrors the generic extract_transactions pipeline but:
+      - skips repair_ref_branch_remarks (GTBank-specific)
+      - does NOT populate a 'reference' field from the date column
+    """
+    all_rows: List[Dict] = []
+    base_cuts = None
+
+    with pdfplumber.open(pdf_path) as pdf:
+        # --- Phase 1: detect column boundaries ---
+        for i, page in enumerate(pdf.pages):
+            try:
+                words = page.extract_words(x_tolerance=2, y_tolerance=2)
+            except Exception as e:
+                print(f"DEBUG: Ecobank word extraction failed on page {i}: {e}")
+                continue
+            if not words:
+                continue
+            base_cuts = detect_ecobank_columns(words)
+            if base_cuts:
+                print(f"DEBUG: Ecobank word-based: header on page {i+1}, cuts={base_cuts}")
+                break
+
+        if not base_cuts:
+            raise ValueError("Ecobank word-based extractor: could not detect column header")
+
+        # --- Phase 2: extract rows per page ---
+        for page_num, page in enumerate(pdf.pages, 1):
+            try:
+                words = page.extract_words(x_tolerance=2, y_tolerance=2)
+            except Exception:
+                continue
+            if not words:
+                continue
+
+            row_groups = group_words_to_rows(words, y_tol=2.5)
+
+            for rg in row_groups:
+                line_text = " ".join(w["text"] for w in rg["words"]).lower()
+
+                # Skip table header rows
+                if (
+                    re.search(r"\btrans\.?\b|\btransaction\b", line_text, re.I)
+                    and re.search(r"\bdebit\b|\bwithdrawal\b", line_text, re.I)
+                    and re.search(r"\bcredit\b|\bdeposit\b", line_text, re.I)
+                    and re.search(r"\bbalance\b", line_text, re.I)
+                ):
+                    continue
+                # Skip noise
+                if "computer generated" in line_text or "customer information" in line_text:
+                    continue
+
+                row = assign_row_to_cols(rg["words"], base_cuts)
+                if is_noise_row(row):
+                    continue
+
+                def _has_content(r: dict) -> bool:
+                    return any(isinstance(v, str) and v.strip() for v in r.values())
+
+                if not _has_content(row):
+                    continue
+
+                row["_page"] = page_num
+                all_rows.append(row)
+
+    if not all_rows:
+        return []
+
+    # --- Phase 3: merge multiline rows ---
+    merged = merge_multiline_rows(all_rows)
+
+    # --- Phase 4: finalise (NO GTBank repair) ---
+    result: List[Dict] = []
+    for txn in sorted(merged, key=lambda t: (t.get("_page", 0), t.get("_row", 0))):
+        deb_val  = parse_money(txn.get("debit", ""))
+        cred_val = parse_money(txn.get("credit", ""))
+        if deb_val == 0.0 and cred_val == 0.0:
+            continue
+
+        description = txn.get("description", "")
+
+        result.append({
+            "date": txn["date"],
+            "value_date": txn.get("value_date", ""),
+            "reference": "",          # Ecobank has no reference column
+            "originating_branch": "",  # Ecobank has no branch column
+            "remarks": description,
+            "description": description,
+            "debit": deb_val,
+            "credit": cred_val,
+            "balance": parse_money(txn.get("balance", "")),
+            "category": "Unallocated",
+            "is_reversal": False,
+            "_page": txn.get("_page"),
+            "_row": txn.get("_row"),
+        })
+
+    print(f"DEBUG: Ecobank word-based extractor yielded {len(result)} transactions")
+    return result
+
