@@ -415,8 +415,16 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
             first_text = pdf.pages[0].extract_text() or ""
             upper_text = first_text.upper()
             
-            # 1. Explicit Name Checks (High Priority)
-            if "ECOBANK" in upper_text:
+            # 1. High Priority Fingerprints (Resilient to Logo-less PDFs)
+            if "COMPUTER" in upper_text and "GENERATE" in upper_text:
+                bank_identifier = "ecobank"
+            elif "VALUE" in upper_text and "DATE" in upper_text and "DEBIT" in upper_text and "CREDIT" in upper_text:
+                bank_identifier = "ecobank"
+            elif "STATEMENT" in upper_text and "PERIOD" in upper_text and "BAL. B/F" in upper_text:
+                bank_identifier = "ecobank"
+                
+            # 2. Explicit Name Checks
+            elif "ECOBANK" in upper_text:
                 bank_identifier = "ecobank"
             elif "GUARANTY TRUST" in upper_text or "GTBANK" in upper_text:
                 bank_identifier = "gtbank"
@@ -430,10 +438,6 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
                 bank_identifier = "wema"
             elif "FCMB" in upper_text or "FIRST CITY" in upper_text:
                 bank_identifier = "fcmb"
-            
-            # 2. Fingerprint Checks (Medium Priority - Specific to Ecobank's logo-less text)
-            elif "TRANS" in upper_text and "VALUE" in upper_text and "DEBIT" in upper_text and "CREDIT" in upper_text:
-                bank_identifier = "ecobank"
             
             # 3. Default
             else:
@@ -2623,7 +2627,7 @@ def _find_ecobank_header_and_bounds(words: List[Dict]) -> Tuple[Optional[ColumnB
     )
     return bounds, h_top
 
-def extract_ecobank_standalone(pdf_path: Path) -> List[Dict]:
+def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> List[Dict]:
     all_rows: List[Dict] = []
     last_bounds = None
     try:
