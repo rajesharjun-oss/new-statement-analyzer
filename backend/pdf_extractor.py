@@ -46,7 +46,7 @@ DATE_MDY_SL_RE = re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$")      # 10/1/2025 (Access
 DATE_DMY_YY_RE = re.compile(r"^\d{2}-[A-Za-z]{3}-\d{2}$")    # 15-Jan-21 (Fidelity)
 ECO_DATE_RE = re.compile(r"^\d{2}-[A-Za-z]{3}-\d{4}$")      # 05-Jun-2025 (Ecobank)
 MONEY_RE = re.compile(r"^-?[\d,]+(?:\.\d{2})?$")             # Standard money pattern
-ECO_MONEY_RE = re.compile(r"^-?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?$|^-?\d+(?:\.\d{1,2})?$")
+ECO_MONEY_RE = re.compile(r"^-?\d{1,3}(?:,\d{3})*(?:\.\d{2})$|^-?\d+(?:\.\d{2})$")
 
 @dataclass
 class ColumnBounds:
@@ -72,7 +72,6 @@ def parse_eco_money(s: str) -> Optional[float]:
 
 def looks_like_eco_date(s: str) -> bool:
     if not s: return False
-    # Use search to tolerate noise at start/end
     return bool(re.search(r"\d{2}-[A-Za-z]{3}-\d{4}", s))
 
 def safe_join_parts(parts: List[str]) -> str:
@@ -81,11 +80,12 @@ def safe_join_parts(parts: List[str]) -> str:
 
 def normalize_eco_ref(desc: str) -> Tuple[str, str]:
     """
-    Pull out \"REFNO:....\" (or similar) from description if present.
+    Pull out "REFNO:...." (or similar) from description if present.
     Returns (reference, cleaned_description)
     """
     if not desc:
         return "", ""
+    # Common pattern: "REFNO:A01ECTS2515300007 ..."
     m = re.search(r"\bREF(?:NO)?[:\s]*([A-Za-z0-9]+)\b", desc, flags=re.IGNORECASE)
     if not m:
         return "", desc.strip()
@@ -2491,64 +2491,109 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
     return extract_ecobank_standalone(pdf_path)
 
 def _find_ecobank_header_and_bounds(words: List[Dict]) -> Tuple[Optional[ColumnBounds], Optional[float]]:
-    if not words: return None, None
-    # For Ecobank, headers can be multi-line. Search for keywords in the top 500 units.
-    top_words = [w for w in words if w['top'] < 500]
-    
-    header_keywords = {
-        'date': ['transaction', 'txn', 'trans', 'date'],
-        'desc': ['description', 'remarks', 'narration', 'particulars'],
-        'val': ['value'],
-        'deb': ['debit', 'dr'],
-        'cre': ['credit', 'cr'],
-        'bal': ['balance']
-    }
+    """
+    Detect the table header on a page and infer x-bounds for each column (Resilient Logic).
+    """
+    if not words:
+        return None, None
 
-    found_pos = {}
-    h_top = 0.0
-    
-    # Specialized Date detection: find all 'Date' keywords to distinguish Txn vs Value date
-    date_coords = sorted([w['x0'] for w in words if w['top'] < 600 and 'date' in w['text'].lower()])
-    if len(date_coords) >= 2:
-        found_pos['date'] = date_coords[0]
-        found_pos['val'] = date_coords[1]
-    elif date_coords:
-        found_pos['date'] = date_coords[0]
+    # Group words by "row" using y clustering
+    words_sorted = sorted(words, key=lambda w: (w["top"], w["x0"]))
+    rows: List[List[Dict]] = []
+    row: List[Dict] = []
+    last_top = None
+    for w in words_sorted:
+        t = w["top"]
+        if last_top is None or abs(t - last_top) <= 3.0:
+            row.append(w)
+        else:
+            rows.append(row)
+            row = [w]
+        last_top = t
+    if row: rows.append(row)
 
-    for k, kw_list in header_keywords.items():
-        if k in found_pos: continue # Already handled separately
+    def get_row_text(r: List[Dict]) -> str:
+        return " ".join([w["text"] for w in r]).lower()
+
+    header_row = None
+    h_top = None
+    
+    # Strategy 1: Look for most tokens in one row
+    for r in rows:
+        t = get_row_text(r)
+        if "transaction" in t and "description" in t and "balance" in t:
+            header_row = r
+            h_top = min([w["top"] for w in r])
+            break
+            
+    # Strategy 2: Relaxed matching (e.g. Page 2+ format)
+    if not header_row:
+        for r in rows:
+            t = get_row_text(r)
+            if ("transaction" in t or "trans" in t) and ("date" in t or "desc" in t):
+                header_row = r
+                h_top = min([w["top"] for w in r])
+                break
+
+    if not h_top:
+        return None, None
+
+    # Strategy 3: Find X coordinates directly from page words (Top 600 units)
+    def find_x_direct(keywords: List[str]) -> Optional[float]:
+        # Preference: search in header row first
+        if header_row:
+            for w in header_row:
+                t = w['text'].lower()
+                if any(k in t for k in keywords):
+                    return w['x0']
+        # Fallback: search all top words
         for w in words:
             if w['top'] > 600: continue
             t = w['text'].lower()
-            if any(kw in t for kw in kw_list):
-                if k not in found_pos or w['x0'] < found_pos[k]:
-                    found_pos[k] = w['x0']
-                    if not h_top or w['top'] > h_top: h_top = w['top']
+            if any(k in t for k in keywords):
+                return w['x0']
+        return None
 
-    # Use found positions or typical Ecobank coordinates as fallbacks
-    # Page 1: Remarks (126), TransDate (242), ValueDate (291), Debit (344), Credit (431), Balance (491)
-    x_date = found_pos.get('date', 44.0)
-    x_desc = found_pos.get('desc', 126.0)
-    x_val  = found_pos.get('val', x_date + 80.0 if x_date < x_desc else 241.0) 
-    x_deb  = found_pos.get('deb', 344.0)
-    x_cre  = found_pos.get('cre', 431.0)
-    x_bal  = found_pos.get('bal', 491.0)
+    x_txn = find_x_direct(["transaction", "txn"])
+    x_desc = find_x_direct(["description", "narration", "remarks"])
+    x_val = find_x_direct(["value"])
+    x_deb = find_x_direct(["debit", "dr"])
+    x_cre = find_x_direct(["credit", "cr"])
+    x_bal = find_x_direct(["balance"])
 
-    # Re-order if needed? No, Ecobank is usually fixed but shifted.
-    # We use the detected X values primarily.
+    # Fallback to typical or previously detected Ecobank coordinates
+    x_txn = x_txn if x_txn is not None else 44.0
+    x_desc = x_desc if x_desc is not None else 126.0
+    x_val = x_val if x_val is not None else 241.0
+    x_deb = x_deb if x_deb is not None else 344.0
+    x_cre = x_cre if x_cre is not None else 431.0
+    x_bal = x_bal if x_bal is not None else 491.0
+
+    # Create boundaries dynamically based on relative order of detected columns
+    coords = [
+        ('txn', x_txn), ('desc', x_desc), ('val', x_val), 
+        ('deb', x_deb), ('cre', x_cre), ('bal', x_bal)
+    ]
+    # Sort coordinates by x value to establish non-overlapping intervals
+    sorted_coords = sorted(coords, key=lambda x: x[1])
     
-    pad = 5.0
-    # Strictly non-overlapping segments based on detected order
+    pad = 2.0
+    intervals = {}
+    for i in range(len(sorted_coords)):
+        col_type, x_start = sorted_coords[i]
+        x_end = sorted_coords[i+1][1] if i + 1 < len(sorted_coords) else 10000.0
+        intervals[col_type] = (x_start - pad, x_end - pad)
+
+    # Re-map intervals back to the ColumnBounds structure
     bounds = ColumnBounds(
-        txn_date=(x_date-pad, x_desc-pad),
-        description=(x_desc-pad, min(x_val, x_deb)-pad),
-        value_date=(x_val-pad, x_deb-pad),
-        debit=(x_deb-pad, x_cre-pad),
-        credit=(x_cre-pad, x_bal-pad),
-        balance=(x_bal-pad, 10000.0)
+        txn_date=intervals.get('txn', (44.0-pad, 126.0-pad)),
+        description=intervals.get('desc', (126.0-pad, 241.0-pad)),
+        value_date=intervals.get('val', (241.0-pad, 344.0-pad)),
+        debit=intervals.get('deb', (344.0-pad, 431.0-pad)),
+        credit=intervals.get('cre', (431.0-pad, 491.0-pad)),
+        balance=intervals.get('bal', (491.0-pad, 10000.0))
     )
-    # If we found at least 2 keywords, trust h_top. Else assume after first block.
-    return bounds, h_top or 450.0 
+    return bounds, h_top
 
 def extract_ecobank_standalone(pdf_path: Path) -> List[Dict]:
     all_rows: List[Dict] = []
@@ -2588,49 +2633,102 @@ def _extract_ecobank_table_words(page) -> List[Dict]:
     )
 
 def _ecobank_words_to_rows(words: List[Dict], bounds: ColumnBounds) -> List[Dict]:
-    if not words: return []
-    words_sorted = sorted(words, key=lambda w: (round(w['top'], 1), w['x0']))
-    lines, line = [], []
-    # Group words into physical rows
-    p_rows = group_words_to_rows(words, y_tol=3.0)
-    out = []
-    
-    for r_words in p_rows:
-        # Sort words in row by x0
-        r_words.sort(key=lambda w: w['x0'])
-        
-        # Use existing robust assignment logic
-        row = assign_row_to_cols(r_words, bounds)
-        
-        # assign_row_to_cols returns standardized keys: txn_date, description, etc.
-        # Ecobank standoff expects: 'Txn Date', 'Value Date', 'Description', 'Debit_raw', etc.
-        # So we map them.
-        mapped = {
-            'Txn Date': row.get('txn_date', ''),
-            'Value Date': row.get('value_date', ''),
-            'Description': row.get('description', ''),
-            'Debit_raw': row.get('debit', ''),
-            'Credit_raw': row.get('credit', ''),
-            'Balance_raw': row.get('balance', '')
-        }
-        if any(mapped.values()):
-            out.append(mapped)
-    return out
+    """
+    Convert page words into row dicts with raw strings (Official Logic).
+    """
+    if not words:
+        return []
+
+    # Group words by y (line)
+    words_sorted = sorted(words, key=lambda w: (round(w["top"], 1), w["x0"]))
+    lines: List[List[Dict]] = []
+    line: List[Dict] = []
+    last_top = None
+    for w in words_sorted:
+        t = w["top"]
+        if last_top is None or abs(t - last_top) <= 2.0:
+            line.append(w)
+        else:
+            lines.append(line)
+            line = [w]
+        last_top = t
+    if line:
+        lines.append(line)
+
+    rows: List[Dict] = []
+    for ln in lines:
+        # assign words to buckets by x midpoints
+        txn_parts, desc_parts, val_parts, deb_parts, cre_parts, bal_parts = [], [], [], [], [], []
+        for w in ln:
+            x = get_midpoint(w["x0"], w["x1"])
+            txt = w["text"].strip()
+            if not txt:
+                continue
+
+            if is_in_interval(x, bounds.txn_date):
+                txn_parts.append(txt)
+            elif is_in_interval(x, bounds.description):
+                desc_parts.append(txt)
+            elif is_in_interval(x, bounds.value_date):
+                val_parts.append(txt)
+            elif is_in_interval(x, bounds.debit):
+                deb_parts.append(txt)
+            elif is_in_interval(x, bounds.credit):
+                cre_parts.append(txt)
+            elif is_in_interval(x, bounds.balance):
+                bal_parts.append(txt)
+
+        txn_txt = safe_join_parts(txn_parts)
+        desc_txt = safe_join_parts(desc_parts)
+        val_txt = safe_join_parts(val_parts)
+        deb_txt = safe_join_parts(deb_parts)
+        cre_txt = safe_join_parts(cre_parts)
+        bal_txt = safe_join_parts(bal_parts)
+
+        # Heuristic: keep only lines that look like table content
+        has_money = any(parse_eco_money(x) is not None for x in [deb_txt, cre_txt, bal_txt])
+        if looks_like_eco_date(txn_txt) or has_money or desc_txt:
+            # Guard: Value Date must be a date
+            if val_txt and (parse_eco_money(val_txt) is not None) and (not looks_like_eco_date(val_txt)):
+                val_txt = ""
+
+            rows.append({
+                "Txn Date": txn_txt,
+                "Value Date": val_txt,
+                "Description": desc_txt,
+                "Debit_raw": deb_txt,
+                "Credit_raw": cre_txt,
+                "Balance_raw": bal_txt,
+            })
+
+    return rows
 
 def _merge_ecobank_continuations(rows: List[Dict]) -> List[Dict]:
-    merged, current = [], None
+    """
+    Merge lines where Txn Date is empty into the previous transaction's Description (Official Logic + Precision Grafting).
+    """
+    merged: List[Dict] = []
+    current = None
+
     for r in rows:
-        txn_date = r.get('Txn Date', '').strip()
-        desc = r.get('Description', '').strip()
-        if looks_like_eco_date(txn_date) or desc.upper().startswith('OPENING BALANCE'):
+        txn_date = (r.get("Txn Date") or "").strip()
+        desc = (r.get("Description") or "").strip()
+
+        # skip obvious non-transaction lines
+        if desc.upper().startswith("OPENING BALANCE"):
+            if looks_like_eco_date(txn_date):
+                current = r.copy()
+                merged.append(current)
+            continue
+
+        if looks_like_eco_date(txn_date):
             current = r.copy()
             merged.append(current)
         elif current is not None:
-            # --- NEW: merge split decimal tails into debit/credit/balance BEFORE appending narration ---
+            # --- Precision Fix: merge split decimal tails into debit/credit/balance ---
             # Handles split numbers like "13,046,880." + "13"
             def _collect_digit_tokens(rr):
                 tokens = []
-                # Scan all columns for orphan digits (sometimes they jitter into Description or Value Date)
                 for k in ("Debit_raw", "Credit_raw", "Balance_raw", "Description", "Value Date"):
                     v = (rr.get(k) or "").strip()
                     if not v: continue
@@ -2644,53 +2742,80 @@ def _merge_ecobank_continuations(rows: List[Dict]) -> List[Dict]:
             def _try_merge_tail(base, tails):
                 base = (base or "").strip()
                 if not tails: return base, tails
-                
-                # Case A: ends with "." → needs 1 or 2 decimal digits
                 if re.search(r"\.\s*$", base):
                     if len(tails[0]) == 2:
                         return base + tails[0], tails[1:]
                     if len(tails) >= 2 and len(tails[0]) == 1 and len(tails[1]) == 1:
                         return base + tails[0] + tails[1], tails[2:]
-                    # Also handle single digit just in case e.g. .5
                     if len(tails[0]) == 1:
                         return base + tails[0], tails[1:]
-                
-                # Case B: ends with ".<digit>" → needs 1 more digit
                 if re.search(r"\.\d\s*$", base):
                     return base + tails[0], tails[1:]
-                
                 return base, tails
 
-            # Merge into the monetary fields if needed
             for field in ("Debit_raw", "Credit_raw", "Balance_raw"):
                 merged_val, tails = _try_merge_tail(current.get(field, ""), tails)
                 current[field] = merged_val
 
-            # --- EXISTING: continuation line → append narration ---
-            desc = (r.get('Description') or "").strip()
+            # --- Official Logic: continuation line → append narration ---
             if desc:
-                current['Description'] = (current.get('Description', '') + ' ' + desc).strip()
-            
-            # Allow late Value Date if missing
-            if not current.get('Value Date') and r.get('Value Date'):
-                if looks_like_eco_date(r['Value Date']):
-                    current['Value Date'] = r['Value Date']
+                current["Description"] = safe_join_parts([current.get("Description", ""), desc])
+
+            if not current.get("Value Date") and r.get("Value Date"):
+                if looks_like_eco_date(r["Value Date"]):
+                    current["Value Date"] = r["Value Date"]
+
+            for k in ["Debit_raw", "Credit_raw", "Balance_raw"]:
+                if (not (current.get(k) or "").strip()) and (r.get(k) or "").strip():
+                    current[k] = r[k]
+
     return merged
 
 def _finalize_ecobank_rows(rows: List[Dict]) -> List[Dict]:
+    """
+    Finalize rows: normalized fields and duplicate removal (Official Logic).
+    """
     out = []
+    seen = set()
     for i, r in enumerate(rows):
-        txn_date = r.get('Txn Date', '').strip()
-        val_date, desc = r.get('Value Date', '').strip(), r.get('Description', '').strip()
-        debit, credit, balance = parse_eco_money(r.get('Debit_raw', '')), parse_eco_money(r.get('Credit_raw', '')), parse_eco_money(r.get('Balance_raw', ''))
-        if not looks_like_eco_date(txn_date): continue
+        txn_date = (r.get("Txn Date") or "").strip()
+        val_date = (r.get("Value Date") or "").strip()
+        desc = (r.get("Description") or "").strip()
+
+        debit = parse_eco_money(r.get("Debit_raw", ""))
+        credit = parse_eco_money(r.get("Credit_raw", ""))
+        balance = parse_eco_money(r.get("Balance_raw", ""))
+
+        if not looks_like_eco_date(txn_date):
+            continue
+        if not desc and debit is None and credit is None and balance is None:
+            continue
+
         ref, cleaned_desc = normalize_eco_ref(desc)
-        out.append({
-            'date': txn_date, 'value_date': val_date if looks_like_eco_date(val_date) else '',
-            'reference': ref, 'description': cleaned_desc, 'remarks': cleaned_desc, 'originating_branch': '',
+
+        # Create the transaction object
+        tx = {
+            'date': txn_date,
+            'value_date': val_date if looks_like_eco_date(val_date) else '',
+            'reference': ref,
+            'description': cleaned_desc,
+            'remarks': cleaned_desc,
+            'originating_branch': '',
             'debit': float(debit) if debit is not None else 0.0,
             'credit': float(credit) if credit is not None else 0.0,
             'balance': float(balance) if balance is not None else 0.0,
-            'category': 'Unallocated', 'is_reversal': False, '_page': r.get('_page', 0), '_row': i
-        })
+            'category': 'Unallocated',
+            'is_reversal': False,
+            '_page': r.get('_page', 0),
+            '_row': i
+        }
+
+        # Deduplication check
+        dup_key = (tx['date'], tx['description'], tx['debit'], tx['credit'], tx['balance'])
+        if dup_key in seen:
+            continue
+        seen.add(dup_key)
+        
+        out.append(tx)
+
     return out
