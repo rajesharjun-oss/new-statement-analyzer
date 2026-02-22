@@ -360,12 +360,15 @@ def is_noise_row(row: dict) -> bool:
         "ACCOUNT SUMMARY",
         "OPENING BALANCE",
         "CLOSING BALANCE",
-        "TOTAL DEBIT",
-        "TOTAL CREDIT",
-        "BRANCH:",
-        "PERIOD",
         "CURRENCY",
-    ])
+        "STATEMENT PERIOD",
+    ]) or (
+        # Strict totals check: only skip if it looks like a summary line (usually end of page)
+        re.search(r"^\s*TOTAL\s+DEBITS?\s*$", text) or
+        re.search(r"^\s*TOTAL\s+CREDITS?\s*$", text) or
+        re.search(r"^\s*DEBIT\s+TOTAL\s*$", text) or
+        re.search(r"^\s*CREDIT\s+TOTAL\s*$", text)
+    )
 
 def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[List[Dict], Dict[str, Any]]:
     """
@@ -394,20 +397,31 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
     with pdfplumber.open(pdf_path) as pdf:
         pages_data: List[Tuple[int, List[Dict[str, Any]]]] = []
 
-        # --- 1) Parse metadata from page 1 text (important for validation) ---
+        # --- 1) Parse metadata (important for validation) ---
+        # Scan Page 1 (Period, Name) and Page Last (Grand Totals)
         first_text = pdf.pages[0].extract_text() or ""
         metadata.update(parse_statement_metadata(first_text))
+        
+        if len(pdf.pages) > 1:
+            last_text = pdf.pages[-1].extract_text() or ""
+            last_meta = parse_statement_metadata(last_text)
+            # Update totals from last page if present
+            for key in ["statement_total_debit", "statement_total_credit", "closing_balance"]:
+                if last_meta.get(key) is not None:
+                    metadata[key] = last_meta[key]
 
         # --- 2) Auto-detect bank if not specified ---
         if bank_identifier == "auto":
             first_text = pdf.pages[0].extract_text() or ""
             upper_text = first_text.upper()
-            if "ECOBANK" in upper_text or ("TRANS" in upper_text and "VALUE" in upper_text and "DEBIT" in upper_text and "CREDIT" in upper_text):
+            
+            # 1. Explicit Name Checks (High Priority)
+            if "ECOBANK" in upper_text:
                 bank_identifier = "ecobank"
-            elif "UBA" in upper_text or "UNITED BANK" in upper_text or "U.B.A" in upper_text:
-                bank_identifier = "uba"
             elif "GUARANTY TRUST" in upper_text or "GTBANK" in upper_text:
                 bank_identifier = "gtbank"
+            elif "UBA" in upper_text or "UNITED BANK" in upper_text or "U.B.A" in upper_text:
+                bank_identifier = "uba"
             elif "ZENITH" in upper_text:
                 bank_identifier = "zenith"
             elif "FIRST BANK" in upper_text or "FIRSTBANK" in upper_text:
@@ -416,6 +430,12 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
                 bank_identifier = "wema"
             elif "FCMB" in upper_text or "FIRST CITY" in upper_text:
                 bank_identifier = "fcmb"
+            
+            # 2. Fingerprint Checks (Medium Priority - Specific to Ecobank's logo-less text)
+            elif "TRANS" in upper_text and "VALUE" in upper_text and "DEBIT" in upper_text and "CREDIT" in upper_text:
+                bank_identifier = "ecobank"
+            
+            # 3. Default
             else:
                 bank_identifier = "gtbank"  # Default to GTBank
             
@@ -1557,9 +1577,10 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
         full_line_text = raw_text.upper()
         
-        # --- FIX 5: STOP AT CLOSING BALANCE ---
+        # --- FIX 5: SKIP SUMMARY ROWS ---
         if "CLOSING BALANCE" in full_line_text:
-             break
+             i += 1
+             continue
         if "OPENING BALANCE" in full_line_text:
             i += 1
             continue
