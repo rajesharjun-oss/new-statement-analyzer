@@ -415,23 +415,27 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
             first_text = pdf.pages[0].extract_text() or ""
             upper_text = first_text.upper()
             
-            # 1. High Priority Fingerprints (Resilient to Logo-less PDFs)
-            if "COMPUTER" in upper_text and "GENERATE" in upper_text:
-                bank_identifier = "ecobank"
-            elif "VALUE" in upper_text and "DATE" in upper_text and "DEBIT" in upper_text and "CREDIT" in upper_text:
-                bank_identifier = "ecobank"
-            elif "STATEMENT" in upper_text and "PERIOD" in upper_text and "BAL. B/F" in upper_text:
-                bank_identifier = "ecobank"
-                
-            # 2. Explicit Name Checks
-            elif "ECOBANK" in upper_text:
-                bank_identifier = "ecobank"
-            elif "GUARANTY TRUST" in upper_text or "GTBANK" in upper_text:
+            # 1. Explicit Major Bank Checks (High Priority)
+            if "GUARANTY TRUST" in upper_text or "GTBANK" in upper_text:
                 bank_identifier = "gtbank"
             elif "UBA" in upper_text or "UNITED BANK" in upper_text or "U.B.A" in upper_text:
                 bank_identifier = "uba"
             elif "ZENITH" in upper_text:
                 bank_identifier = "zenith"
+            elif "FEDERAL BANK" in upper_text: # Access
+                bank_identifier = "accessbank"
+            
+            # 2. Resilient Ecobank Fingerprint (Very Specific to avoid GTBank false hits)
+            # Ecobank statements often have 'COMPUTER GENERATE' and 'YOUR LOCAL BRANCH'
+            elif "COMPUTER" in upper_text and "GENERATE" in upper_text and "LOCAL" in upper_text and "BRANCH" in upper_text:
+                bank_identifier = "ecobank"
+            elif "STATEMENT" in upper_text and "PERIOD" in upper_text and "VALUE" in upper_text and "DEBIT" in upper_text and "CREDIT" in upper_text:
+                # This specific row of headers is very stable for Ecobank
+                bank_identifier = "ecobank"
+            elif "ECOBANK" in upper_text:
+                bank_identifier = "ecobank"
+            
+            # 3. Minor Banks
             elif "FIRST BANK" in upper_text or "FIRSTBANK" in upper_text:
                 bank_identifier = "firstbank"
             elif "WEMA" in upper_text:
@@ -439,9 +443,9 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
             elif "FCMB" in upper_text or "FIRST CITY" in upper_text:
                 bank_identifier = "fcmb"
             
-            # 3. Default
+            # 4. Default
             else:
-                bank_identifier = "gtbank"  # Default to GTBank
+                bank_identifier = "gtbank"
             
             metadata["bank"] = bank_identifier
             print(f"DEBUG: Auto-detected bank: {bank_identifier}")
