@@ -401,22 +401,25 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
         # --- 2) Auto-detect bank if not specified ---
         if bank_identifier == "auto":
             first_text = pdf.pages[0].extract_text() or ""
-            if "ECOBANK" in first_text.upper():
+            upper_text = first_text.upper()
+            if "ECOBANK" in upper_text or ("TRANS" in upper_text and "VALUE" in upper_text and "DEBIT" in upper_text and "CREDIT" in upper_text):
                 bank_identifier = "ecobank"
-            elif "UBA" in first_text.upper() or "UNITED BANK" in first_text.upper():
+            elif "UBA" in upper_text or "UNITED BANK" in upper_text or "U.B.A" in upper_text:
                 bank_identifier = "uba"
-            elif "GUARANTY TRUST" in first_text.upper() or "GTBANK" in first_text.upper():
+            elif "GUARANTY TRUST" in upper_text or "GTBANK" in upper_text:
                 bank_identifier = "gtbank"
-            elif "ZENITH" in first_text.upper():
+            elif "ZENITH" in upper_text:
                 bank_identifier = "zenith"
-            elif "FIRST BANK" in first_text.upper() or "FIRSTBANK" in first_text.upper():
+            elif "FIRST BANK" in upper_text or "FIRSTBANK" in upper_text:
                 bank_identifier = "firstbank"
-            elif "WEMA" in first_text.upper():
+            elif "WEMA" in upper_text:
                 bank_identifier = "wema"
-            elif "FCMB" in first_text.upper() or "FIRST CITY" in first_text.upper():
+            elif "FCMB" in upper_text or "FIRST CITY" in upper_text:
                 bank_identifier = "fcmb"
             else:
                 bank_identifier = "gtbank"  # Default to GTBank
+            
+            metadata["bank"] = bank_identifier
             print(f"DEBUG: Auto-detected bank: {bank_identifier}")
         
     # --- 0a) Special Case: Access Bank Deterministic Global Layout Consensus
@@ -796,24 +799,28 @@ def parse_statement_metadata(text: str) -> Dict[str, Any]:
     meta["statement_total_debit"] = (
         find_money(r"Total\s+Debits?[:\s]*([\d,]+\.\d{2})") or
         find_money(r"Debit\s+Total[:\s]*([\d,]+\.\d{2})") or
-        find_money(r"Total\s+Withdrawals?[:\s]*([\d,]+\.\d{2})")
+        find_money(r"Total\s+Withdrawals?[:\s]*([\d,]+\.\d{2})") or
+        find_money(r"Total\s+Debit[:\s]*([\d,]+\.\d{2})") # Ecobank summary
     )
     
     meta["statement_total_credit"] = (
         find_money(r"Total\s+Credits?[:\s]*([\d,]+\.\d{2})") or
         find_money(r"Credit\s+Total[:\s]*([\d,]+\.\d{2})") or
-        find_money(r"Total\s+Deposits?[:\s]*([\d,]+\.\d{2})")
+        find_money(r"Total\s+Deposits?[:\s]*([\d,]+\.\d{2})") or
+        find_money(r"Total\s+Credit[:\s]*([\d,]+\.\d{2})") # Ecobank summary
     )
     
     meta["opening_balance"] = (
         find_money(r"Opening\s+Balance[:\s]*([\d,]+\.\d{2})") or
         find_money(r"Balance\s+Brought\s+Forward[:\s]*([\d,]+\.\d{2})") or
-        find_money(r"Balance\s+(?:Brought|B/F)[:\s]*([\d,]+\.\d{2})")
+        find_money(r"Balance\s+(?:Brought|B/F)[:\s]*([\d,]+\.\d{2})") or
+        find_money(r"Opening\s+Balance[:\s]*([\d,]+\.\d{2})")
     )
     
     meta["closing_balance"] = (
         find_money(r"Closing\s+Balance[:\s]*([\d,]+\.\d{2})") or
-        find_money(r"Balance\s+(?:Carried|C/F)[:\s]*([\d,]+\.\d{2})")
+        find_money(r"Balance\s+(?:Carried|C/F)[:\s]*([\d,]+\.\d{2})") or
+        find_money(r"Closing\s+Balance[:\s]*([\d,]+\.\d{2})")
     )
 
     return meta
