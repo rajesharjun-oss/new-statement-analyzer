@@ -42,6 +42,9 @@ def main():
         traceback.print_exc()
         sys.exit(1)
 
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
     print(f"===== RESULT =====")
     print(f"Total transactions : {len(txns)}")
     print(f"Account name       : {meta.get('account_name', 'N/A')}")
@@ -50,14 +53,17 @@ def main():
     print(f"Total credit       : {meta.get('statement_total_credit', 'N/A')}")
     print()
 
-    for i, t in enumerate(txns[:10], 1):
+    for i, t in enumerate(txns[:20], 1):
         ref = t.get("reference", "")
         date = t.get("date", "")
-        ref_ok = "✅" if ref != date else "❌ (ref = date — BUG)"
+        # Filter non-ascii from desc for console safety
+        desc_safe = str(t.get('description', '')).encode('ascii', 'ignore').decode('ascii')
+        dr_raw = t.get('_raw_debit', 'N/A')
+        cr_raw = t.get('_raw_credit', 'N/A')
         print(
-            f"{i:>3}. Date={date} | Ref={repr(ref[:30])} {ref_ok} | "
-            f"Dr={t.get('debit', 0):.2f} | Cr={t.get('credit', 0):.2f} | "
-            f"Desc={t.get('description', '')[:50]}"
+            f"{i:>3}. Date={date} | Dr={t.get('debit', 0):>12.2f} (raw={dr_raw}) | "
+            f"Cr={t.get('credit', 0):>12.2f} (raw={cr_raw}) | "
+            f"Desc={desc_safe[:40]}"
         )
 
     if len(txns) > 10:
