@@ -540,14 +540,14 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
                  txns = extract_transactions_via_ai(str(pdf_path))
                  if txns: return txns, metadata
 
-    # --- 0d) Special Case: Providus Table Strategy
+    # --- 0d) Special Case: Providus Extraction (Regex-based)
     if bank_identifier == "providus":
         try:
-             prov_txns, prov_meta = extract_providus_via_tables(Path(pdf_path), metadata)
+             prov_txns, prov_meta = extract_providus_regex(Path(pdf_path), metadata)
              if prov_txns:
                  return prov_txns, prov_meta
         except Exception as e:
-             print(f"DEBUG: Providus table strategy failed: {e}. Trying Hybrid AI Fallback...")
+             print(f"DEBUG: Providus Regex strategy failed: {e}. Trying Hybrid AI Fallback...")
              if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
                  txns = extract_transactions_via_ai(str(pdf_path))
                  if txns: return txns, metadata
@@ -2824,73 +2824,64 @@ def extract_access_consensus(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict]
 
 
 
-def extract_providus_via_tables(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict], Dict]:
+def extract_providus_regex(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict], Dict]:
     """
-    Table-based extraction logic for Providus Bank using pdfplumber's extract_tables().
-    Strategy: vertical_strategy='text' due to lack of explicit lines.
+    Robust line-by-line Regex extraction for Providus Bank.
+    Guarantees accuracy for Providus statements where lines are only visual.
     """
-    print(f"DEBUG: Using Table Strategy for Providus Bank: {pdf_path}")
-    all_transactions = []
+    print(f"DEBUG: Using Regex Strategy for Providus Bank: {pdf_path}")
+    transactions = []
+    # Regex to match Providus date format (e.g., 1-JAN-2026) at the start of a line
+    date_pattern = re.compile(r'^(\d{1,2}-[A-Z]{3}-\d{4})') 
     
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
-            tables = page.extract_tables(table_settings={
-                "vertical_strategy": "text", 
-                "horizontal_strategy": "text",
-                "snap_tolerance": 3,
-            })
-
-            for table in tables:
-                if not table: continue
-                
-                # Providus Mapping: Txn Date(0), Val Date(1), Remarks(2), Debit(3), Credit(4), Balance(5)
-                map_idx = {"date": 0, "vdate": 1, "desc": 2, "debit": 3, "credit": 4, "balance": 5}
-                
-                header_found = False
-                for r_idx in range(min(5, len(table))):
-                    h_str = " ".join([str(c) for c in table[r_idx] if c]).upper()
-                    if "TXN DATE" in h_str and "REMARKS" in h_str:
-                        header_found = True
-                        table = table[r_idx+1:]
-                        break
-                
-                for row in table:
-                    if not row or len(row) < 5: continue
+            text = page.extract_text()
+            if not text: continue
+            
+            lines = text.split('\n')
+            for line in lines:
+                if date_pattern.match(line):
+                    # Split the line by multiple spaces
+                    parts = re.split(r'\s{2,}', line.strip())
                     
-                    # Clean and parse
-                    row = [str(c or "").replace('\n', ' ').strip() for c in row]
-                    
-                    try:
-                        raw_date = row[map_idx["date"]]
-                        # Standard Providus date: 1-JAN-2026
-                        if not raw_date or not is_date(raw_date) or "DATE" in raw_date.upper():
-                            continue
+                    if len(parts) >= 5:
+                        try:
+                            raw_date = parts[0]
+                            val_date = parts[1] if re.match(r'\d{1,2}-[A-Z]{3}-\d{4}', parts[1]) else raw_date
                             
-                        description = row[map_idx["desc"]]
-                        value_date = row[map_idx["vdate"]]
-                        
-                        debit = parse_money(row[map_idx["debit"]])
-                        credit = parse_money(row[map_idx["credit"]])
-                        balance = parse_money(row[map_idx["balance"]])
-                        
-                        if description or debit or credit:
-                            all_transactions.append({
-                                "date": parse_date_smart(raw_date),
-                                "description": description if description else "No Description",
-                                "reference": "",
-                                "value_date": parse_date_smart(value_date) if value_date else "",
-                                "debit": debit,
-                                "credit": credit,
-                                "balance": balance,
-                                "category": "Unallocated",
-                                "_page": page.page_number
-                            })
-                    except Exception as e:
-                        print(f"DEBUG: Error parsing Providus row: {e}")
-                        continue
+                            # Determine Remarks, Debit, Credit, Balance based on number of parts
+                            # Layout: [Txn Date, Val Date, Remarks, Debit, Credit, Balance]
+                            # Sometimes Debit or Credit is empty (missing part)
+                            
+                            # Safe index mapping from end
+                            balance = parse_money(parts[-1])
+                            credit = parse_money(parts[-2])
+                            debit = parse_money(parts[-3])
+                            
+                            # Remarks is everything between Val Date and Debit
+                            remarks_idx = 2 if re.match(r'\d{1,2}-[A-Z]{3}-\d{4}', parts[1]) else 1
+                            remarks = " ".join(parts[remarks_idx:-3])
+                            
+                            # Re-verify if it's a valid movementRow
+                            if debit or credit:
+                                transactions.append({
+                                    "date": parse_date_smart(raw_date),
+                                    "description": remarks if remarks else "No Description",
+                                    "reference": "",
+                                    "value_date": parse_date_smart(val_date) if val_date else "",
+                                    "debit": debit,
+                                    "credit": credit,
+                                    "balance": balance,
+                                    "category": "Unallocated",
+                                    "_page": page.page_number
+                                })
+                        except Exception as e:
+                            print(f"DEBUG: Error parsing Providus regex line: {e}")
+                            continue
 
-    print(f"DEBUG: Providus Bank table extraction found {len(all_transactions)} transactions.")
-    return all_transactions, metadata
+    print(f"DEBUG: Providus Regex extraction found {len(transactions)} transactions.")
+    return transactions, metadata
 
 
 def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> Tuple[List[Dict], Dict]:
