@@ -1792,36 +1792,31 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return final_out
 
 
+
 def parse_money(text: str) -> float:
     """
     Parse money value, handling brackets as negatives
     """
-    if not text or not isinstance(text, str):
-        return 0.0
-    
-    text = text.strip()
     if not text:
         return 0.0
-    
-    if not re.search(r'[\d\.,]+', text):
+    # User Request: Robust cleaning: keep only digits and decimals
+    # This strips currency symbols, commas, etc.
+    cleaned = re.sub(r'[^\d.]', '', str(text))
+    if not cleaned:
         return 0.0
-    
-    # Check for brackets or minus
-    is_negative = bool(re.match(r'^\(.*\)$', text)) or text.startswith('-')
-    
-    # Remove all non-numeric except dot
-    clean = re.sub(r'[^\d\.]', '', text)
-    
     try:
-        num = float(clean)
-        if is_negative:
-            num = -num
-        return num
-    except ValueError:
+        val = float(cleaned)
+        if "(" in text or "-" in text:
+             return -val
+        return val
+    except:
         return 0.0
 
-
-
+def clean_amount(val):
+    """Robust cleaning for Ecobank: keep only digits and decimals"""
+    if not val: return "0"
+    cleaned = re.sub(r'[^\d.]', '', str(val))
+    return cleaned if cleaned else "0"
 
 def reconcile_transactions(transactions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
@@ -3087,32 +3082,30 @@ def _finalize_ecobank_rows(rows: List[Dict]) -> List[Dict]:
         val_date = (r.get("Value Date") or "").strip()
         desc = (r.get("Description") or "").strip()
 
-        debit = parse_eco_money(r.get("Debit_raw", ""))
-        credit = parse_eco_money(r.get("Credit_raw", ""))
-        balance = parse_eco_money(r.get("Balance_raw", ""))
-
         if not looks_like_eco_date(txn_date):
             continue
-        if not desc and debit is None and credit is None and balance is None:
-            continue
-
+            
         ref, cleaned_desc = normalize_eco_ref(desc)
 
-        # Create the transaction object
+        # User Requested Mapping and Robust Cleaning
         tx = {
-            'date': txn_date,
-            'value_date': val_date if looks_like_eco_date(val_date) else '',
-            'reference': ref,
-            'description': cleaned_desc,
-            'remarks': cleaned_desc,
-            'originating_branch': '',
-            'debit': float(debit) if debit is not None else 0.0,
-            'credit': float(credit) if credit is not None else 0.0,
-            'balance': float(balance) if balance is not None else 0.0,
-            'category': 'Unallocated',
-            'is_reversal': False,
-            '_page': r.get('_page', 0),
-            '_row': i
+            "Transaction Date": str(txn_date).replace('\n', ' ').strip(),
+            "Description": str(cleaned_desc).replace('\n', ' ').strip() if cleaned_desc else "No Description", 
+            "Value Date": str(val_date).replace('\n', ' ').strip(),
+            "Debit": clean_amount(r.get("Debit_raw", "")),
+            "Credit": clean_amount(r.get("Credit_raw", "")),
+            "Balance": clean_amount(r.get("Balance_raw", "")),
+            
+            # Compatibility fields for internal system
+            "date": txn_date,
+            "description": cleaned_desc,
+            "reference": ref,
+            "debit": float(clean_amount(r.get("Debit_raw", ""))),
+            "credit": float(clean_amount(r.get("Credit_raw", ""))),
+            "balance": float(clean_amount(r.get("Balance_raw", ""))),
+            "category": "Unallocated",
+            "_page": r.get("_page", 0),
+            "_row": i
         }
 
         # Deduplication check
