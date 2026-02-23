@@ -460,23 +460,23 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
             upper_text = first_text.upper()
             
             # 1. Explicit Major Bank Checks (High Priority)
-            if "GUARANTY TRUST" in upper_text or "GTBANK" in upper_text:
+            if "PROVIDUS" in upper_text:
+                bank_identifier = "providus"
+            elif "ECOBANK" in upper_text:
+                bank_identifier = "ecobank"
+            elif "GUARANTY TRUST" in upper_text or "GTBANK" in upper_text:
                 bank_identifier = "gtbank"
             elif "UBA" in upper_text or "UNITED BANK" in upper_text or "U.B.A" in upper_text:
                 bank_identifier = "uba"
             elif "ZENITH" in upper_text:
                 bank_identifier = "zenith"
-            elif "ACCESS BANK" in upper_text or "ACCESS" in upper_text:
+            elif "ACCESS" in upper_text:
                 bank_identifier = "accessbank"
             
             # 2. Resilient Ecobank Fingerprint (Very Specific to avoid GTBank false hits)
-            # Ecobank statements often have 'COMPUTER GENERATE' and 'YOUR LOCAL BRANCH'
             elif "COMPUTER" in upper_text and "GENERATE" in upper_text and "LOCAL" in upper_text and "BRANCH" in upper_text:
                 bank_identifier = "ecobank"
             elif "STATEMENT" in upper_text and "PERIOD" in upper_text and "VALUE" in upper_text and "DEBIT" in upper_text and "CREDIT" in upper_text:
-                # This specific row of headers is very stable for Ecobank
-                bank_identifier = "ecobank"
-            elif "ECOBANK" in upper_text:
                 bank_identifier = "ecobank"
             
             # 3. Minor Banks
@@ -488,8 +488,6 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
                 bank_identifier = "fcmb"
             elif "FIDELITY" in upper_text:
                 bank_identifier = "fidelity"
-            elif "PROVIDUS" in upper_text:
-                bank_identifier = "providus"
             
             # 4. Default
             else:
@@ -511,9 +509,12 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
              if txns: return txns, meta
         except Exception as e:
              print(f"DEBUG: Access Bank consensus engine failed: {e}. Triggering Hybrid AI Fallback...")
-             if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
-                 txns = extract_transactions_via_ai(str(pdf_path))
-                 if txns: return txns, metadata
+        
+        # Hardened Fallback: If 0 transactions found after both attempts, trigger AI
+        if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+            print(f"DEBUG: Access Bank engines returned 0 txns. Triggering Hybrid AI Fallback...")
+            txns = extract_transactions_via_ai(str(pdf_path))
+            if txns: return txns, metadata
 
     # --- 0b) Special Case: Zenith Table Strategy
     if bank_identifier == "zenith":
@@ -536,9 +537,12 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
                  return eco_txns, eco_meta
         except Exception as e:
              print(f"DEBUG: Ecobank table strategy failed: {e}. Trying Hybrid AI Fallback...")
-             if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
-                 txns = extract_transactions_via_ai(str(pdf_path))
-                 if txns: return txns, metadata
+        
+        # Hardened Fallback: If 0 transactions found, trigger AI
+        if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+            print(f"DEBUG: Ecobank table engine returned 0 txns. Triggering Hybrid AI Fallback...")
+            txns = extract_transactions_via_ai(str(pdf_path))
+            if txns: return txns, metadata
 
     # --- 0d) Special Case: Providus Extraction (Regex-based)
     if bank_identifier == "providus":
@@ -548,9 +552,12 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
                  return prov_txns, prov_meta
         except Exception as e:
              print(f"DEBUG: Providus Regex strategy failed: {e}. Trying Hybrid AI Fallback...")
-             if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
-                 txns = extract_transactions_via_ai(str(pdf_path))
-                 if txns: return txns, metadata
+        
+        # Hardened Fallback: If 0 transactions found, trigger AI
+        if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+            print(f"DEBUG: Providus engine returned 0 txns. Triggering Hybrid AI Fallback...")
+            txns = extract_transactions_via_ai(str(pdf_path))
+            if txns: return txns, metadata
 
     # --- 0d) Special Case: FCMB Table Strategy
     if bank_identifier == "fcmb":
@@ -2841,6 +2848,7 @@ def extract_providus_regex(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict], 
             
             lines = text.split('\n')
             for line in lines:
+                line = line.strip()
                 if date_pattern.match(line):
                     # Split the line by multiple spaces
                     parts = re.split(r'\s{2,}', line.strip())
