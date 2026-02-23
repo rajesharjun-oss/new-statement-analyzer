@@ -105,6 +105,26 @@ BANK_CONFIGS = {
             "opening_balance": r"Opening Balance[:\s]+([\d,]+\.\d{2})",
             "closing_balance": r"Closing Balance[:\s]+([\d,]+\.\d{2})"
         }
+    },
+    "fidelity": {
+        "name": "Fidelity Bank",
+        "header_patterns": {
+            "trans_date": r"Transaction\s+Date",
+            "value_date": r"Value\s+Date",
+            "channel": r"Channel",
+            "remarks": r"Details",
+            "credit": r"Pay\s*In",
+            "debit": r"Pay\s*Out",
+            "balance": r"Balance"
+        },
+        "metadata_patterns": {
+            "account_name": r"(?:FUTURE\s+TROVE\s+NURSERY\b.*SCHOOL|Account:)\s*(.*?)(?=\s*Currency:|$)",
+            "statement_period": r"From\s+(.+?)\s+to\s+(.+)",
+            "total_debit": r"Total\s+Debits?[:\s]*([\d,]+\.\d{2})",
+            "total_credit": r"Total\s+Credits?[:\s]*([\d,]+\.\d{2})",
+            "opening_balance": r"Opening\s+Balance[:\s]*([\d,]+\.\d{2})",
+            "closing_balance": r"Closing\s+Balance[:\s]*([\d,]+\.\d{2})"
+        }
     }
 }
 
