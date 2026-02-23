@@ -499,16 +499,19 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
     # --- 0a) Special Case: Access Bank Table-Based Strategy
     if bank_identifier == "accessbank":
         try:
-             return extract_access_via_tables(Path(pdf_path), metadata)
+             txns, meta = extract_access_via_tables(Path(pdf_path), metadata)
+             if txns: return txns, meta
         except Exception as e:
              print(f"DEBUG: Access Bank table engine failed: {e}. Trying Consensus Fallback...")
-             try:
-                 return extract_access_consensus(Path(pdf_path), metadata)
-             except Exception as e2:
-                 print(f"DEBUG: Access Bank consensus engine failed: {e2}. Triggering Hybrid AI Fallback...")
-                 if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
-                     txns = extract_transactions_via_ai(str(pdf_path))
-                     if txns: return txns, metadata
+        
+        try:
+             txns, meta = extract_access_consensus(Path(pdf_path), metadata)
+             if txns: return txns, meta
+        except Exception as e:
+             print(f"DEBUG: Access Bank consensus engine failed: {e}. Triggering Hybrid AI Fallback...")
+             if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+                 txns = extract_transactions_via_ai(str(pdf_path))
+                 if txns: return txns, metadata
 
     # --- 0b) Special Case: Zenith Table Strategy
     if bank_identifier == "zenith":
@@ -860,7 +863,10 @@ def parse_statement_metadata(text: str) -> Dict[str, Any]:
     if m:
         raw_name = m.group(1)
         # Clean up: stop at "Total Debit" or "Total Credit" or "Currency", "Account No", or a bare date keyword
-        stop_patterns = ["TOTAL DEBIT", "TOTAL CREDIT", "CURRENCY", "ACCOUNT NO", "ACC NO", " DATE ", "\nDATE"]
+        stop_patterns = [
+            "TOTAL DEBIT", "TOTAL CREDIT", "CURRENCY", "ACCOUNT NO", "ACC NO", 
+            " DATE ", "\nDATE", "TOTAL WITHDRAWALS", "TOTAL LODGEMENTS"
+        ]
         upper_raw = raw_name.upper()
         
         min_idx = len(raw_name)
@@ -2557,12 +2563,20 @@ def extract_access_via_tables(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict
     all_transactions = []
     
     with pdfplumber.open(pdf_path) as pdf:
+        # First attempt: Grid line detection
         for page in pdf.pages:
             tables = page.extract_tables(table_settings={
                 "vertical_strategy": "lines", 
                 "horizontal_strategy": "lines",
                 "snap_tolerance": 3,
             })
+            
+            # If no tables found with lines, try a more relaxed text-based strategy
+            if not tables:
+                tables = page.extract_tables(table_settings={
+                    "vertical_strategy": "text",
+                    "horizontal_strategy": "text",
+                })
 
             for table in tables:
                 if not table: continue
@@ -2582,14 +2596,13 @@ def extract_access_via_tables(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict
                         elif "WITHDRAWALS" in h_str and "DETAILS" in h_str:
                             # Layout A (User Image): Date(0), Details(1), Ref(2), Val(3), With(4), Lodge(5), Bal(6)
                             map_idx = {"date": 0, "desc": 1, "ref": 2, "vdate": 3, "debit": 4, "credit": 5, "balance": 6}
+                        elif "PARTICULARS" in h_str:
+                             # Generic catch for some Access formats
+                             pass
                         # Skip this header row
                         table = table[r_idx+1:]
                         break
                 
-                if not header_found:
-                    # If this is a continuation table, use default or last detected map_idx
-                    pass
-
                 for row in table:
                     if not row: continue
                     
@@ -2610,8 +2623,8 @@ def extract_access_via_tables(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict
                             continue
                             
                         description = row[map_idx["desc"]]
-                        reference = row[map_idx["ref"]]
-                        value_date = row[map_idx["vdate"]]
+                        reference = row[map_idx["ref"]] if "ref" in map_idx else ""
+                        value_date = row[map_idx["vdate"]] if "vdate" in map_idx else ""
                         
                         debit = parse_money(row[map_idx["debit"]])
                         credit = parse_money(row[map_idx["credit"]])
