@@ -529,9 +529,9 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
     # --- 0c) Special Case: Ecobank Dedicated Extractor
     if bank_identifier == "ecobank":
         try:
-             eco_txns = extract_ecobank_via_tables(Path(pdf_path), metadata)
+             eco_txns, eco_meta = extract_ecobank_via_tables(Path(pdf_path), metadata)
              if eco_txns:
-                 return eco_txns, metadata
+                 return eco_txns, eco_meta
         except Exception as e:
              print(f"DEBUG: Ecobank table strategy failed: {e}. Trying Hybrid AI Fallback...")
              if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
@@ -2810,22 +2810,29 @@ def extract_access_consensus(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict]
 
 
 
-def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> List[Dict]:
+def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> Tuple[List[Dict], Dict]:
     """
     Dedicated Ecobank extractor using pdfplumber's extract_tables().
     Robust against the grid layout shown in the user's images.
     """
+    if metadata is None: metadata = {}
     print(f"DEBUG: Using Table Strategy for Ecobank: {pdf_path}")
     all_transactions = []
     
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
-            # Ecobank has very clear grid lines
+            # Ecobank has very clear grid lines, but if lines extraction fails, fall back to text
             tables = page.extract_tables(table_settings={
                 "vertical_strategy": "lines", 
                 "horizontal_strategy": "lines",
                 "snap_tolerance": 3,
             })
+            
+            if not tables:
+                tables = page.extract_tables(table_settings={
+                    "vertical_strategy": "text",
+                    "horizontal_strategy": "text",
+                })
 
             for table in tables:
                 if not table: continue
@@ -2845,18 +2852,18 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> List[Di
                         break
                 
                 for row in table:
-                    if not row or len(row) < 6: continue
+                    if not row or len(row) < 5: continue
                     
                     # Clean the row (strip newlines, spaces)
                     row = [str(c or "").replace('\n', ' ').strip() for c in row]
                     
-                    raw_date = row[map_idx["date"]]
-                    
-                    # Skip empty dates or header-like rows
-                    if not raw_date or not is_date(raw_date) or "Date" in raw_date:
-                        continue
-                        
                     try:
+                        raw_date = row[map_idx["date"]]
+                        
+                        # Skip empty dates or header-like rows
+                        if not raw_date or not is_date(raw_date) or "Date" in raw_date:
+                            continue
+                            
                         # Extract and parse fields
                         description = row[map_idx["desc"]]
                         value_date = row[map_idx["vdate"]]
@@ -2883,4 +2890,4 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> List[Di
                         continue
     
     print(f"DEBUG: Ecobank table extraction found {len(all_transactions)} transactions.")
-    return all_transactions
+    return all_transactions, metadata
