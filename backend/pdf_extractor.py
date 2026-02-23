@@ -27,6 +27,13 @@ except ImportError:
     def extract_text_with_ocr(*args, **kwargs):
         raise ImportError("ocr_helper module not found")
 
+# PyPDF fallback for crashing PDFs
+try:
+    from pypdf import PdfReader
+    PYPDF_AVAILABLE = True
+except ImportError:
+    PYPDF_AVAILABLE = False
+
 # Define OCR availability based on OpenAI API key presence
 OCR_AVAILABLE = bool(os.getenv("OPENAI_API_KEY"))
 
@@ -370,6 +377,40 @@ def is_noise_row(row: dict) -> bool:
         re.search(r"^\s*CREDIT\s+TOTAL\s*$", text)
     )
 
+def extract_words_from_pypdf(pdf_path: str, page_idx: int) -> List[Dict[str, Any]]:
+    """Fallback word extractor using pypdf when pdfplumber crashes."""
+    if not PYPDF_AVAILABLE:
+        return []
+    
+    try:
+        reader = PdfReader(pdf_path)
+        page = reader.pages[page_idx]
+        mbox = page.mediabox
+        page_height = float(mbox.height)
+        
+        words = []
+        
+        def visitor(text, cm, tm, fontDict, fontSize):
+            if text.strip():
+                # tm[4], tm[5] are x, y coordinates
+                x0 = float(tm[4])
+                y0 = float(tm[5])
+                # Reconstruct word-like dict
+                words.append({
+                    "text": text,
+                    "x0": x0,
+                    "x1": x0 + (len(text) * fontSize * 0.5), # Heuristic
+                    "top": page_height - y0 - fontSize,
+                    "bottom": page_height - y0,
+                    "upright": True
+                })
+        
+        page.extract_text(visitor_text=visitor)
+        return words
+    except Exception as e:
+        print(f"DEBUG: pypdf extraction also failed: {e}")
+        return []
+
 def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[List[Dict], Dict[str, Any]]:
     """
     Main extraction function with improved accuracy
@@ -403,12 +444,15 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
         metadata.update(parse_statement_metadata(first_text))
         
         if len(pdf.pages) > 1:
-            last_text = pdf.pages[-1].extract_text() or ""
-            last_meta = parse_statement_metadata(last_text)
-            # Update totals from last page if present
-            for key in ["statement_total_debit", "statement_total_credit", "closing_balance"]:
-                if last_meta.get(key) is not None:
-                    metadata[key] = last_meta[key]
+            try:
+                last_text = pdf.pages[-1].extract_text() or ""
+                last_meta = parse_statement_metadata(last_text)
+                # Update totals from last page if present
+                for key in ["statement_total_debit", "statement_total_credit", "closing_balance"]:
+                    if last_meta.get(key) is not None:
+                        metadata[key] = last_meta[key]
+            except Exception as e:
+                print(f"DEBUG: Failed to extract text from last page: {e}")
 
         # --- 2) Auto-detect bank if not specified ---
         if bank_identifier == "auto":
@@ -442,6 +486,8 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
                 bank_identifier = "wema"
             elif "FCMB" in upper_text or "FIRST CITY" in upper_text:
                 bank_identifier = "fcmb"
+            elif "FIDELITY" in upper_text:
+                bank_identifier = "fidelity"
             
             # 4. Default
             else:
@@ -497,6 +543,16 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
                  txns = extract_transactions_via_ai(str(pdf_path))
                  if txns: return txns, metadata
 
+    # --- 0e) Special Case: Fidelity Table Strategy
+    if bank_identifier == "fidelity":
+        try:
+             fidelity_txns = extract_fidelity_via_tables(Path(pdf_path), metadata)
+             if fidelity_txns:
+                 return fidelity_txns, metadata
+        except Exception as e:
+             print(f"DEBUG: Fidelity table strategy failed: {e}. Falling back to standard/pypdf...")
+             # Let it fall through
+
     # Reset metadata["_debug"] if fallback is used
     column_debug = {}
     
@@ -509,8 +565,9 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
                 words = p.extract_words(x_tolerance=2, y_tolerance=2)
                 print(f"DEBUG: Page {i} words count: {len(words)}")
             except Exception as e:
-                print(f"DEBUG: Page {i} pdfplumber extraction crashed ({type(e).__name__}: {e}), trying OCR...")
-                continue
+                print(f"DEBUG: Page {i} pdfplumber extraction crashed ({type(e).__name__}: {e}), trying pypdf fallback...")
+                words = extract_words_from_pypdf(pdf_path, i)
+                print(f"DEBUG: Page {i} pypdf fallback words count: {len(words)}")
             
             if not words:
                 print(f"DEBUG: Page {i} has no words, skipping...")
@@ -573,8 +630,8 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
             try:
                 words = page.extract_words(x_tolerance=2, y_tolerance=2)
             except Exception as e:
-                print(f"DEBUG: pdfplumber failed on page {page_num}: {type(e).__name__}: {e}")
-                words = []
+                print(f"DEBUG: pdfplumber failed on page {page_num}: {type(e).__name__}: {e}. Trying pypdf...")
+                words = extract_words_from_pypdf(pdf_path, page_num - 1)
             
             if not words:
                 print(f"DEBUG: Page {page_num} has no words, skipping...")
@@ -1251,50 +1308,91 @@ def detect_fidelity_columns(words: List[Dict], bank_identifier: str) -> Dict[str
     """Fidelity: Transaction Date | Value Date | Channel | Details | Pay In | Pay Out | Balance"""
     if bank_identifier != "fidelity": return None
     
-    # Fidelity headers are often distinct
-    def find_col(regex):
-        ms = [w for w in words if re.search(regex, w.get("text", ""), re.I)]
-        if not ms: return None
-        # Sort by x0 just in case
-        ms.sort(key=lambda w: w.get("x0", 0))
-        return ms[0] if ms else None
+    # Fidelity headers are often split: ["Pay", "In"], ["Pay", "Out"]
+    # We look for a row containing most of these keywords
+    rows = group_words_to_rows(words, y_tol=3.0)
+    best_row = None
+    max_score = 0
+    
+    keywords = ["TRANSACTION", "VALUE", "CHANNEL", "DETAILS", "PAY", "IN", "OUT", "BALANCE"]
+    
+    for r in rows:
+        row_text = " ".join([w["text"].upper() for w in r["words"]])
+        score = 0
+        if "TRANSACTION" in row_text and "DATE" in row_text: score += 1
+        if "DETAILS" in row_text: score += 1
+        if "BALANCE" in row_text: score += 1
+        if "PAY" in row_text: score += 1
+        
+        if score > max_score:
+            max_score = score
+            best_row = r
+            
+    if not best_row or max_score < 3:
+        return None
+        
+    print(f"DEBUG: Found Fidelity Header Row: {[w['text'] for w in best_row['words']]}")
+    
+    r_words = sorted(best_row["words"], key=lambda w: w["x0"])
+    
+    def find_bounds(regex):
+        for w in r_words:
+            if re.search(regex, w["text"], re.I):
+                return (w["x0"], w["x1"])
+        return None, None
 
-    trans_date = find_col(r"Transaction")
-    val_date = find_col(r"Value")
-    channel = find_col(r"Channel")
-    details = find_col(r"Details")
-    pay_in = find_col(r"Pay\s*In")
-    pay_out = find_col(r"Pay\s*Out")
-    bal = find_col(r"Balance")
+    def find_phrase_bounds(p1, p2):
+        for i in range(len(r_words) - 1):
+            if re.search(p1, r_words[i]["text"], re.I) and re.search(p2, r_words[i+1]["text"], re.I):
+                return (r_words[i]["x0"], r_words[i+1]["x1"])
+        x0, x1 = find_bounds(p1)
+        return x0, x1
 
-    if not (trans_date and details and (pay_in or pay_out) and bal):
-        print(f"DEBUG: FIDELITY detection failed - missing required columns")
+    lx_trans, rx_trans = find_bounds(r"Transaction")
+    lx_value, rx_value = find_bounds(r"Value")
+    lx_channel, rx_channel = find_bounds(r"Channel")
+    lx_details, rx_details = find_bounds(r"Details")
+    lx_pay_in, rx_pay_in = find_phrase_bounds(r"Pay", r"In")
+    lx_pay_out, rx_pay_out = find_phrase_bounds(r"Pay", r"Out")
+    lx_bal, rx_bal = find_bounds(r"Balance")
+
+    if lx_trans is None or lx_details is None or lx_bal is None:
         return None
 
     cols = []
-    cols.append(("date", trans_date.get("x0", 0)))
-    if val_date: cols.append(("value_date", val_date.get("x0", 0)))
-    if channel: cols.append(("channel", channel.get("x0", 0)))
-    cols.append(("description", details.get("x0", 0)))
-    
-    if pay_in: cols.append(("credit", pay_in.get("x0", 0)))
-    if pay_out: cols.append(("debit", pay_out.get("x0", 0)))
-    cols.append(("balance", bal.get("x0", 0)))
+    # (name, left_edge, right_edge)
+    cols.append(("date", lx_trans, rx_trans))
+    if lx_value is not None: cols.append(("value_date", lx_value, rx_value))
+    if lx_channel is not None: cols.append(("channel", lx_channel, rx_channel))
+    cols.append(("description", lx_details, rx_details))
+    if lx_pay_in is not None: cols.append(("credit", lx_pay_in, rx_pay_in))
+    if lx_pay_out is not None: cols.append(("debit", lx_pay_out, rx_pay_out))
+    cols.append(("balance", lx_bal, rx_bal))
 
     cols.sort(key=lambda x: x[1])
     
     cuts = {}
     for i in range(len(cols)):
-        name, left = cols[i]
-        # Right edge is next col's left or strict width
-        if i < len(cols) - 1:
-            right = cols[i+1][1]
+        name, x0_curr, x1_curr = cols[i]
+        
+        if i == 0:
+            left = x0_curr - 10
         else:
-            right = 1000 # End of page
+            prev_x1 = cols[i-1][2]
+            left = (prev_x1 + x0_curr) / 2
             
-        cuts[name] = (left - 5, right - 5)
+        if i < len(cols) - 1:
+            next_name, next_x0, next_x1 = cols[i+1]
+            # Special case for description: give it as much room as possible
+            if name == "description":
+                right = next_x0 - 5
+            else:
+                right = (x1_curr + next_x0) / 2
+        else:
+            right = 1000.0
+            
+        cuts[name] = (left, right)
     
-    print(f"DEBUG: FIDELITY columns: {cuts.keys()}")
     return cuts
 
 def detect_apt_columns(words: List[Dict], bank_identifier: str) -> Dict[str, Tuple[float, float]] | None:
@@ -2356,6 +2454,100 @@ def extract_fcmb_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
     return final_txns
              
 
+
+
+def extract_fidelity_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
+    """
+    Robust word-based extractor for Fidelity Bank.
+    Uses column boundaries from header and assigns words by midpoint.
+    """
+    print("DEBUG: Using Fidelity Robust Word-Bucketing Engine")
+    
+    all_rows = []
+    with pdfplumber.open(pdf_path) as pdf:
+        # Detect columns from page 1
+        page1 = pdf.pages[0]
+        words = page1.extract_words()
+        cuts = detect_fidelity_columns(words, 'fidelity')
+        
+        if not cuts:
+            print("DEBUG: Could not detect Fidelity columns, falling back to auto-detect")
+            return []
+
+        print(f"DEBUG: Fidelity Column Cuts: {cuts}")
+
+        for i, page in enumerate(pdf.pages):
+            page_num = i + 1
+            p_words = []
+            try:
+                try:
+                    p_words = page.extract_words(x_tolerance=2, y_tolerance=2)
+                except Exception as e:
+                    print(f"DEBUG: Page {page_num} pdfplumber crashed: {e}. Trying pypdf...")
+                    p_words = extract_words_from_pypdf(str(pdf_path), i)
+                
+                if not p_words: continue
+                
+                rows = group_words_to_rows(p_words, y_tol=3.0)
+                for r_idx, r in enumerate(rows):
+                    if is_noise_row(r): continue
+                    
+                    row_data = {name: [] for name in cuts.keys()}
+                    for w in r["words"]:
+                        x_mid = (w["x0"] + w["x1"]) / 2
+                        assigned = False
+                        for name, (left, right) in cuts.items():
+                            if left <= x_mid <= right:
+                                row_data[name].append(w["text"])
+                                assigned = True
+                                break
+                        
+                        if not assigned:
+                            for name, (left, right) in cuts.items():
+                                if left - 5 <= x_mid <= right + 5:
+                                    row_data[name].append(w["text"])
+                                    break
+
+                    row_final = {name: " ".join(parts).strip() for name, parts in row_data.items()}
+                    
+                    # Store as raw strings for merging
+                    all_rows.append({
+                        "date": row_final.get("date", ""),
+                        "value_date": row_final.get("value_date", ""),
+                        "channel": row_final.get("channel", ""),
+                        "description": row_final.get("description", ""),
+                        "credit": row_final.get("credit", ""),
+                        "debit": row_final.get("debit", ""),
+                        "balance": row_final.get("balance", ""),
+                        "is_reversal": False,
+                        "_page": page_num,
+                        "_row": r_idx
+                    })
+            except Exception as e:
+                print(f"DEBUG: Error on Page {page_num}: {e}")
+                continue
+
+    print(f"DEBUG: Total Fidelity rows extracted: {len(all_rows)}")
+    if all_rows:
+        print(f"DEBUG: Sample row types: {[type(v) for v in all_rows[0].values()]}")
+    
+    txns = merge_multiline_rows(all_rows)
+    
+    # Post-process merged transactions to parse money and dates
+    final_txns = []
+    for t in txns:
+        date_val = parse_date_smart(t.get("date"))
+        if not date_val: continue
+        
+        t["date"] = date_val
+        t["credit"] = parse_money(t.get("credit"))
+        t["debit"] = parse_money(t.get("debit"))
+        t["balance"] = parse_money(t.get("balance"))
+        final_txns.append(t)
+
+    print(f"DEBUG: Total Fidelity transactions after merge & parse: {len(final_txns)}")
+    
+    return final_txns
 
 
 def extract_access_consensus(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict], Dict]:
