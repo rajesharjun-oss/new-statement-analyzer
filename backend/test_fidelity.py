@@ -6,11 +6,17 @@ load_dotenv()
 import traceback
 import sys
 
+import os
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+pdf_path = os.path.join(BASE_DIR, 'test_fidelity.pdf.pdf')
+
 try:
-    txns, meta = extract_transactions('test_fidelity.pdf.pdf', 'fidelity')
+    txns, meta = extract_transactions(pdf_path, 'fidelity')
     print(f"\n===== SUCCESS =====")
     print(f"Transactions: {len(txns)}")
-    if txns:
+    if not txns:
+        print("WAINING: No transactions extracted. Check coordinates and fingerprint.")
+    else:
         print(f"\nFirst transaction:")
         print(f"  Date: {txns[0].get('date')}")
         print(f"  Description: {txns[0].get('description', '')[:100]}")

@@ -496,15 +496,19 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
             metadata["bank"] = bank_identifier
             print(f"DEBUG: Auto-detected bank: {bank_identifier}")
         
-    # --- 0a) Special Case: Access Bank Deterministic Global Layout Consensus
+    # --- 0a) Special Case: Access Bank Table-Based Strategy
     if bank_identifier == "accessbank":
         try:
-             return extract_access_consensus(Path(pdf_path), metadata)
+             return extract_access_via_tables(Path(pdf_path), metadata)
         except Exception as e:
-             print(f"DEBUG: Access Bank consensus engine failed: {e}. Triggering Hybrid AI Fallback...")
-             if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
-                 txns = extract_transactions_via_ai(str(pdf_path))
-                 if txns: return txns, metadata
+             print(f"DEBUG: Access Bank table engine failed: {e}. Trying Consensus Fallback...")
+             try:
+                 return extract_access_consensus(Path(pdf_path), metadata)
+             except Exception as e2:
+                 print(f"DEBUG: Access Bank consensus engine failed: {e2}. Triggering Hybrid AI Fallback...")
+                 if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+                     txns = extract_transactions_via_ai(str(pdf_path))
+                     if txns: return txns, metadata
 
     # --- 0b) Special Case: Zenith Table Strategy
     if bank_identifier == "zenith":
@@ -2548,6 +2552,79 @@ def extract_fidelity_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
     print(f"DEBUG: Total Fidelity transactions after merge & parse: {len(final_txns)}")
     
     return final_txns
+
+def extract_access_via_tables(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict], Dict]:
+    """
+    Table-based extraction logic for Access Bank using explicit grid lines.
+    Supports both 7-column (Details at 1) and 8-column (Details at 7/Remarks) layouts.
+    """
+    print(f"DEBUG: Using Table Strategy for Access Bank: {pdf_path}")
+    all_transactions = []
+    
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            tables = page.extract_tables(table_settings={
+                "vertical_strategy": "lines", 
+                "horizontal_strategy": "lines",
+                "snap_tolerance": 3,
+            })
+
+            for table in tables:
+                if not table: continue
+                
+                # Dynamic mapping based on header
+                map_idx = {"date": 0, "desc": 1, "ref": 2, "vdate": 3, "debit": 4, "credit": 5, "balance": 6}
+                header_row = table[0]
+                h_str = " ".join([str(c) for c in header_row if c]).upper()
+                
+                if "REMARKS" in h_str and "ORIGINATING" in h_str:
+                    # Layout B: Date(0), ValDate(1), Ref(2), Debit(3), Credit(4), Bal(5), Branch(6), Remarks(7)
+                    map_idx = {"date": 0, "desc": 7, "ref": 2, "vdate": 1, "debit": 3, "credit": 4, "balance": 5}
+                elif "WITHDRAWALS" in h_str and "DETAILS" in h_str:
+                    # Layout A (User Image): Date(0), Details(1), Ref(2), Val(3), With(4), Lodge(5), Bal(6)
+                    map_idx = {"date": 0, "desc": 1, "ref": 2, "vdate": 3, "debit": 4, "credit": 5, "balance": 6}
+
+                for row in table:
+                    if not row or not row[0]: continue
+                    
+                    row_str_0 = str(row[0])
+                    if "Date" in row_str_0 or "Opening" in row_str_0 or "Balance" in row_str_0:
+                        continue
+                        
+                    try:
+                        # Ensure enough columns for the chosen mapping
+                        max_idx = max(map_idx.values())
+                        while len(row) <= max_idx:
+                            row.append("")
+                        
+                        raw_date = str(row[map_idx["date"]]).replace('\n', ' ').strip()
+                        if not is_date(raw_date):
+                            continue
+                            
+                        description = str(row[map_idx["desc"]]).replace('\n', ' ').strip() if row[map_idx["desc"]] else ""
+                        reference = str(row[map_idx["ref"]]).replace('\n', ' ').strip() if row[map_idx["ref"]] else ""
+                        value_date = str(row[map_idx["vdate"]]).replace('\n', ' ').strip() if row[map_idx["vdate"]] else ""
+                        
+                        debit = parse_money(str(row[map_idx["debit"]])) if row[map_idx["debit"]] else 0.0
+                        credit = parse_money(str(row[map_idx["credit"]])) if row[map_idx["credit"]] else 0.0
+                        balance = parse_money(str(row[map_idx["balance"]])) if row[map_idx["balance"]] else 0.0
+                        
+                        all_transactions.append({
+                            "date": parse_date_smart(raw_date),
+                            "description": description,
+                            "reference": reference,
+                            "value_date": parse_date_smart(value_date) if value_date else "",
+                            "debit": debit,
+                            "credit": credit,
+                            "balance": balance,
+                            "category": "Unallocated"
+                        })
+                    except Exception as e:
+                        print(f"DEBUG: Error parsing Access table row: {e}")
+                        continue
+
+    print(f"DEBUG: Access Bank table extraction found {len(all_transactions)} transactions.")
+    return all_transactions, metadata
 
 
 def extract_access_consensus(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict], Dict]:

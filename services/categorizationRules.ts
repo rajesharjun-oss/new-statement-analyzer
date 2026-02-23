@@ -25,14 +25,58 @@ const RULES: Rule[] = [
   },
   // INFLOWS (High Priority)
   {
+    id: "R004_INWARD_TRANSFERS_OVERRIDE",
+    priority: 4,
+    description_regex: /\bTRANSFER\s*BETWEEN\s*CUSTOMERS\b.*\bVIA\b|\bGTW(?:ORLD)?\b|\bGAPSLITE\b|\bGAPS?\b/i,
+    side: "credit",
+    category: "Operating Income",
+    confidence: 0.95
+  },
+  {
     id: "R005_INWARD_TRANSFERS",
     priority: 5,
     description_regex: /NIP\s*FROM|TRF\s*FROM|CREDIT\s*FROM|DEPOSIT\b|INFLOW\b/i,
     side: "credit",
-    category: "Operating Income", 
+    category: "Operating Income",
     confidence: 0.9
   },
-  // BANK CHARGES & LEVIES (High Priority)
+  // STAFF (High Priority)
+  {
+    id: "R006_SALARY_PAYROLL",
+    priority: 6,
+    description_regex: /SALARY\b|PAYROLL\b|WAGES\b|STAFF\s*SAL/i,
+    side: "debit",
+    category: "Salaries & Wages",
+    confidence: 1.0
+  },
+  // EXPENSES (High Priority)
+  {
+    id: "R007_EXPENSE_OVERRIDE",
+    priority: 7,
+    description_regex: /SUMMIT|CONFERENCE|HEALTHTECH|KIGALI|NAMETAG|VALUATION\s*INVOICE|VARIATION\s*INVOICE|CORPORATE\s*SERVICES/i,
+    side: "debit",
+    category: "Event & Conference Expenses", // Simplified: categorization.py uses separate ones but priority is the same
+    confidence: 1.0
+  },
+  // SECURITY (Priority 8 - Must override Rule 9 Transfers)
+  {
+    id: "R008_SECURITY_EXPENSES",
+    priority: 8,
+    description_regex: /SECURITY\s*EXPENSE|SECURITY\b|POLICE|VIGILANTE|GUARD|ESCORT|SAFETY/i,
+    side: "debit",
+    category: "Security & Safety",
+    confidence: 0.95
+  },
+  // TRANSFERS OUT (Priority 9)
+  {
+    id: "R009_OUTWARD_TRANSFERS_OVERRIDE",
+    priority: 9,
+    description_regex: /\bTRANSFER BETWEEN CUSTOMERS\b|\bNIBSS\b|\bTRF\s*TO\b|\bNIP\s*TO\b/i,
+    side: "debit",
+    category: "Inter-Account / Treasury Transfer",
+    confidence: 0.90
+  },
+  // BANK CHARGES & LEVIES (Priority 10+)
   {
     id: "R010_BANK_STAMP_DUTY",
     priority: 10,
@@ -79,15 +123,15 @@ const RULES: Rule[] = [
     category: "Interest Income",
     confidence: 1.0
   },
-  // STAFF
   {
-    id: "R030_SALARY_PAYROLL",
-    priority: 30,
-    description_regex: /SALARY\b|PAYROLL\b|WAGES\b|STAFF\s*SAL/i,
+    id: "R022_INTEREST_REVERSAL",
+    priority: 22,
+    description_regex: /CURRENT\s*ACT\s*CREDIT\s*INTEREST/i,
     side: "debit",
-    category: "Salaries & Wages",
+    category: "Interest Reversal / Adjustment",
     confidence: 1.0
   },
+  // STAFF
   {
     id: "R031_STAFF_ADVANCE",
     priority: 31,
@@ -113,14 +157,6 @@ const RULES: Rule[] = [
     confidence: 0.9
   },
   // EXPENSES
-  {
-    id: "R040_EVENT_CONFERENCE",
-    priority: 40,
-    description_regex: /SUMMIT|CONFERENCE|HEALTHTECH|KIGALI|NAMETAG|NAME\s*TAGS/i,
-    side: "debit",
-    category: "Event & Conference Expenses",
-    confidence: 1.0
-  },
   {
     id: "R041_TRANSPORT_VEHICLE",
     priority: 41,
@@ -158,14 +194,6 @@ const RULES: Rule[] = [
     confidence: 0.95
   },
   {
-    id: "R055_CAPITAL_PROJECT_VALUATION",
-    priority: 55,
-    description_regex: /VALUATION\s*INVOICE|VARIATION\s*INVOICE/i,
-    side: "debit",
-    category: "Capital Expenditure (CWIP)",
-    confidence: 1.0
-  },
-  {
     id: "R060_OFFICE_RENT_CORPORATE_SERVICES",
     priority: 60,
     description_regex: /CORPORATE\s*SERVICES|SERVICED\s*OFFICE|VICTORIA\s*ISLAND|ADEOLA\s*ODEKU/i,
@@ -181,14 +209,12 @@ const RULES: Rule[] = [
     side: "debit",
     category: "Administrative Expenses",
     confidence: 0.95
-  },
-  // CATCH-ALL OUTWARD TRANSFERS (Lowest Priority Rule)
   {
     id: "R090_GENERIC_OUTWARD_TRANSFER",
     priority: 90,
     description_regex: /NIP\s*TO|TRF\s*TO|TRF\s*IFO|LOCAL\s*TRANSFERS/i,
     side: "debit",
-    category: "Inter-Account / Treasury Transfer", 
+    category: "Inter-Account / Treasury Transfer",
     confidence: 0.6
   }
 ];
@@ -218,21 +244,21 @@ export const categorizeTransaction = (t: Transaction): Transaction => {
   }
 
   // 1. AMOUNT-BASED CLASSIFICATION
-  const isFeeAmount = 
-    (Math.abs(debitAmount - 50.00) < 0.001) || 
+  const isFeeAmount =
+    (Math.abs(debitAmount - 50.00) < 0.001) ||
     (Math.abs(debitAmount - 3.75) < 0.001) ||
     (Math.abs(debitAmount - 52.50) < 0.001) ||
     (Math.abs(debitAmount - 10.00) < 0.001) ||
     (Math.abs(debitAmount - 4.00) < 0.001);
 
   if (isDebit && isFeeAmount) {
-     if (!/OPENING\s*BAL/i.test(normDesc)) {
-        updated.category = "Bank Charges";
-        updated.confidence = 0.99;
-        updated.ruleId = "AMT_STD_FEE";
-        updated.decision_source = 'RULE';
-        return updated;
-     }
+    if (!/OPENING\s*BAL/i.test(normDesc)) {
+      updated.category = "Bank Charges";
+      updated.confidence = 0.99;
+      updated.ruleId = "AMT_STD_FEE";
+      updated.decision_source = 'RULE';
+      return updated;
+    }
   }
 
   // 2. RULE ENGINE EXECUTION (Highest Priority)
@@ -248,7 +274,7 @@ export const categorizeTransaction = (t: Transaction): Transaction => {
       updated.category = rule.category;
       updated.confidence = rule.confidence;
       updated.ruleId = rule.id;
-      updated.decision_source = 'RULE'; 
+      updated.decision_source = 'RULE';
       return updated;
     }
   }
@@ -257,38 +283,38 @@ export const categorizeTransaction = (t: Transaction): Transaction => {
   // If the AI (from Gemini) already provided a plausible category, we accept it.
   // We check if t.category is valid and not "Unallocated"
   if (t.category && t.category !== "Unallocated") {
-     updated.category = t.category;
-     updated.confidence = 0.85; // AI confidence
-     updated.decision_source = 'AI';
-     return updated;
+    updated.category = t.category;
+    updated.confidence = 0.85; // AI confidence
+    updated.decision_source = 'AI';
+    return updated;
   }
 
   // 4. HEURISTICS & FALLBACKS (Last Resort)
   if (!updated.category || updated.category === "Unallocated") {
-      
-      // A. Catch-all for Bank Charges (Keywords that might have been missed)
-      // Added LEVY, DUTY to ensure EMTL/Stamp Duty fallbacks are caught
-      // EXCLUSION: Ensure FEES for Exams, Schools, Tuition, Legal, Consultancy are NOT captured here.
-      const bankChargeKeywords = /(?:CHG|COMM|FEE|VAT|TAX|MOBL|SMS|MAINT|LEVY|DUTY)/;
-      const nonBankContexts = /(?:SCHOOL|TUITION|EXAM|CLASS|LESSON|TRAINING|COURSE|SEMINAR|LEGAL|LAWYER|CONSULT|AUDIT|PROFESSIONAL|RETAINER|MEMBER|LICENSE|SUBSCRIPTION)/;
 
-      if (isDebit && bankChargeKeywords.test(normDesc) && !nonBankContexts.test(normDesc)) {
-          updated.category = "Bank Charges";
-          updated.confidence = 0.8;
-          updated.decision_source = 'RULE';
-      }
-      // B. Catch-all for Outflows (Explicit Transfer Keywords Only)
-      else if (isDebit && /(?:TRF|NIP|FRM|TO|MNY|TRANSFER|PYMT|PAYMENT|WEB|POS|ATM)/.test(normDesc)) {
-          updated.category = "Inter-Account / Treasury Transfer";
-          updated.confidence = 0.6;
-          updated.decision_source = 'AI';
-      } 
-      // C. Everything else without a clear trigger remains Unallocated
-      else {
-          updated.category = "Unallocated";
-          updated.confidence = 0.0;
-          updated.decision_source = 'AI';
-      }
+    // A. Catch-all for Bank Charges (Keywords that might have been missed)
+    // Added LEVY, DUTY to ensure EMTL/Stamp Duty fallbacks are caught
+    // EXCLUSION: Ensure FEES for Exams, Schools, Tuition, Legal, Consultancy are NOT captured here.
+    const bankChargeKeywords = /(?:CHG|COMM|FEE|VAT|TAX|MOBL|SMS|MAINT|LEVY|DUTY)/;
+    const nonBankContexts = /(?:SCHOOL|TUITION|EXAM|CLASS|LESSON|TRAINING|COURSE|SEMINAR|LEGAL|LAWYER|CONSULT|AUDIT|PROFESSIONAL|RETAINER|MEMBER|LICENSE|SUBSCRIPTION)/;
+
+    if (isDebit && bankChargeKeywords.test(normDesc) && !nonBankContexts.test(normDesc)) {
+      updated.category = "Bank Charges";
+      updated.confidence = 0.8;
+      updated.decision_source = 'RULE';
+    }
+    // B. Catch-all for Outflows (Explicit Transfer Keywords Only)
+    else if (isDebit && /(?:TRF|NIP|FRM|TO|MNY|TRANSFER|PYMT|PAYMENT|WEB|POS|ATM)/.test(normDesc)) {
+      updated.category = "Inter-Account / Treasury Transfer";
+      updated.confidence = 0.6;
+      updated.decision_source = 'AI';
+    }
+    // C. Everything else without a clear trigger remains Unallocated
+    else {
+      updated.category = "Unallocated";
+      updated.confidence = 0.0;
+      updated.decision_source = 'AI';
+    }
   }
 
   return updated;
