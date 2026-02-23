@@ -488,6 +488,8 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
                 bank_identifier = "fcmb"
             elif "FIDELITY" in upper_text:
                 bank_identifier = "fidelity"
+            elif "PROVIDUS" in upper_text:
+                bank_identifier = "providus"
             
             # 4. Default
             else:
@@ -534,6 +536,18 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
                  return eco_txns, eco_meta
         except Exception as e:
              print(f"DEBUG: Ecobank table strategy failed: {e}. Trying Hybrid AI Fallback...")
+             if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+                 txns = extract_transactions_via_ai(str(pdf_path))
+                 if txns: return txns, metadata
+
+    # --- 0d) Special Case: Providus Table Strategy
+    if bank_identifier == "providus":
+        try:
+             prov_txns, prov_meta = extract_providus_via_tables(Path(pdf_path), metadata)
+             if prov_txns:
+                 return prov_txns, prov_meta
+        except Exception as e:
+             print(f"DEBUG: Providus table strategy failed: {e}. Trying Hybrid AI Fallback...")
              if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
                  txns = extract_transactions_via_ai(str(pdf_path))
                  if txns: return txns, metadata
@@ -2808,6 +2822,75 @@ def extract_access_consensus(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict]
 
     return reconciled_txns, metadata
 
+
+
+def extract_providus_via_tables(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict], Dict]:
+    """
+    Table-based extraction logic for Providus Bank using pdfplumber's extract_tables().
+    Strategy: vertical_strategy='text' due to lack of explicit lines.
+    """
+    print(f"DEBUG: Using Table Strategy for Providus Bank: {pdf_path}")
+    all_transactions = []
+    
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            tables = page.extract_tables(table_settings={
+                "vertical_strategy": "text", 
+                "horizontal_strategy": "text",
+                "snap_tolerance": 3,
+            })
+
+            for table in tables:
+                if not table: continue
+                
+                # Providus Mapping: Txn Date(0), Val Date(1), Remarks(2), Debit(3), Credit(4), Balance(5)
+                map_idx = {"date": 0, "vdate": 1, "desc": 2, "debit": 3, "credit": 4, "balance": 5}
+                
+                header_found = False
+                for r_idx in range(min(5, len(table))):
+                    h_str = " ".join([str(c) for c in table[r_idx] if c]).upper()
+                    if "TXN DATE" in h_str and "REMARKS" in h_str:
+                        header_found = True
+                        table = table[r_idx+1:]
+                        break
+                
+                for row in table:
+                    if not row or len(row) < 5: continue
+                    
+                    # Clean and parse
+                    row = [str(c or "").replace('\n', ' ').strip() for c in row]
+                    
+                    try:
+                        raw_date = row[map_idx["date"]]
+                        # Standard Providus date: 1-JAN-2026
+                        if not raw_date or not is_date(raw_date) or "DATE" in raw_date.upper():
+                            continue
+                            
+                        description = row[map_idx["desc"]]
+                        value_date = row[map_idx["vdate"]]
+                        
+                        debit = parse_money(row[map_idx["debit"]])
+                        credit = parse_money(row[map_idx["credit"]])
+                        balance = parse_money(row[map_idx["balance"]])
+                        
+                        if description or debit or credit:
+                            all_transactions.append({
+                                "date": parse_date_smart(raw_date),
+                                "description": description if description else "No Description",
+                                "reference": "",
+                                "value_date": parse_date_smart(value_date) if value_date else "",
+                                "debit": debit,
+                                "credit": credit,
+                                "balance": balance,
+                                "category": "Unallocated",
+                                "_page": page.page_number
+                            })
+                    except Exception as e:
+                        print(f"DEBUG: Error parsing Providus row: {e}")
+                        continue
+
+    print(f"DEBUG: Providus Bank table extraction found {len(all_transactions)} transactions.")
+    return all_transactions, metadata
 
 
 def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> Tuple[List[Dict], Dict]:
