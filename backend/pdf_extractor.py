@@ -466,7 +466,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
                 bank_identifier = "uba"
             elif "ZENITH" in upper_text:
                 bank_identifier = "zenith"
-            elif "FEDERAL BANK" in upper_text: # Access
+            elif "ACCESS BANK" in upper_text or "ACCESS" in upper_text:
                 bank_identifier = "accessbank"
             
             # 2. Resilient Ecobank Fingerprint (Very Specific to avoid GTBank false hits)
@@ -2569,44 +2569,57 @@ def extract_access_via_tables(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict
                 
                 # Dynamic mapping based on header
                 map_idx = {"date": 0, "desc": 1, "ref": 2, "vdate": 3, "debit": 4, "credit": 5, "balance": 6}
-                header_row = table[0]
-                h_str = " ".join([str(c) for c in header_row if c]).upper()
+                header_found = False
                 
-                if "REMARKS" in h_str and "ORIGINATING" in h_str:
-                    # Layout B: Date(0), ValDate(1), Ref(2), Debit(3), Credit(4), Bal(5), Branch(6), Remarks(7)
-                    map_idx = {"date": 0, "desc": 7, "ref": 2, "vdate": 1, "debit": 3, "credit": 4, "balance": 5}
-                elif "WITHDRAWALS" in h_str and "DETAILS" in h_str:
-                    # Layout A (User Image): Date(0), Details(1), Ref(2), Val(3), With(4), Lodge(5), Bal(6)
-                    map_idx = {"date": 0, "desc": 1, "ref": 2, "vdate": 3, "debit": 4, "credit": 5, "balance": 6}
+                # Scan first 2 rows for header
+                for r_idx in range(min(2, len(table))):
+                    h_str = " ".join([str(c) for c in table[r_idx] if c]).upper()
+                    if "DATE" in h_str and ("DETAILS" in h_str or "REMARKS" in h_str):
+                        header_found = True
+                        if "REMARKS" in h_str and "ORIGINATING" in h_str:
+                            # Layout B: Date(0), ValDate(1), Ref(2), Debit(3), Credit(4), Bal(5), Branch(6), Remarks(7)
+                            map_idx = {"date": 0, "desc": 7, "ref": 2, "vdate": 1, "debit": 3, "credit": 4, "balance": 5}
+                        elif "WITHDRAWALS" in h_str and "DETAILS" in h_str:
+                            # Layout A (User Image): Date(0), Details(1), Ref(2), Val(3), With(4), Lodge(5), Bal(6)
+                            map_idx = {"date": 0, "desc": 1, "ref": 2, "vdate": 3, "debit": 4, "credit": 5, "balance": 6}
+                        # Skip this header row
+                        table = table[r_idx+1:]
+                        break
+                
+                if not header_found:
+                    # If this is a continuation table, use default or last detected map_idx
+                    pass
 
                 for row in table:
-                    if not row or not row[0]: continue
+                    if not row: continue
                     
-                    row_str_0 = str(row[0])
-                    if "Date" in row_str_0 or "Opening" in row_str_0 or "Balance" in row_str_0:
+                    # Clean the row
+                    row = [str(c or "").replace('\n', ' ').strip() for c in row]
+                    
+                    if not row[0] or "Date" in row[0] or "Opening" in row[0] or "Balance" in row[0]:
                         continue
                         
                     try:
                         # Ensure enough columns for the chosen mapping
                         max_idx = max(map_idx.values())
-                        while len(row) <= max_idx:
-                            row.append("")
+                        if len(row) <= max_idx:
+                            continue
                         
-                        raw_date = str(row[map_idx["date"]]).replace('\n', ' ').strip()
+                        raw_date = row[map_idx["date"]]
                         if not is_date(raw_date):
                             continue
                             
-                        description = str(row[map_idx["desc"]]).replace('\n', ' ').strip() if row[map_idx["desc"]] else ""
-                        reference = str(row[map_idx["ref"]]).replace('\n', ' ').strip() if row[map_idx["ref"]] else ""
-                        value_date = str(row[map_idx["vdate"]]).replace('\n', ' ').strip() if row[map_idx["vdate"]] else ""
+                        description = row[map_idx["desc"]]
+                        reference = row[map_idx["ref"]]
+                        value_date = row[map_idx["vdate"]]
                         
-                        debit = parse_money(str(row[map_idx["debit"]])) if row[map_idx["debit"]] else 0.0
-                        credit = parse_money(str(row[map_idx["credit"]])) if row[map_idx["credit"]] else 0.0
-                        balance = parse_money(str(row[map_idx["balance"]])) if row[map_idx["balance"]] else 0.0
+                        debit = parse_money(row[map_idx["debit"]])
+                        credit = parse_money(row[map_idx["credit"]])
+                        balance = parse_money(row[map_idx["balance"]])
                         
                         all_transactions.append({
                             "date": parse_date_smart(raw_date),
-                            "description": description,
+                            "description": description if description else "No Description",
                             "reference": reference,
                             "value_date": parse_date_smart(value_date) if value_date else "",
                             "debit": debit,
@@ -2784,336 +2797,77 @@ def extract_access_consensus(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict]
 
 
 
-def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
-    """
-    Dedicated Ecobank extractor using the standalone logic.
-    """
-    return extract_ecobank_standalone(pdf_path)
-
-def _find_ecobank_header_and_bounds(words: List[Dict]) -> Tuple[Optional[ColumnBounds], Optional[float]]:
-    """
-    Detect the table header on a page and infer x-bounds for each column (Resilient Logic).
-    """
-    if not words:
-        return None, None
-
-    # Group words by "row" using y clustering
-    words_sorted = sorted(words, key=lambda w: (w["top"], w["x0"]))
-    rows: List[List[Dict]] = []
-    row: List[Dict] = []
-    last_top = None
-    for w in words_sorted:
-        t = w["top"]
-        if last_top is None or abs(t - last_top) <= 3.0:
-            row.append(w)
-        else:
-            rows.append(row)
-            row = [w]
-        last_top = t
-    if row: rows.append(row)
-
-    def get_row_text(r: List[Dict]) -> str:
-        return " ".join([w["text"] for w in r]).lower()
-
-    header_row = None
-    h_top = None
-    
-    # Strategy 1: Look for most tokens in one row
-    for r in rows:
-        t = get_row_text(r)
-        if "transaction" in t and "description" in t and "balance" in t:
-            header_row = r
-            h_top = min([w["top"] for w in r])
-            break
-            
-    # Strategy 2: Relaxed matching (e.g. Page 2+ format)
-    if not header_row:
-        for r in rows:
-            t = get_row_text(r)
-            if ("transaction" in t or "trans" in t) and ("date" in t or "desc" in t):
-                header_row = r
-                h_top = min([w["top"] for w in r])
-                break
-
-    if not h_top:
-        return None, None
-
-    # Strategy 3: Find X coordinates directly from page words (Top 600 units)
-    def find_x_direct(keywords: List[str]) -> Optional[float]:
-        # Preference: search in header row first
-        if header_row:
-            for w in header_row:
-                t = w['text'].lower()
-                if any(k in t for k in keywords):
-                    return w['x0']
-        # Fallback: search all top words
-        for w in words:
-            if w['top'] > 600: continue
-            t = w['text'].lower()
-            if any(k in t for k in keywords):
-                return w['x0']
-        return None
-
-    x_txn = find_x_direct(["transaction", "txn"])
-    x_desc = find_x_direct(["description", "narration", "remarks"])
-    x_val = find_x_direct(["value"])
-    x_deb = find_x_direct(["debit", "dr"])
-    x_cre = find_x_direct(["credit", "cr"])
-    x_bal = find_x_direct(["balance"])
-
-    # Fallback to typical or previously detected Ecobank coordinates
-    x_txn = x_txn if x_txn is not None else 44.0
-    x_desc = x_desc if x_desc is not None else 126.0
-    x_val = x_val if x_val is not None else 241.0
-    x_deb = x_deb if x_deb is not None else 344.0
-    x_cre = x_cre if x_cre is not None else 431.0
-    x_bal = x_bal if x_bal is not None else 491.0
-
-    # Create boundaries dynamically based on relative order of detected columns
-    coords = [
-        ('txn', x_txn), ('desc', x_desc), ('val', x_val), 
-        ('deb', x_deb), ('cre', x_cre), ('bal', x_bal)
-    ]
-    # Sort coordinates by x value to establish non-overlapping intervals
-    sorted_coords = sorted(coords, key=lambda x: x[1])
-    
-    pad = 2.0
-    intervals = {}
-    for i in range(len(sorted_coords)):
-        col_type, x_start = sorted_coords[i]
-        x_end = sorted_coords[i+1][1] if i + 1 < len(sorted_coords) else 10000.0
-        intervals[col_type] = (x_start - pad, x_end - pad)
-
-    # Re-map intervals back to the ColumnBounds structure
-    bounds = ColumnBounds(
-        txn_date=intervals.get('txn', (44.0-pad, 126.0-pad)),
-        description=intervals.get('desc', (126.0-pad, 241.0-pad)),
-        value_date=intervals.get('val', (241.0-pad, 344.0-pad)),
-        debit=intervals.get('deb', (344.0-pad, 431.0-pad)),
-        credit=intervals.get('cre', (431.0-pad, 491.0-pad)),
-        balance=intervals.get('bal', (491.0-pad, 10000.0))
-    )
-    return bounds, h_top
-
 def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> List[Dict]:
-    all_rows: List[Dict] = []
-    last_bounds = None
-    try:
-        with pdfplumber.open(pdf_path) as pdf:
-            for page_num, page in enumerate(pdf.pages, 1):
-                words = _extract_ecobank_table_words(page)
-                if not words: continue
-                
-                curr_bounds, header_top = _find_ecobank_header_and_bounds(words)
-                if curr_bounds:
-                    last_bounds = curr_bounds
-                
-                if not last_bounds: continue
-                
-                page_words = words
-                if curr_bounds and header_top is not None:
-                    page_words = [w for w in words if w['top'] > header_top + 4.0]
-                
-                page_rows = _ecobank_words_to_rows(page_words, last_bounds)
-                for r in page_rows:
-                    r['_page'] = page_num
-                    all_rows.append(r)
-        
-        merged = _merge_ecobank_continuations(all_rows)
-        return _finalize_ecobank_rows(merged)
-    except Exception:
-        return []
-
-def _extract_ecobank_table_words(page) -> List[Dict]:
-    return page.extract_words(
-        x_tolerance=1.5,
-        y_tolerance=2.0,
-        keep_blank_chars=False,
-        use_text_flow=True,
-    )
-
-def _ecobank_words_to_rows(words: List[Dict], bounds: ColumnBounds) -> List[Dict]:
     """
-    Convert page words into row dicts with raw strings (Official Logic).
+    Dedicated Ecobank extractor using pdfplumber's extract_tables().
+    Robust against the grid layout shown in the user's images.
     """
-    if not words:
-        return []
-
-    # Group words by y (line)
-    words_sorted = sorted(words, key=lambda w: (round(w["top"], 1), w["x0"]))
-    lines: List[List[Dict]] = []
-    line: List[Dict] = []
-    last_top = None
-    for w in words_sorted:
-        t = w["top"]
-        if last_top is None or abs(t - last_top) <= 2.0:
-            line.append(w)
-        else:
-            lines.append(line)
-            line = [w]
-        last_top = t
-    if line:
-        lines.append(line)
-
-    rows: List[Dict] = []
-    for ln in lines:
-        # assign words to buckets by x midpoints
-        txn_parts, desc_parts, val_parts, deb_parts, cre_parts, bal_parts = [], [], [], [], [], []
-        for w in ln:
-            x = get_midpoint(w["x0"], w["x1"])
-            txt = w["text"].strip()
-            if not txt:
-                continue
-
-            if is_in_interval(x, bounds.txn_date):
-                txn_parts.append(txt)
-            elif is_in_interval(x, bounds.description):
-                desc_parts.append(txt)
-            elif is_in_interval(x, bounds.value_date):
-                val_parts.append(txt)
-            elif is_in_interval(x, bounds.debit):
-                deb_parts.append(txt)
-            elif is_in_interval(x, bounds.credit):
-                cre_parts.append(txt)
-            elif is_in_interval(x, bounds.balance):
-                bal_parts.append(txt)
-
-        txn_txt = safe_join_parts(txn_parts)
-        desc_txt = safe_join_parts(desc_parts)
-        val_txt = safe_join_parts(val_parts)
-        deb_txt = safe_join_parts(deb_parts)
-        cre_txt = safe_join_parts(cre_parts)
-        bal_txt = safe_join_parts(bal_parts)
-
-        # Heuristic: keep only lines that look like table content
-        has_money = any(parse_eco_money(x) is not None for x in [deb_txt, cre_txt, bal_txt])
-        if looks_like_eco_date(txn_txt) or has_money or desc_txt:
-            # Guard: Value Date must be a date
-            if val_txt and (parse_eco_money(val_txt) is not None) and (not looks_like_eco_date(val_txt)):
-                val_txt = ""
-
-            rows.append({
-                "Txn Date": txn_txt,
-                "Value Date": val_txt,
-                "Description": desc_txt,
-                "Debit_raw": deb_txt,
-                "Credit_raw": cre_txt,
-                "Balance_raw": bal_txt,
+    print(f"DEBUG: Using Table Strategy for Ecobank: {pdf_path}")
+    all_transactions = []
+    
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            # Ecobank has very clear grid lines
+            tables = page.extract_tables(table_settings={
+                "vertical_strategy": "lines", 
+                "horizontal_strategy": "lines",
+                "snap_tolerance": 3,
             })
 
-    return rows
-
-def _merge_ecobank_continuations(rows: List[Dict]) -> List[Dict]:
-    """
-    Merge lines where Txn Date is empty into the previous transaction's Description (Official Logic + Precision Grafting).
-    """
-    merged: List[Dict] = []
-    current = None
-
-    for r in rows:
-        txn_date = (r.get("Txn Date") or "").strip()
-        desc = (r.get("Description") or "").strip()
-
-        # skip obvious non-transaction lines
-        if desc.upper().startswith("OPENING BALANCE"):
-            if looks_like_eco_date(txn_date):
-                current = r.copy()
-                merged.append(current)
-            continue
-
-        if looks_like_eco_date(txn_date):
-            current = r.copy()
-            merged.append(current)
-        elif current is not None:
-            # --- Precision Fix: merge split decimal tails into debit/credit/balance ---
-            # Handles split numbers like "13,046,880." + "13"
-            def _collect_digit_tokens(rr):
-                tokens = []
-                for k in ("Debit_raw", "Credit_raw", "Balance_raw", "Description", "Value Date"):
-                    v = (rr.get(k) or "").strip()
-                    if not v: continue
-                    for t in v.split():
-                        if re.fullmatch(r"\d{1,2}", t):
-                            tokens.append(t)
-                return tokens
-
-            tails = _collect_digit_tokens(r)
-
-            def _try_merge_tail(base, tails):
-                base = (base or "").strip()
-                if not tails: return base, tails
-                if re.search(r"\.\s*$", base):
-                    if len(tails[0]) == 2:
-                        return base + tails[0], tails[1:]
-                    if len(tails) >= 2 and len(tails[0]) == 1 and len(tails[1]) == 1:
-                        return base + tails[0] + tails[1], tails[2:]
-                    if len(tails[0]) == 1:
-                        return base + tails[0], tails[1:]
-                if re.search(r"\.\d\s*$", base):
-                    return base + tails[0], tails[1:]
-                return base, tails
-
-            for field in ("Debit_raw", "Credit_raw", "Balance_raw"):
-                merged_val, tails = _try_merge_tail(current.get(field, ""), tails)
-                current[field] = merged_val
-
-            # --- Official Logic: continuation line → append narration ---
-            if desc:
-                current["Description"] = safe_join_parts([current.get("Description", ""), desc])
-
-            if not current.get("Value Date") and r.get("Value Date"):
-                if looks_like_eco_date(r["Value Date"]):
-                    current["Value Date"] = r["Value Date"]
-
-            for k in ["Debit_raw", "Credit_raw", "Balance_raw"]:
-                if (not (current.get(k) or "").strip()) and (r.get(k) or "").strip():
-                    current[k] = r[k]
-
-    return merged
-
-def _finalize_ecobank_rows(rows: List[Dict]) -> List[Dict]:
-    """
-    Finalize rows: normalized fields and duplicate removal (Official Logic).
-    """
-    out = []
-    seen = set()
-    for i, r in enumerate(rows):
-        txn_date = (r.get("Txn Date") or "").strip()
-        val_date = (r.get("Value Date") or "").strip()
-        desc = (r.get("Description") or "").strip()
-
-        if not looks_like_eco_date(txn_date):
-            continue
-            
-        ref, cleaned_desc = normalize_eco_ref(desc)
-
-        # User Requested Mapping and Robust Cleaning
-        tx = {
-            "Transaction Date": str(txn_date).replace('\n', ' ').strip(),
-            "Description": str(cleaned_desc).replace('\n', ' ').strip() if cleaned_desc else "No Description", 
-            "Value Date": str(val_date).replace('\n', ' ').strip(),
-            "Debit": clean_amount(r.get("Debit_raw", "")),
-            "Credit": clean_amount(r.get("Credit_raw", "")),
-            "Balance": clean_amount(r.get("Balance_raw", "")),
-            
-            # Compatibility fields for internal system
-            "date": txn_date,
-            "description": cleaned_desc,
-            "reference": ref,
-            "debit": float(clean_amount(r.get("Debit_raw", ""))),
-            "credit": float(clean_amount(r.get("Credit_raw", ""))),
-            "balance": float(clean_amount(r.get("Balance_raw", ""))),
-            "category": "Unallocated",
-            "_page": r.get("_page", 0),
-            "_row": i
-        }
-
-        # Deduplication check
-        dup_key = (tx['date'], tx['description'], tx['debit'], tx['credit'], tx['balance'])
-        if dup_key in seen:
-            continue
-        seen.add(dup_key)
-        
-        out.append(tx)
-
-    return out
+            for table in tables:
+                if not table: continue
+                
+                # Mapping: Transaction Date(0), Description(1), Value Date(2), Debit(3), Credit(4), Balance(5)
+                # User image confirmed this layout.
+                map_idx = {"date": 0, "desc": 1, "vdate": 2, "debit": 3, "credit": 4, "balance": 5}
+                header_found = False
+                
+                # Find header row (usually the first row of a new table)
+                for r_idx in range(min(3, len(table))):
+                    row_data = [str(c or "").upper() for c in table[r_idx]]
+                    h_str = " ".join(row_data)
+                    if "TRANSACTION" in h_str and "DATE" in h_str and "DESCRIPTION" in h_str:
+                        header_found = True
+                        table = table[r_idx+1:]
+                        break
+                
+                for row in table:
+                    if not row or len(row) < 6: continue
+                    
+                    # Clean the row (strip newlines, spaces)
+                    row = [str(c or "").replace('\n', ' ').strip() for c in row]
+                    
+                    raw_date = row[map_idx["date"]]
+                    
+                    # Skip empty dates or header-like rows
+                    if not raw_date or not is_date(raw_date) or "Date" in raw_date:
+                        continue
+                        
+                    try:
+                        # Extract and parse fields
+                        description = row[map_idx["desc"]]
+                        value_date = row[map_idx["vdate"]]
+                        
+                        debit = parse_money(row[map_idx["debit"]])
+                        credit = parse_money(row[map_idx["credit"]])
+                        balance = parse_money(row[map_idx["balance"]])
+                        
+                        # Only add if it looks like a valid transaction
+                        if description or debit or credit:
+                            all_transactions.append({
+                                "date": parse_date_smart(raw_date),
+                                "description": description if description else "No Description",
+                                "reference": "", # Usually embedded in description for Ecobank
+                                "value_date": parse_date_smart(value_date) if value_date else "",
+                                "debit": debit,
+                                "credit": credit,
+                                "balance": balance,
+                                "category": "Unallocated",
+                                "_page": page.page_number
+                            })
+                    except Exception as e:
+                        print(f"DEBUG: Error parsing Ecobank row: {e}")
+                        continue
+    
+    print(f"DEBUG: Ecobank table extraction found {len(all_transactions)} transactions.")
+    return all_transactions
