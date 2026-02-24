@@ -2895,9 +2895,10 @@ def extract_providus_regex(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict], 
 def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> Tuple[List[Dict], Dict]:
     """
     Dedicated Ecobank extractor using pdfplumber's extract_tables().
-    Column layout: Transaction Date | Description | Value Date | Debit | Credit | Balance
     Features:
-    - Multi-line cell text joined cleanly
+    - Dynamic column mapping (handles 7-col vs 6-col layouts)
+    - Multi-line cell text joined cleanly for descriptions
+    - Amount parsing takes only the first line of text (fixes merged multi-line cells)
     - Cross-page orphan description rows handled via pending buffer
     - REFNO extracted from description
     - OPENING/CLOSING BALANCE rows skipped
@@ -2923,22 +2924,57 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> Tuple[L
     ECO_DATE_RE = re.compile(r"^\d{2}-[A-Za-z]{3}-\d{4}$")
     SKIP_KEYWORDS = [
         "OPENING BALANCE", "CLOSING BALANCE", "BROUGHT FORWARD",
-        "TRANSACTION DATE", "VALUE DATE",
+        "TRANSACTION DATE", # "VALUE DATE" removed as it often appears in descriptions
     ]
 
-    def _cell(row, idx):
+    def _cell(row, idx, is_amount=False):
         """Safely get + clean a cell. Handles None and embedded newlines."""
-        if idx >= len(row):
+        if idx is None or idx >= len(row):
             return ""
         v = row[idx]
-        return " ".join(str(v).replace("\n", " ").split()).strip() if v else ""
+        if not v:
+            return ""
+        
+        if is_amount:
+            # For amounts, ONLY take the first non-empty line (fixes merged rows)
+            lines = [l.strip() for l in str(v).split('\n') if l.strip()]
+            return lines[0] if lines else ""
+        
+        return " ".join(str(v).replace("\n", " ").split()).strip()
 
-    def _is_hdr(row):
+    def _find_col_map(row):
+        """Identifies column indices based on header text."""
         if not row or not isinstance(row, (list, tuple)):
-            return False
+            return None
         joined = " ".join(str(c or "").upper() for c in row)
-        return "TRANSACTION" in joined and "DATE" in joined and (
-            "DESCRIPTION" in joined or "DEBIT" in joined)
+        if not ("TRANSACTION" in joined and "DATE" in joined):
+            return None
+            
+        mapping = {"date": None, "desc": None, "vdate": None, "debit": None, "credit": None, "balance": None}
+        for i, val in enumerate(row):
+            val_up = str(val or "").upper()
+            if "TRANSACTION" in val_up and "DATE" in val_up:
+                mapping["date"] = i
+            elif "DESCRIPTION" in val_up:
+                mapping["desc"] = i
+            elif "VALUE" in val_up and "DATE" in val_up:
+                mapping["vdate"] = i
+            elif "DEBIT" in val_up:
+                mapping["debit"] = i
+            elif "CREDIT" in val_up:
+                mapping["credit"] = i
+            elif "BALANCE" in val_up:
+                mapping["balance"] = i
+                
+        # Fallback for common 6-col Ecobank layout if specific keywords missed
+        if mapping["date"] is None: mapping["date"] = 0
+        if mapping["desc"] is None: mapping["desc"] = 1
+        if mapping["vdate"] is None: mapping["vdate"] = 2
+        if mapping["debit"] is None: mapping["debit"] = 3
+        if mapping["credit"] is None: mapping["credit"] = 4
+        if mapping["balance"] is None: mapping["balance"] = 5
+        
+        return mapping
 
     def _is_skip(date_s, desc_s):
         combined = (date_s + " " + desc_s).upper()
@@ -2972,23 +3008,27 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> Tuple[L
                 try:
                     # Locate the header row and start data from the row after it
                     data_start = 0
+                    col_map = {"date": 0, "desc": 1, "vdate": 2, "debit": 3, "credit": 4, "balance": 5} # Default
+                    
                     for ri, row in enumerate(table[:6]):
-                        if row and _is_hdr(row):
+                        mapping = _find_col_map(row)
+                        if mapping:
+                            col_map = mapping
                             data_start = ri + 1
                             break
 
                     for row in table[data_start:]:
                         if not row or not isinstance(row, (list, tuple)):
                             continue
-                        if len(row) < 5:
+                        if len(row) < 4:
                             continue
                         try:
-                            raw_date  = _cell(row, 0)
-                            raw_desc  = _cell(row, 1)
-                            raw_vdate = _cell(row, 2)
-                            raw_debit = _cell(row, 3)
-                            raw_cred  = _cell(row, 4)
-                            raw_bal   = _cell(row, 5) if len(row) > 5 else ""
+                            raw_date  = _cell(row, col_map["date"])
+                            raw_desc  = _cell(row, col_map["desc"])
+                            raw_vdate = _cell(row, col_map["vdate"])
+                            raw_debit = _cell(row, col_map["debit"], is_amount=True)
+                            raw_cred  = _cell(row, col_map["credit"], is_amount=True)
+                            raw_bal   = _cell(row, col_map["balance"], is_amount=True)
 
                             if ECO_DATE_RE.match(raw_date):
                                 # ── Full transaction row ──────────────────────────
@@ -3056,4 +3096,5 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> Tuple[L
               f"credit={s['credit']} desc={s['description'][:60]}")
 
     return all_txns, metadata
+
 
