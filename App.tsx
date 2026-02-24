@@ -242,8 +242,12 @@ export default function App() {
       }, 100);
 
       try {
-         // DIRECT PROCESSING (No Batch)
-         if (file.type === 'application/pdf') {
+         // DIRECT PROCESSING (Support for PDF, Excel, CSV)
+         const isExcelCsv = file.name.toLowerCase().endsWith('.xlsx') ||
+            file.name.toLowerCase().endsWith('.xls') ||
+            file.name.toLowerCase().endsWith('.csv');
+
+         if (file.type === 'application/pdf' || isExcelCsv) {
             // Use static import (defined at top)
             const result = await analyzeDocument(
                file,
@@ -415,7 +419,7 @@ export default function App() {
                               type="file"
                               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
                               onChange={handleFileInput}
-                              accept=".pdf,.jpg,.jpeg,.png,.webp"
+                              accept=".pdf,.xlsx,.xls,.csv,.jpg,.jpeg,.png,.webp"
                               disabled={isAnalyzing}
                            />
 
@@ -442,7 +446,7 @@ export default function App() {
                               <div className="w-full h-full border border-dashed border-white/10 rounded-[12px] bg-white/[0.01] flex flex-col items-center justify-center gap-6 hover:border-white/20 transition-colors">
                                  <div className="text-center">
                                     <h3 className="text-[15px] font-medium text-white mb-1">Upload statement</h3>
-                                    <p className="text-[13px] text-zinc-500">PDF, JPEG, PNG • up to 20MB</p>
+                                    <p className="text-[13px] text-zinc-500">PDF, Excel, CSV • up to 20MB</p>
                                  </div>
                                  <div className="flex flex-col gap-3 w-40">
                                     {/* Bank Selector - Z-Index Fix */}
