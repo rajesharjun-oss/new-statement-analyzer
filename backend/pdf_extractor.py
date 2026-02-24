@@ -2895,81 +2895,165 @@ def extract_providus_regex(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict], 
 def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> Tuple[List[Dict], Dict]:
     """
     Dedicated Ecobank extractor using pdfplumber's extract_tables().
-    Robust against the grid layout shown in the user's images.
+    Column layout: Transaction Date | Description | Value Date | Debit | Credit | Balance
+    Features:
+    - Multi-line cell text joined cleanly
+    - Cross-page orphan description rows handled via pending buffer
+    - REFNO extracted from description
+    - OPENING/CLOSING BALANCE rows skipped
+    - Table-level + row-level exception isolation
     """
-    if metadata is None: metadata = {}
-    print(f"DEBUG: Using Table Strategy for Ecobank: {pdf_path}")
-    all_transactions = []
-    
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            # Ecobank has very clear grid lines, but if lines extraction fails, fall back to text
-            tables = page.extract_tables(table_settings={
-                "vertical_strategy": "lines", 
-                "horizontal_strategy": "lines",
-                "snap_tolerance": 3,
-            })
-            
-            if not tables:
-                tables = page.extract_tables(table_settings={
-                    "vertical_strategy": "text",
-                    "horizontal_strategy": "text",
-                })
+    if metadata is None:
+        metadata = {}
+    print(f"DEBUG [Ecobank] Using pdfplumber extract_tables for: {pdf_path}")
 
-            for table in tables:
-                if not table: continue
-                
-                # Mapping: Transaction Date(0), Description(1), Value Date(2), Debit(3), Credit(4), Balance(5)
-                # User image confirmed this layout.
-                map_idx = {"date": 0, "desc": 1, "vdate": 2, "debit": 3, "credit": 4, "balance": 5}
-                header_found = False
-                
-                # Find header row (usually the first row of a new table)
-                for r_idx in range(min(3, len(table))):
-                    row_data = [str(c or "").upper() for c in table[r_idx]]
-                    h_str = " ".join(row_data)
-                    if "TRANSACTION" in h_str and "DATE" in h_str and "DESCRIPTION" in h_str:
-                        header_found = True
-                        table = table[r_idx+1:]
-                        break
-                
-                for row in table:
-                    if not row or len(row) < 5: continue
-                    
-                    # Clean the row (strip newlines, spaces)
-                    row = [str(c or "").replace('\n', ' ').strip() for c in row]
-                    
-                    try:
-                        raw_date = row[map_idx["date"]]
-                        
-                        # Skip empty dates or header-like rows
-                        if not raw_date or not is_date(raw_date) or "Date" in raw_date:
+    ECO_LINES = {
+        "vertical_strategy": "lines",
+        "horizontal_strategy": "lines",
+        "snap_tolerance": 3,
+        "join_tolerance": 3,
+        "edge_min_length": 10,
+    }
+    ECO_TEXT = {
+        "vertical_strategy": "text",
+        "horizontal_strategy": "text",
+        "snap_tolerance": 3,
+    }
+    REFNO_RE = re.compile(r"(REF(?:NO)?[:.]?\s*[A-Z0-9]+)", re.IGNORECASE)
+    ECO_DATE_RE = re.compile(r"^\d{2}-[A-Za-z]{3}-\d{4}$")
+    SKIP_KEYWORDS = [
+        "OPENING BALANCE", "CLOSING BALANCE", "BROUGHT FORWARD",
+        "TRANSACTION DATE", "VALUE DATE",
+    ]
+
+    def _cell(row, idx):
+        """Safely get + clean a cell. Handles None and embedded newlines."""
+        if idx >= len(row):
+            return ""
+        v = row[idx]
+        return " ".join(str(v).replace("\n", " ").split()).strip() if v else ""
+
+    def _is_hdr(row):
+        if not row or not isinstance(row, (list, tuple)):
+            return False
+        joined = " ".join(str(c or "").upper() for c in row)
+        return "TRANSACTION" in joined and "DATE" in joined and (
+            "DESCRIPTION" in joined or "DEBIT" in joined)
+
+    def _is_skip(date_s, desc_s):
+        combined = (date_s + " " + desc_s).upper()
+        return any(k in combined for k in SKIP_KEYWORDS)
+
+    all_txns = []
+    pending_desc = ""
+    last_txn = None   # reference to the last appended txn for description merging
+
+    with pdfplumber.open(pdf_path) as pdf:
+        for page_idx, page in enumerate(pdf.pages):
+            pg = page_idx + 1
+            try:
+                tables = page.extract_tables(table_settings=ECO_LINES)
+            except Exception as _e:
+                print(f"DEBUG [Ecobank] pg{pg}: line-table extraction failed ({_e}), trying text strategy")
+                tables = None
+            if not tables:
+                try:
+                    tables = page.extract_tables(table_settings=ECO_TEXT)
+                except Exception as _e:
+                    print(f"DEBUG [Ecobank] pg{pg}: text-table extraction also failed ({_e}), skipping page")
+                    continue
+            if not tables:
+                print(f"DEBUG [Ecobank] pg{pg}: no tables found, skipping")
+                continue
+
+            for t_idx, table in enumerate(tables):
+                if not table:
+                    continue
+                try:
+                    # Locate the header row and start data from the row after it
+                    data_start = 0
+                    for ri, row in enumerate(table[:6]):
+                        if row and _is_hdr(row):
+                            data_start = ri + 1
+                            break
+
+                    for row in table[data_start:]:
+                        if not row or not isinstance(row, (list, tuple)):
                             continue
-                            
-                        # Extract and parse fields
-                        description = row[map_idx["desc"]]
-                        value_date = row[map_idx["vdate"]]
-                        
-                        debit = parse_money(row[map_idx["debit"]])
-                        credit = parse_money(row[map_idx["credit"]])
-                        balance = parse_money(row[map_idx["balance"]])
-                        
-                        # Only add if it looks like a valid transaction
-                        if description or debit or credit:
-                            all_transactions.append({
-                                "date": parse_date_smart(raw_date),
-                                "description": description if description else "No Description",
-                                "reference": "", # Usually embedded in description for Ecobank
-                                "value_date": parse_date_smart(value_date) if value_date else "",
-                                "debit": debit,
-                                "credit": credit,
-                                "balance": balance,
-                                "category": "Unallocated",
-                                "_page": page.page_number
-                            })
-                    except Exception as e:
-                        print(f"DEBUG: Error parsing Ecobank row: {e}")
-                        continue
-    
-    print(f"DEBUG: Ecobank table extraction found {len(all_transactions)} transactions.")
-    return all_transactions, metadata
+                        if len(row) < 5:
+                            continue
+                        try:
+                            raw_date  = _cell(row, 0)
+                            raw_desc  = _cell(row, 1)
+                            raw_vdate = _cell(row, 2)
+                            raw_debit = _cell(row, 3)
+                            raw_cred  = _cell(row, 4)
+                            raw_bal   = _cell(row, 5) if len(row) > 5 else ""
+
+                            if ECO_DATE_RE.match(raw_date):
+                                # ── Full transaction row ──────────────────────────
+                                if _is_skip(raw_date, raw_desc):
+                                    continue
+
+                                # Flush any pending cross-page description
+                                if last_txn and pending_desc:
+                                    last_txn["description"] = (
+                                        last_txn["description"] + " " + pending_desc
+                                    ).strip()
+                                    pending_desc = ""
+
+                                m = REFNO_RE.search(raw_desc)
+                                ref = m.group(1).strip() if m else ""
+                                desc = REFNO_RE.sub("", raw_desc).strip(" ,;") if m else raw_desc
+                                full_desc = " ".join(filter(None, [ref, desc])).strip()
+
+                                txn = {
+                                    "date":              parse_date_smart(raw_date) or raw_date,
+                                    "value_date":        parse_date_smart(raw_vdate) or raw_vdate,
+                                    "reference":         ref,
+                                    "originating_branch": "",
+                                    "description":       full_desc,
+                                    "remarks":           desc,
+                                    "debit":             parse_money(raw_debit),
+                                    "credit":            parse_money(raw_cred),
+                                    "balance":           parse_money(raw_bal),
+                                    "category":          "Unallocated",
+                                    "is_reversal":       False,
+                                    "_page":             pg,
+                                }
+                                all_txns.append(txn)
+                                last_txn = txn
+
+                            elif not raw_date and raw_desc:
+                                # ── Continuation / overflow row ───────────────────
+                                if last_txn:
+                                    merged = (last_txn["description"] + " " + raw_desc).strip()
+                                    last_txn["description"] = merged
+                                    last_txn["remarks"]     = merged
+                                else:
+                                    pending_desc = (pending_desc + " " + raw_desc).strip()
+
+                        except Exception as _row_err:
+                            print(f"DEBUG [Ecobank] pg{pg} t{t_idx} bad row: {_row_err}")
+                            continue
+
+                except Exception as _tbl_err:
+                    print(f"DEBUG [Ecobank] pg{pg} t{t_idx} table error: {_tbl_err}")
+                    continue
+
+    # Final flush of any leftover pending description
+    if last_txn and pending_desc:
+        last_txn["description"] = (last_txn["description"] + " " + pending_desc).strip()
+        last_txn["remarks"]     = last_txn["description"]
+
+    # Drop rows where both debit and credit are zero (non-transactions)
+    all_txns = [t for t in all_txns if t["debit"] != 0.0 or t["credit"] != 0.0]
+
+    print(f"DEBUG [Ecobank] Done. {len(all_txns)} transactions extracted.")
+    if all_txns:
+        s = all_txns[0]
+        print(f"DEBUG [Ecobank] Sample -> date={s['date']} debit={s['debit']} "
+              f"credit={s['credit']} desc={s['description'][:60]}")
+
+    return all_txns, metadata
+
