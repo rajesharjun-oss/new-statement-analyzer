@@ -411,6 +411,35 @@ def extract_words_from_pypdf(pdf_path: str, page_idx: int) -> List[Dict[str, Any
         print(f"DEBUG: pypdf extraction also failed: {e}")
         return []
 
+def normalize_remarks(transactions: List[Dict]) -> List[Dict]:
+    """
+    Ensure every transaction has a properly populated 'remarks' field.
+    Combines reference + originating_branch + description into a single readable string.
+    This runs on ALL bank paths to guarantee consistent Excel output.
+    """
+    for txn in transactions:
+        # If remarks already has real content (set by bank-specific extractor), use it
+        existing = (txn.get("remarks") or "").strip()
+        if existing:
+            continue
+        
+        # Build from available parts
+        parts = []
+        ref = (txn.get("reference") or "").strip()
+        branch = (txn.get("originating_branch") or txn.get("branch") or "").strip()
+        desc = (txn.get("description") or "").strip()
+        
+        if ref and ref not in {"'", "GAP", "'GAP"}:
+            parts.append(ref)
+        if branch and branch not in desc:
+            parts.append(branch)
+        if desc:
+            parts.append(desc)
+        
+        txn["remarks"] = " ".join(parts).strip()
+    return transactions
+
+
 def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[List[Dict], Dict[str, Any]]:
     """
     Main extraction function with improved accuracy
@@ -494,9 +523,9 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
             elif "FIDELITY" in upper_text:
                 bank_identifier = "fidelity"
             
-            # 4. Default
+            # 4. Default (unknown bank — will use generic GTBank-style parser as best effort)
             else:
-                bank_identifier = "gtbank"
+                bank_identifier = "unknown"
             
             metadata["bank"] = bank_identifier
             print(f"DEBUG: Auto-detected bank: {bank_identifier}")
@@ -505,13 +534,13 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
     if bank_identifier == "accessbank":
         try:
              txns, meta = extract_access_via_tables(Path(pdf_path), metadata)
-             if txns: return txns, meta
+             if txns: return normalize_remarks(txns), meta
         except Exception as e:
              print(f"DEBUG: Access Bank table engine failed: {e}. Trying Consensus Fallback...")
         
         try:
              txns, meta = extract_access_consensus(Path(pdf_path), metadata)
-             if txns: return txns, meta
+             if txns: return normalize_remarks(txns), meta
         except Exception as e:
              print(f"DEBUG: Access Bank consensus engine failed: {e}. Triggering Hybrid AI Fallback...")
         
@@ -519,7 +548,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
         if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
             print(f"DEBUG: Access Bank engines returned 0 txns. Triggering Hybrid AI Fallback...")
             txns = extract_transactions_via_ai(str(pdf_path))
-            if txns: return txns, metadata
+            if txns: return normalize_remarks(txns), metadata
 
     # --- 0b) Special Case: Zenith Table Strategy
     if bank_identifier == "zenith":
@@ -527,19 +556,19 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
              # Try table strategy first
              zenith_txns = extract_zenith_via_tables(Path(pdf_path), metadata)
              if zenith_txns:
-                 return zenith_txns, metadata
+                 return normalize_remarks(zenith_txns), metadata
         except Exception as e:
              print(f"DEBUG: Zenith table strategy failed: {e}. Trying Hybrid AI Fallback...")
              if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
                  txns = extract_transactions_via_ai(str(pdf_path))
-                 if txns: return txns, metadata
+                 if txns: return normalize_remarks(txns), metadata
 
     # --- 0c) Special Case: Ecobank Dedicated Extractor
     if bank_identifier == "ecobank":
         try:
              eco_txns, eco_meta = extract_ecobank_via_tables(Path(pdf_path), metadata)
              if eco_txns:
-                 return eco_txns, eco_meta
+                 return normalize_remarks(eco_txns), eco_meta
         except Exception as e:
              print(f"DEBUG: Ecobank table strategy failed: {e}. Trying Hybrid AI Fallback...")
         
@@ -547,14 +576,14 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
         if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
             print(f"DEBUG: Ecobank table engine returned 0 txns. Triggering Hybrid AI Fallback...")
             txns = extract_transactions_via_ai(str(pdf_path))
-            if txns: return txns, metadata
+            if txns: return normalize_remarks(txns), metadata
 
     # --- 0d) Special Case: Providus Extraction (Regex-based)
     if bank_identifier == "providus":
         try:
              prov_txns, prov_meta = extract_providus_regex(Path(pdf_path), metadata)
              if prov_txns:
-                 return prov_txns, prov_meta
+                 return normalize_remarks(prov_txns), prov_meta
         except Exception as e:
              print(f"DEBUG: Providus Regex strategy failed: {e}. Trying Hybrid AI Fallback...")
         
@@ -562,26 +591,26 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
         if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
             print(f"DEBUG: Providus engine returned 0 txns. Triggering Hybrid AI Fallback...")
             txns = extract_transactions_via_ai(str(pdf_path))
-            if txns: return txns, metadata
+            if txns: return normalize_remarks(txns), metadata
 
     # --- 0d) Special Case: FCMB Table Strategy
     if bank_identifier == "fcmb":
         try:
              fcmb_txns = extract_fcmb_via_tables(Path(pdf_path), metadata)
              if fcmb_txns:
-                 return fcmb_txns, metadata
+                 return normalize_remarks(fcmb_txns), metadata
         except Exception as e:
              print(f"DEBUG: FCMB table strategy failed: {e}. Trying Hybrid AI Fallback...")
              if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
                  txns = extract_transactions_via_ai(str(pdf_path))
-                 if txns: return txns, metadata
+                 if txns: return normalize_remarks(txns), metadata
 
     # --- 0e) Special Case: Fidelity Table Strategy
     if bank_identifier == "fidelity":
         try:
              fidelity_txns = extract_fidelity_via_tables(Path(pdf_path), metadata)
              if fidelity_txns:
-                 return fidelity_txns, metadata
+                 return normalize_remarks(fidelity_txns), metadata
         except Exception as e:
              print(f"DEBUG: Fidelity table strategy failed: {e}. Falling back to standard/pypdf...")
              # Let it fall through
@@ -768,8 +797,8 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
             "value_date": txn.get("value_date", ""),
             "reference": txn.get("reference", ""),
             "originating_branch": txn.get("branch", ""),  # Note: internally "branch", externally "originating_branch"
-            "remarks": txn.get("description", ""), # Use description for remarks here
-            "description": description,  # For categorization only
+            "remarks": description,  # Full built description (reference + branch + narration)
+            "description": description,  # For categorization
             "debit": deb_val,
             "credit": cred_val,
             "balance": parse_money(txn.get("balance", "")),
