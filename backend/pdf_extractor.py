@@ -456,8 +456,13 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
 
         # --- 2) Auto-detect bank if not specified ---
         if bank_identifier == "auto":
-            first_text = pdf.pages[0].extract_text() or ""
-            upper_text = first_text.upper()
+            # Scan more than just the first page if page 0 is empty (common in some Ecobank PDFs)
+            upper_text = ""
+            for p_idx in range(min(3, len(pdf.pages))):
+                pg_text = pdf.pages[p_idx].extract_text() or ""
+                if pg_text.strip():
+                    upper_text += pg_text.upper()
+                    if "ECOBANK" in upper_text: break # Found it early
             
             # 1. Explicit Major Bank Checks (High Priority)
             if "PROVIDUS" in upper_text:
@@ -473,7 +478,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
             elif "ACCESS" in upper_text:
                 bank_identifier = "accessbank"
             
-            # 2. Resilient Ecobank Fingerprint (Very Specific to avoid GTBank false hits)
+            # 2. Resilient Ecobank Fingerprint (Very Specific)
             elif "COMPUTER" in upper_text and "GENERATE" in upper_text and "LOCAL" in upper_text and "BRANCH" in upper_text:
                 bank_identifier = "ecobank"
             elif "STATEMENT" in upper_text and "PERIOD" in upper_text and "VALUE" in upper_text and "DEBIT" in upper_text and "CREDIT" in upper_text:
@@ -2950,25 +2955,32 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> Tuple[L
         if not ("TRANSACTION" in joined and "DATE" in joined):
             return None
             
+        print(f"DEBUG [Ecobank] Found header row candidate: {row}")
         mapping = {"date": None, "desc": None, "vdate": None, "debit": None, "credit": None, "balance": None}
         for i, val in enumerate(row):
-            val_up = str(val or "").upper()
-            if "TRANSACTION" in val_up and "DATE" in val_up:
-                mapping["date"] = i
-            elif "DESCRIPTION" in val_up:
+            val_up = str(val or "").upper().replace("\n", " ")
+            if "TRANSACTION" in val_up or "TRANS" in val_up:
+                if "DATE" in val_up:
+                    mapping["date"] = i
+            if "DESCRIPTION" in val_up or "DESC" in val_up or "REMARKS" in val_up:
                 mapping["desc"] = i
-            elif "VALUE" in val_up and "DATE" in val_up:
+            if "VALUE" in val_up and "DATE" in val_up:
                 mapping["vdate"] = i
-            elif "DEBIT" in val_up:
+            if "DEBIT" in val_up or "WITHDRAWAL" in val_up:
                 mapping["debit"] = i
-            elif "CREDIT" in val_up:
+            if "CREDIT" in val_up or "DEPOSIT" in val_up or "LODGEMENT" in val_up:
                 mapping["credit"] = i
-            elif "BALANCE" in val_up:
+            if "BALANCE" in val_up:
                 mapping["balance"] = i
+        
+        print(f"DEBUG [Ecobank] Detected mapping: {mapping}")
                 
         # Fallback for common 6-col Ecobank layout if specific keywords missed
         if mapping["date"] is None: mapping["date"] = 0
-        if mapping["desc"] is None: mapping["desc"] = 1
+        if mapping["desc"] is None:
+            # If Description missing, look for common index 1 or 2 as fallback
+            # but only if those columns have text that doesn't look like dates/money
+            mapping["desc"] = 1 # Reasonable default
         if mapping["vdate"] is None: mapping["vdate"] = 2
         if mapping["debit"] is None: mapping["debit"] = 3
         if mapping["credit"] is None: mapping["credit"] = 4
@@ -3014,6 +3026,7 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> Tuple[L
                         mapping = _find_col_map(row)
                         if mapping:
                             col_map = mapping
+                            print(f"DEBUG [Ecobank] pg{pg} col_map: {col_map}")
                             data_start = ri + 1
                             break
 
@@ -3023,12 +3036,23 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> Tuple[L
                         if len(row) < 4:
                             continue
                         try:
+                            # print(f"DEBUG [Ecobank] pg{pg} processing row: {row}")
                             raw_date  = _cell(row, col_map["date"])
                             raw_desc  = _cell(row, col_map["desc"])
                             raw_vdate = _cell(row, col_map["vdate"])
                             raw_debit = _cell(row, col_map["debit"], is_amount=True)
                             raw_cred  = _cell(row, col_map["credit"], is_amount=True)
                             raw_bal   = _cell(row, col_map["balance"], is_amount=True)
+
+                            # Adaptive description lookup: if mapped index is empty, check neighbors (common for Ecobank shifts)
+                            if not raw_desc and ECO_DATE_RE.match(raw_date):
+                                for offset in [-1, 1, 2, -2]:
+                                    idx = col_map["desc"] + offset
+                                    if 0 <= idx < len(row) and idx not in {col_map["date"], col_map["debit"], col_map["credit"], col_map["balance"]}:
+                                        cand = _cell(row, idx)
+                                        if cand:
+                                            raw_desc = cand
+                                            break
 
                             if ECO_DATE_RE.match(raw_date):
                                 # ── Full transaction row ──────────────────────────
@@ -3044,8 +3068,8 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> Tuple[L
 
                                 m = REFNO_RE.search(raw_desc)
                                 ref = m.group(1).strip() if m else ""
-                                desc = REFNO_RE.sub("", raw_desc).strip(" ,;") if m else raw_desc
-                                full_desc = " ".join(filter(None, [ref, desc])).strip()
+                                cleaned_desc = REFNO_RE.sub("", raw_desc).strip(" ,;") if m else raw_desc
+                                full_desc = " ".join(filter(None, [ref, cleaned_desc])).strip()
 
                                 txn = {
                                     "date":              parse_date_smart(raw_date) or raw_date,
@@ -3053,7 +3077,7 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> Tuple[L
                                     "reference":         ref,
                                     "originating_branch": "",
                                     "description":       full_desc,
-                                    "remarks":           desc,
+                                    "remarks":           full_desc, # ENSURE Remarks is not empty
                                     "debit":             parse_money(raw_debit),
                                     "credit":            parse_money(raw_cred),
                                     "balance":           parse_money(raw_bal),

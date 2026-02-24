@@ -11,6 +11,7 @@ from pathlib import Path
 load_dotenv()
 
 from pdf_extractor import extract_transactions
+from excel_extractor import extract_excel_transactions
 from validation import validate_totals
 from categorization import categorize_transactions
 from excel_generator import generate_excel
@@ -58,20 +59,25 @@ async def analyze_statement(
     - bank: Optional bank identifier (auto, gtbank, accessbank, firstbank, zenith, uba)
            Defaults to 'auto' for automatic detection
     """
-    if not (file.filename or "").lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    file_ext = Path(file.filename or "").suffix.lower()
+    if file_ext not in [".pdf", ".xlsx", ".xls", ".csv"]:
+        raise HTTPException(status_code=400, detail="Only PDF, Excel (.xlsx, .xls), and CSV files are supported")
 
     file_id = str(uuid.uuid4())
-    pdf_path = UPLOAD_DIR / f"{file_id}.pdf"
+    stored_path = UPLOAD_DIR / f"{file_id}{file_ext}"
     excel_path = DOWNLOAD_DIR / f"statement-analysis-{file_id}.xlsx"
 
     success = False
     try:
         content = await file.read()
-        pdf_path.write_bytes(content)
+        stored_path.write_bytes(content)
 
-        # Step 1: Extract transactions (deterministic, with bank-specific handling)
-        transactions, metadata = extract_transactions(pdf_path, bank_identifier=bank.lower())
+        # Step 1: Extract transactions
+        if file_ext == ".pdf":
+            transactions, metadata = extract_transactions(stored_path, bank_identifier=bank.lower())
+        else:
+            # Excel/CSV handling
+            transactions, metadata = extract_excel_transactions(stored_path)
 
         # Step 2: Validate totals
         validation_result = validate_totals(transactions, metadata)
