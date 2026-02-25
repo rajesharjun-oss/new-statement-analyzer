@@ -440,8 +440,10 @@ def detect_template(first_page_text: str) -> str:
     Identify the bank template using keyword fingerprinting.
     Checks explicit bank names first, then column-header signatures.
     NEVER defaults to GTBank — returns 'generic' when unknown.
+    Normalizes newlines and extra whitespace before matching.
     """
-    text = first_page_text.lower()
+    # Normalize: replace newlines with spaces, then collapse multiple spaces
+    text = " ".join(first_page_text.lower().replace("\n", " ").split())
 
     # --- Priority 1: Explicit bank name ---
     if "ecobank" in text:
@@ -599,50 +601,18 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
 
         # --- 2) Auto-detect bank if not specified ---
         if bank_identifier == "auto":
-            # Scan more than just the first page if page 0 is empty (common in some Ecobank PDFs)
-            upper_text = ""
+            # Scan up to 3 pages; some banks (e.g. Ecobank) have blank page 1
+            combined_text = ""
             for p_idx in range(min(3, len(pdf.pages))):
                 pg_text = pdf.pages[p_idx].extract_text() or ""
                 if pg_text.strip():
-                    upper_text += pg_text.upper()
-                    if "ECOBANK" in upper_text: break # Found it early
-            
-            # 1. Explicit Major Bank Checks (High Priority)
-            if "PROVIDUS" in upper_text:
-                bank_identifier = "providus"
-            elif "ECOBANK" in upper_text:
-                bank_identifier = "ecobank"
-            elif "GUARANTY TRUST" in upper_text or "GTBANK" in upper_text:
-                bank_identifier = "gtbank"
-            elif "UBA" in upper_text or "UNITED BANK" in upper_text or "U.B.A" in upper_text:
-                bank_identifier = "uba"
-            elif "ZENITH" in upper_text:
-                bank_identifier = "zenith"
-            elif "ACCESS" in upper_text:
-                bank_identifier = "accessbank"
-            
-            # 2. Resilient Ecobank Fingerprint (Very Specific)
-            elif "COMPUTER" in upper_text and "GENERATE" in upper_text and "LOCAL" in upper_text and "BRANCH" in upper_text:
-                bank_identifier = "ecobank"
-            elif "STATEMENT" in upper_text and "PERIOD" in upper_text and "VALUE" in upper_text and "DEBIT" in upper_text and "CREDIT" in upper_text:
-                bank_identifier = "ecobank"
-            
-            # 3. Minor Banks
-            elif "FIRST BANK" in upper_text or "FIRSTBANK" in upper_text:
-                bank_identifier = "firstbank"
-            elif "WEMA" in upper_text:
-                bank_identifier = "wema"
-            elif "FCMB" in upper_text or "FIRST CITY" in upper_text:
-                bank_identifier = "fcmb"
-            elif "FIDELITY" in upper_text:
-                bank_identifier = "fidelity"
-            
-            # 4. Default (unknown bank — will use generic GTBank-style parser as best effort)
-            else:
-                bank_identifier = "unknown"
-            
+                    combined_text += "\n" + pg_text
+                    if len(combined_text) > 2000:
+                        break
+
+            bank_identifier = detect_template(combined_text)
             metadata["bank"] = bank_identifier
-            print(f"DEBUG: Auto-detected bank: {bank_identifier}")
+            print(f"DEBUG: Detected Template: {bank_identifier}")
         
     # --- 0a) Special Case: Access Bank Table-Based Strategy
     if bank_identifier == "accessbank":
@@ -678,7 +648,9 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
                  if txns: return normalize_remarks(txns), metadata
 
     # --- 0c) Special Case: Ecobank Dedicated Extractor
-    if bank_identifier == "ecobank":
+    # Also attempt for 'generic'/'unknown' banks — tables with (Transaction Date,
+    # Description, Value Date, Debit, Credit, Balance) are characteristic of Ecobank
+    if bank_identifier in ("ecobank", "generic", "unknown"):
         try:
              eco_txns, eco_meta = extract_ecobank_via_tables(Path(pdf_path), metadata)
              if eco_txns:
