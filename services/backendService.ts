@@ -3,8 +3,9 @@
  * Handles communication with Python FastAPI backend
  */
 
-const isProduction = import.meta.env.PROD;
-const BACKEND_URL = isProduction ? '' : 'http://localhost:8000';
+// Always use relative URLs — Vite proxy routes /analyze and /download to localhost:8000
+// This eliminates cross-origin (CORS) issues in development.
+const BACKEND_URL = '';
 
 export interface BackendAnalysisResult {
     summary: {
