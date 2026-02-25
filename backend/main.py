@@ -155,9 +155,12 @@ async def analyze_statement(
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}\n\nFull error:\n{error_details}")
 
     finally:
-        # Keep PDF during debugging; delete later if you want
-        if success and pdf_path.exists():
-            pdf_path.unlink()
+        # Clean up temp upload file after processing
+        try:
+            if success and stored_path.exists():
+                stored_path.unlink()
+        except Exception:
+            pass
 
 @app.get("/download/{file_id}")
 async def download_excel(file_id: str):
