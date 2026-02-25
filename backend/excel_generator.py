@@ -16,7 +16,8 @@ def generate_excel(transactions: List[Dict], validation: Dict[str, Any], output_
     ws.title = "Transactions"
     
     # Headers - Match bank statement layout
-    headers = ['Date', 'Value Date', 'Reference', 'Originating Branch', 'Remarks', 'Category', 'Debit', 'Credit', 'Balance']
+    # CANONICAL SCHEMA — bank-agnostic, always the same regardless of source bank
+    headers = ['Date', 'Value Date', 'Reference', 'Description', 'Category', 'Debit', 'Credit', 'Balance']
     ws.append(headers)
     
     # Style headers
@@ -31,12 +32,16 @@ def generate_excel(transactions: List[Dict], validation: Dict[str, Any], output_
     # Add transactions - Keep columns separate
     # Write dates as STRINGS to prevent Excel from converting to Month-Year format
     for txn in transactions:
+        desc = (
+            txn.get('remarks') or
+            txn.get('description') or
+            txn.get('originating_branch') or ''
+        )
         ws.append([
-            str(txn.get('date', '')),           # String to preserve format
-            str(txn.get('value_date', '')),     # String to preserve format
+            str(txn.get('date', '')),       # String prevents Excel date conversion
+            str(txn.get('value_date', '')), # String prevents Excel date conversion
             txn.get('reference', ''),
-            txn.get('originating_branch', ''),
-            txn.get('remarks', ''),
+            desc,                           # Canonical description (bank-agnostic)
             txn.get('category', 'Unallocated'),
             txn.get('debit', 0),
             txn.get('credit', 0),
@@ -63,12 +68,11 @@ def generate_excel(transactions: List[Dict], validation: Dict[str, Any], output_
     ws.column_dimensions['A'].width = 12   # Date
     ws.column_dimensions['B'].width = 12   # Value Date
     ws.column_dimensions['C'].width = 20   # Reference
-    ws.column_dimensions['D'].width = 25   # Originating Branch
-    ws.column_dimensions['E'].width = 50   # Remarks
-    ws.column_dimensions['F'].width = 20   # Category
-    ws.column_dimensions['G'].width = 15   # Debit
-    ws.column_dimensions['H'].width = 15   # Credit
-    ws.column_dimensions['I'].width = 15   # Balance
+    ws.column_dimensions['D'].width = 55   # Description (canonical)
+    ws.column_dimensions['E'].width = 22   # Category
+    ws.column_dimensions['F'].width = 15   # Debit
+    ws.column_dimensions['G'].width = 15   # Credit
+    ws.column_dimensions['H'].width = 15   # Balance
     
     # Save
     wb.save(output_path)
