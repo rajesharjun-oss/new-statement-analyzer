@@ -416,6 +416,14 @@ def extract_words_from_pypdf(pdf_path: str, page_idx: int) -> List[Dict[str, Any
 # Maps each logical field to every known column header variant across all banks.
 # Never use hard-coded indices - always resolve via this map at runtime.
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# STRICT MODE CONFIG FLAGS
+# ─────────────────────────────────────────────────────────────────────────────
+# GTBank template requires 2+ confirming signals; never used as a catch-all.
+DISABLE_GTBANK_FALLBACK = True
+# Unrecognised banks use generic keyword-based mapping, never GTBank mapping.
+STRICT_TEMPLATE_MODE = True
+
 COLUMN_KEYWORDS = {
     "date": [
         "transaction date", "trans date", "txn date", "tran date",
@@ -472,7 +480,13 @@ def detect_template(first_page_text: str) -> str:
         return "stanbic"
 
     # --- Priority 2: Column-header fingerprints ---
-    if "originating branch" in text and "remarks" in text:
+    # GTBank requires BOTH structural signals to avoid false positives
+    gtbank_signals = (
+        ("originating branch" in text) +
+        ("remarks" in text) +
+        ("trans. date" in text or "trans date" in text)
+    )
+    if gtbank_signals >= 2:
         return "gtbank"
     if "value date" in text and ("transaction date" in text or "tran date" in text):
         return "ecobank"
@@ -611,6 +625,19 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
                         break
 
             bank_identifier = detect_template(combined_text)
+
+            # HARD GUARD: GTBank only allowed if positively detected with 2+ signals
+            if STRICT_TEMPLATE_MODE and bank_identifier == "gtbank":
+                norm = " ".join(combined_text.lower().replace("\n", " ").split())
+                gtbank_signals = (
+                    ("originating branch" in norm) +
+                    ("remarks" in norm) +
+                    ("trans. date" in norm or "trans date" in norm)
+                )
+                if gtbank_signals < 2:
+                    print(f"WARN: GTBank detected but only {gtbank_signals} signal(s). Downgrading to generic.")
+                    bank_identifier = "generic"
+
             metadata["bank"] = bank_identifier
             print(f"DEBUG: Detected Template: {bank_identifier}")
         

@@ -82,6 +82,30 @@ async def analyze_statement(
         # Step 2: Validate totals
         validation_result = validate_totals(transactions, metadata)
 
+        # Step 2b: FAIL-FAST check — if >25% of descriptions empty and bank is not GTBank,
+        # retry extraction with generic keyword mapping before proceeding.
+        if transactions:
+            empty_desc_count = sum(
+                1 for t in transactions
+                if not (t.get('description') or t.get('remarks') or '').strip()
+            )
+            empty_pct = empty_desc_count / len(transactions)
+            detected_bank = metadata.get('bank', 'generic')
+
+            if empty_pct > 0.25 and detected_bank != 'gtbank' and file_ext == '.pdf':
+                print(f'WARN: {empty_pct:.0%} empty descriptions for bank={detected_bank}. Retrying with generic mapping...')
+                from pdf_extractor import extract_transactions as _et
+                retry_txns, retry_meta = _et(stored_path, bank_identifier='generic')
+                retry_empty = sum(
+                    1 for t in retry_txns
+                    if not (t.get('description') or t.get('remarks') or '').strip()
+                )
+                if retry_txns and retry_empty < empty_desc_count:
+                    print(f'INFO: Generic retry improved descriptions. Using retry results.')
+                    transactions = retry_txns
+                    metadata = retry_meta
+                    validation_result = validate_totals(transactions, metadata)
+
         # Step 3: Categorize (rules + AI fallback)
         categorized_transactions = categorize_transactions(transactions)
 
