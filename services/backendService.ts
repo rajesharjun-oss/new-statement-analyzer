@@ -38,8 +38,18 @@ export async function analyzeWithBackend(
     });
 
     if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Backend analysis failed');
+        // Backend may return plain text on 500 — safely handle both JSON and text error bodies
+        let errorMessage = `Backend error (HTTP ${response.status})`;
+        try {
+            const errorBody = await response.json();
+            errorMessage = errorBody.detail || errorMessage;
+        } catch {
+            try {
+                const textBody = await response.text();
+                if (textBody) errorMessage = textBody.slice(0, 200);
+            } catch { /* ignore */ }
+        }
+        throw new Error(errorMessage);
     }
 
     if (onProgress) {
