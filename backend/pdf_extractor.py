@@ -411,6 +411,120 @@ def extract_words_from_pypdf(pdf_path: str, page_idx: int) -> List[Dict[str, Any
         print(f"DEBUG: pypdf extraction also failed: {e}")
         return []
 
+# ─────────────────────────────────────────────────────────────────────────────
+# UNIVERSAL COLUMN KEYWORD MAP
+# Maps each logical field to every known column header variant across all banks.
+# Never use hard-coded indices - always resolve via this map at runtime.
+# ─────────────────────────────────────────────────────────────────────────────
+COLUMN_KEYWORDS = {
+    "date": [
+        "transaction date", "trans date", "txn date", "tran date",
+        "posting date", "date",
+    ],
+    "value_date": ["value date", "val date", "value dt"],
+    "description": [
+        "description", "remarks", "narration", "transaction details",
+        "particulars", "transaction description", "details",
+        "payment details", "beneficiary", "narrative",
+    ],
+    "reference": ["reference", "reference no", "ref no", "cheque no", "chq no"],
+    "branch":    ["originating branch", "branch", "channel"],
+    "debit":     ["debit", "withdrawal", "dr amount", "debit amount", "dr"],
+    "credit":    ["credit", "lodgement", "deposit", "cr amount", "credit amount", "cr"],
+    "balance":   ["balance", "running balance", "available balance"],
+}
+
+
+def detect_template(first_page_text: str) -> str:
+    """
+    Identify the bank template using keyword fingerprinting.
+    Checks explicit bank names first, then column-header signatures.
+    NEVER defaults to GTBank — returns 'generic' when unknown.
+    """
+    text = first_page_text.lower()
+
+    # --- Priority 1: Explicit bank name ---
+    if "ecobank" in text:
+        return "ecobank"
+    if "guaranty trust" in text or "gtbank" in text or " gtb " in text:
+        return "gtbank"
+    if "providus" in text:
+        return "providus"
+    if "zenith" in text:
+        return "zenith"
+    if "access bank" in text or "access diamond" in text:
+        return "accessbank"
+    if "united bank for africa" in text or " uba " in text:
+        return "uba"
+    if "first bank" in text or "firstbank" in text:
+        return "firstbank"
+    if "fidelity" in text:
+        return "fidelity"
+    if "fcmb" in text or "first city monument" in text:
+        return "fcmb"
+    if "wema" in text:
+        return "wema"
+    if "sterling" in text:
+        return "sterling"
+    if "stanbic" in text:
+        return "stanbic"
+
+    # --- Priority 2: Column-header fingerprints ---
+    if "originating branch" in text and "remarks" in text:
+        return "gtbank"
+    if "value date" in text and ("transaction date" in text or "tran date" in text):
+        return "ecobank"
+    if "transaction details" in text:
+        return "zenith"
+    if "txn date" in text and "val date" in text:
+        return "providus"
+
+    print("DEBUG [detect_template]: Could not identify bank - returning 'generic'")
+    return "generic"
+
+
+def map_headers_to_columns(headers: list) -> dict:
+    """
+    Map logical field names to column indices using COLUMN_KEYWORDS.
+    Purely keyword-driven - never relies on column position.
+    Returns: {"date": 0, "description": 2, "debit": 4, ...}
+    """
+    mapping = {}
+    for i, raw_header in enumerate(headers):
+        # Normalize: collapse newlines + extra whitespace, lowercase
+        h = " ".join(str(raw_header or "").lower().replace("\n", " ").split())
+        for field, variants in COLUMN_KEYWORDS.items():
+            if field in mapping:
+                continue  # Already resolved
+            for variant in variants:
+                if variant in h:
+                    mapping[field] = i
+                    break
+    short = [str(x or "")[:15] for x in headers]
+    print(f"DEBUG [map_headers_to_columns]: input={short} -> {mapping}")
+    return mapping
+
+
+def detect_header_row(table: list) -> int:
+    """
+    Find the header row index in a pdfplumber table.
+    Handles multi-line headers by joining all cell text before matching.
+
+    A valid header row must contain at least 'date' AND 'balance'.
+    Returns row index, or -1 if not found.
+    """
+    for ri, row in enumerate(table):
+        joined = " ".join(
+            str(cell or "").lower().replace("\n", " ")
+            for cell in row if cell
+        )
+        if "date" in joined and "balance" in joined:
+            preview = [str(c or "")[:20] for c in row]
+            print(f"DEBUG [detect_header_row]: found at row {ri}: {preview}")
+            return ri
+    return -1
+
+
 def normalize_remarks(transactions: List[Dict]) -> List[Dict]:
     """
     Ensure every transaction has a properly populated 'remarks' field.
@@ -2977,44 +3091,62 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> Tuple[L
         return " ".join(str(v).replace("\n", " ").split()).strip()
 
     def _find_col_map(row):
-        """Identifies column indices based on header text."""
+        """
+        Identifies column indices by matching header text against COLUMN_KEYWORDS.
+        Uses dynamic keyword mapping -- never hard-coded indices.
+        Falls back gracefully when columns are partially detected.
+        """
         if not row or not isinstance(row, (list, tuple)):
             return None
-        joined = " ".join(str(c or "").upper() for c in row)
-        if not ("TRANSACTION" in joined and "DATE" in joined):
+
+        # Check if this row looks like a header (must mention "date" and "balance")
+        joined = " ".join(str(c or "").lower() for c in row)
+        if "date" not in joined or "balance" not in joined:
             return None
-            
-        print(f"DEBUG [Ecobank] Found header row candidate: {row}")
-        mapping = {"date": None, "desc": None, "vdate": None, "debit": None, "credit": None, "balance": None}
-        for i, val in enumerate(row):
-            val_up = str(val or "").upper().replace("\n", " ")
-            if "TRANSACTION" in val_up or "TRANS" in val_up:
-                if "DATE" in val_up:
-                    mapping["date"] = i
-            if "DESCRIPTION" in val_up or "DESC" in val_up or "REMARKS" in val_up:
-                mapping["desc"] = i
-            if "VALUE" in val_up and "DATE" in val_up:
-                mapping["vdate"] = i
-            if "DEBIT" in val_up or "WITHDRAWAL" in val_up:
-                mapping["debit"] = i
-            if "CREDIT" in val_up or "DEPOSIT" in val_up or "LODGEMENT" in val_up:
-                mapping["credit"] = i
-            if "BALANCE" in val_up:
-                mapping["balance"] = i
-        
-        print(f"DEBUG [Ecobank] Detected mapping: {mapping}")
-                
-        # Fallback for common 6-col Ecobank layout if specific keywords missed
-        if mapping["date"] is None: mapping["date"] = 0
+
+        print(f"DEBUG [Ecobank] Header row candidate: {[str(c or '')[:20] for c in row]}")
+
+        # Use universal keyword mapper (handles multi-line cells via \n cleanup)
+        col_map = map_headers_to_columns(row)
+
+        # Translate from universal field names to Ecobank internal names
+        mapping = {
+            "date":    col_map.get("date"),
+            "desc":    col_map.get("description"),
+            "vdate":   col_map.get("value_date"),
+            "debit":   col_map.get("debit"),
+            "credit":  col_map.get("credit"),
+            "balance": col_map.get("balance"),
+        }
+
+        print(f"DEBUG [Ecobank] Mapped columns: {mapping}")
+
+        # Safe fallbacks: only applied if keyword matching produced nothing
+        # These are last-resort and logged as warnings
+        n = len(row)
+        if mapping["date"] is None:
+            mapping["date"] = 0
+            print("WARN [Ecobank] 'date' column not found by keyword — defaulting to index 0")
         if mapping["desc"] is None:
-            # If Description missing, look for common index 1 or 2 as fallback
-            # but only if those columns have text that doesn't look like dates/money
-            mapping["desc"] = 1 # Reasonable default
-        if mapping["vdate"] is None: mapping["vdate"] = 2
-        if mapping["debit"] is None: mapping["debit"] = 3
-        if mapping["credit"] is None: mapping["credit"] = 4
-        if mapping["balance"] is None: mapping["balance"] = 5
-        
+            # Search for any non-date/non-numeric column in positions 1-3
+            for ci in range(1, min(4, n)):
+                sample = str(row[ci] or "").strip()
+                if sample and not any(c.isdigit() for c in sample[:5]):
+                    mapping["desc"] = ci
+                    print(f"WARN [Ecobank] 'desc' not found by keyword — guessing col {ci}")
+                    break
+            if mapping["desc"] is None:
+                mapping["desc"] = 1  # absolute last resort
+                print("WARN [Ecobank] 'desc' could not be guessed — using index 1")
+        if mapping["vdate"] is None and n > 2:
+            mapping["vdate"] = min(2, n - 1)
+        if mapping["debit"] is None and n > 3:
+            mapping["debit"] = n - 3
+        if mapping["credit"] is None and n > 2:
+            mapping["credit"] = n - 2
+        if mapping["balance"] is None:
+            mapping["balance"] = n - 1
+
         return mapping
 
     def _is_skip(date_s, desc_s):
