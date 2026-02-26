@@ -1,6 +1,21 @@
 import base64
 import os
+import httpx
 from openai import OpenAI
+
+_openai_key_index = 0
+
+def get_openai_client():
+    """Parse comma-separated keys and return a rotated client instance"""
+    global _openai_key_index
+    raw_keys = os.getenv('OPENAI_API_KEY', '')
+    keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
+    if not keys:
+        return None
+    
+    api_key = keys[_openai_key_index % len(keys)]
+    _openai_key_index += 1
+    return OpenAI(api_key=api_key, http_client=httpx.Client())
 
 def encode_image(image_bytes):
     """Encode image bytes to base64 string"""
@@ -10,13 +25,11 @@ def extract_header_with_vision(image_bytes):
     """
     Extract text/headers from an image using OpenAI Vision.
     """
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        print("DEBUG: OPENAI_API_KEY not found in env")
-        return ""
-
     try:
-        client = OpenAI(api_key=api_key)
+        client = get_openai_client()
+        if not client:
+            print("DEBUG: No valid OpenAI API key found")
+            return ""
         
         base64_image = encode_image(image_bytes)
 

@@ -242,6 +242,21 @@ def categorize_single_transaction(txn: Dict) -> Dict:
 from openai import OpenAI
 import google.generativeai as genai
 from gemini_vision import _clean_ai_json
+import httpx
+
+_openai_key_index = 0
+
+def get_openai_client():
+    """Parse comma-separated keys and return a rotated client instance"""
+    global _openai_key_index
+    raw_keys = os.getenv('OPENAI_API_KEY', '')
+    keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
+    if not keys:
+        return None
+    
+    api_key = keys[_openai_key_index % len(keys)]
+    _openai_key_index += 1
+    return OpenAI(api_key=api_key, http_client=httpx.Client())
 
 # ... (keep existing imports and rules)
 
@@ -275,10 +290,8 @@ def categorize_with_openai(transactions: List[Dict]):
     """
     Use OpenAI to categorize unallocated transactions
     """
-    api_key = os.getenv('OPENAI_API_KEY')
-    if not api_key: return
-    
-    client = OpenAI(api_key=api_key)
+    client = get_openai_client()
+    if not client: return
     
     input_data = [
         f"Desc: {t.get('remarks', '') or t.get('description', '')} | Amount: {t.get('debit', 0) or t.get('credit', 0)}" 
