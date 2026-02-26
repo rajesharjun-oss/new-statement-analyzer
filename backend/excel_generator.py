@@ -32,16 +32,18 @@ def generate_excel(transactions: List[Dict], validation: Dict[str, Any], output_
     # Add transactions - Keep columns separate
     # Write dates as STRINGS to prevent Excel from converting to Month-Year format
     for txn in transactions:
+        # 'description' = narration only (no reference prefix) — avoids duplication with Reference column
+        # Fall back to 'remarks' for banks whose extractors set remarks but not description
         desc = (
-            txn.get('remarks') or
             txn.get('description') or
+            txn.get('remarks') or
             txn.get('originating_branch') or ''
         )
         ws.append([
             str(txn.get('date', '')),       # String prevents Excel date conversion
             str(txn.get('value_date', '')), # String prevents Excel date conversion
             txn.get('reference', ''),
-            desc,                           # Canonical description (bank-agnostic)
+            desc,                           # Narration only — reference is already in its own column
             txn.get('category', 'Unallocated'),
             txn.get('debit', 0),
             txn.get('credit', 0),

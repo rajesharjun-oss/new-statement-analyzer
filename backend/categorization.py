@@ -105,7 +105,9 @@ def categorize_single_transaction(txn: Dict) -> Dict:
     """
     Apply rules to a single transaction in place.
     """
-    raw_desc = txn.get('description', '')
+    # Use 'remarks' (full combined text: reference + branch + narration) for rule matching.
+    # Fall back to 'description' if remarks is empty (non-GTBank paths).
+    raw_desc = txn.get('remarks', '') or txn.get('description', '')
     norm_desc = normalize_description(raw_desc)
     
     # Parse amounts safely
@@ -278,9 +280,8 @@ def categorize_with_openai(transactions: List[Dict]):
     
     client = OpenAI(api_key=api_key)
     
-    # Batch descriptions
     input_data = [
-        f"Desc: {t.get('description', '')} | Amount: {t.get('debit', 0) or t.get('credit', 0)}" 
+        f"Desc: {t.get('remarks', '') or t.get('description', '')} | Amount: {t.get('debit', 0) or t.get('credit', 0)}" 
         for t in transactions
     ]
     
@@ -334,9 +335,8 @@ def categorize_with_gemini(transactions: List[Dict]):
     """
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key: return
-
     input_data = [
-        f"Desc: {t.get('description', '')} | Amount: {t.get('debit', 0) or t.get('credit', 0)}" 
+        f"Desc: {t.get('remarks', '') or t.get('description', '')} | Amount: {t.get('debit', 0) or t.get('credit', 0)}" 
         for t in transactions
     ]
     
