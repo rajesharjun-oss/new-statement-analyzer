@@ -783,17 +783,15 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
                     print(f"DEBUG: Attempting OCR on page {i}...")
                     ocr_text += "\n" + extract_text_with_ocr(str(pdf_path), i)
                 
-                if bank_identifier == "uba":
-                    transactions = parse_uba_ocr_text(ocr_text)
-                    if transactions: return transactions, {}
-
                 raise ValueError(
                     f"Header not detected by pdfplumber. Legacy OCR ({os.getenv('OCR_ENGINE', 'openai')}) used as fail-safe, "
                     "but parsing failed. Please use text-based PDFs or check Gemini API connectivity."
                 )
             except Exception as e:
-                print(f"DEBUG: Legacy OCR fallback failed: {e}")
-                raise ValueError(f"Could not detect column header after scanning all pages. AI and Legacy OCR also failed: {e}")
+                print(f"DEBUG: OCR fallback failed or exhausted: {e}")
+                metadata["error"] = str(e)
+                metadata["status"] = "Extraction failed (Header not found & Fallbacks failed)"
+                return [], metadata
         
         # DEBUG: Store column info for debugging
         column_debug = {col: f"{bounds[0]:.1f} to {bounds[1]:.1f}" for col, bounds in base_cuts.items()}
@@ -2137,19 +2135,19 @@ def detect_firstbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[flo
     # 5. Withdrawal (Debit)
     idx_deb, w_deb = find_word_x("WITHDRAWAL") 
     if not w_deb: idx_deb, w_deb = find_word_x("DR")
-    if w_deb: bounds["Debit"] = (w_deb["x0"], w_deb["x1"])
+    if w_deb: bounds["debit"] = (w_deb["x0"], w_deb["x1"])
 
     # 6. Deposit (Credit)
     idx_cred, w_cred = find_word_x("DEPOSIT")
     if not w_cred: idx_cred, w_cred = find_word_x("CR")
-    if w_cred: bounds["Credit"] = (w_cred["x0"], w_cred["x1"])
+    if w_cred: bounds["credit"] = (w_cred["x0"], w_cred["x1"])
 
     # 7. Balance
     idx_bal, w_bal = find_word_x("BALANCE")
-    if w_bal: bounds["Balance"] = (w_bal["x0"], w_bal["x1"])
+    if w_bal: bounds["balance"] = (w_bal["x0"], w_bal["x1"])
 
     # Mandatory
-    if "TransDate" not in bounds or "Debit" not in bounds:
+    if "date" not in bounds or "debit" not in bounds:
         return None
 
     # Construct cuts
