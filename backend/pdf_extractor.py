@@ -884,16 +884,20 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
     
     final_transactions = []
     for txn in transactions:
-        # Build description for categorization (combine all text fields)
+        # Build the full remarks string (reference + branch + narration) for categorization
         desc_parts = []
-        if txn.get("reference"):
-            desc_parts.append(txn["reference"])
-        if txn.get("branch"):
-            desc_parts.append(txn["branch"])
-        if txn.get("description"):
-            desc_parts.append(txn["description"])
-        description = " ".join(desc_parts).strip()
-        
+        ref_val = (txn.get("reference") or "").strip()
+        branch_val = (txn.get("branch") or "").strip()
+        narration_val = (txn.get("description") or "").strip()
+
+        if ref_val and ref_val not in {"'", "GAP", "'GAP"}:
+            desc_parts.append(ref_val)
+        if branch_val:
+            desc_parts.append(branch_val)
+        if narration_val:
+            desc_parts.append(narration_val)
+        remarks = " ".join(desc_parts).strip()
+
         # Parse amounts
         deb_val = parse_money(txn.get("debit", ""))
         cred_val = parse_money(txn.get("credit", ""))
@@ -904,14 +908,17 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
         if deb_val == 0.0 and cred_val == 0.0:
             continue
 
-        # Keep fields SEPARATE for Excel, but include description for categorization
+        # Keep fields SEPARATE for Excel:
+        # - 'reference': just the reference code (e.g. 245893349GAP)
+        # - 'description': just the narration text (e.g. "635 AKIN ADESOLA Commission...")
+        # - 'remarks': full combined string used for categorization
         final_transactions.append({
             "date": txn["date"],
             "value_date": txn.get("value_date", ""),
-            "reference": txn.get("reference", ""),
-            "originating_branch": txn.get("branch", ""),  # Note: internally "branch", externally "originating_branch"
-            "remarks": description,  # Full built description (reference + branch + narration)
-            "description": description,  # For categorization
+            "reference": ref_val,
+            "originating_branch": branch_val,
+            "remarks": remarks,       # Full combined string (ref + branch + narration)
+            "description": narration_val,  # Just the narration — no reference prepended
             "debit": deb_val,
             "credit": cred_val,
             "balance": parse_money(txn.get("balance", "")),
