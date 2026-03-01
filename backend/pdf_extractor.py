@@ -12,6 +12,10 @@ from dataclasses import dataclass
 
 from uba_engine import detect_uba_columns, parse_uba_ocr_text
 from providus_engine import extract_providus_via_tables
+from zenith_engine import extract_zenith_via_coordinates
+from wema_engine import extract_wema_via_coordinates
+from sterling_engine import extract_sterling_via_coordinates
+from fcmb_engine import extract_fcmb_via_coordinates
 try:
     from gemini_vision import extract_text_with_gemini_vision, extract_transactions_via_ai
     GEMINI_AVAILABLE = True
@@ -581,27 +585,59 @@ def normalize_remarks(transactions: List[Dict]) -> List[Dict]:
     return transactions
 
 
-def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[List[Dict], Dict[str, Any]]:
+def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config: dict = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
-    Main extraction function with improved accuracy
-    
-    Args:
-        pdf_path: Path to PDF file
-        bank_identifier: Bank identifier for bank-specific parsing
-                        ('auto', 'gtbank', 'accessbank', 'firstbank', 'zenith', 'uba')
-    
-    Returns: (transactions, metadata)
+    Main entry point for PDF extraction. Routes to specific bank engines
+    or fallback logic based on bank_identifier.
     """
+    print(f"DEBUG: extract_transactions called with bank_identifier='{bank_identifier}'")
+    if config is None:
+        config = {}
+    
     all_rows: List[Dict[str, Any]] = []
     metadata: Dict[str, Any] = {
         "account_name": None,
-        "statement_period": None,
+        "account_number": None,
+        "period": None,
+        "bank": bank_identifier,
+        "currency": "NGN",
         "statement_total_debit": None,
         "statement_total_credit": None,
         "opening_balance": None,
         "closing_balance": None,
-        "bank": bank_identifier
     }
+
+    # --- TOP-LEVEL ROUTING: Skip auto-detection if bank is known ---
+    if bank_identifier == "providus":
+         prov_txns, prov_meta = extract_providus_via_tables(Path(pdf_path), metadata)
+         if prov_txns: return normalize_remarks(prov_txns), prov_meta
+
+    if bank_identifier == "zenith":
+         from zenith_engine import extract_zenith_via_coordinates
+         zn_txns, zn_meta = extract_zenith_via_coordinates(Path(pdf_path), metadata)
+         if zn_txns: return normalize_remarks(zn_txns), zn_meta
+
+    if bank_identifier == "wema":
+         from wema_engine import extract_wema_via_coordinates
+         wm_txns, wm_meta = extract_wema_via_coordinates(Path(pdf_path), metadata)
+         if wm_txns: return normalize_remarks(wm_txns), wm_meta
+
+    if bank_identifier == "sterling":
+         from sterling_engine import extract_sterling_via_coordinates
+         st_txns, st_meta = extract_sterling_via_coordinates(Path(pdf_path), metadata)
+         if st_txns: return normalize_remarks(st_txns), st_meta
+
+    if bank_identifier == "fcmb":
+         from fcmb_engine import extract_fcmb_via_coordinates
+         fc_txns, fc_meta = extract_fcmb_via_coordinates(Path(pdf_path), metadata)
+         if fc_txns: return normalize_remarks(fc_txns), fc_meta
+
+    if bank_identifier == "uba":
+         print("DEBUG: Routing UBA to Gemini Vision OCR...")
+         txns = extract_transactions_via_ai(str(pdf_path), max_pages=15, bank_identifier='uba')
+         if txns: return normalize_remarks(txns), {"method": "gemini_vision"}
+         print("DEBUG: UBA Gemini Vision returned 0 txns.")
+         return [], {"error": "UBA Gemini Vision returned 0 txns"}
     
     column_debug = {}  # Define in outer scope for metadata access
     
@@ -652,44 +688,6 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
             metadata["bank"] = bank_identifier
             print(f"DEBUG: Detected Template: {bank_identifier}")
         
-    # --- 0a) Special Case: Providus Table Strategy
-    if bank_identifier == "providus":
-         providus_txns, prov_meta = extract_providus_via_tables(Path(pdf_path), metadata)
-         if providus_txns: return normalize_remarks(providus_txns), prov_meta
-             
-    # --- 0b) Special Case: Access Bank Table-Based Strategy
-    if bank_identifier == "accessbank":
-        try:
-             txns, meta = extract_access_via_tables(Path(pdf_path), metadata)
-             if txns: return normalize_remarks(txns), meta
-        except Exception as e:
-             print(f"DEBUG: Access Bank table engine failed: {e}. Trying Consensus Fallback...")
-        
-        try:
-             txns, meta = extract_access_consensus(Path(pdf_path), metadata)
-             if txns: return normalize_remarks(txns), meta
-        except Exception as e:
-             print(f"DEBUG: Access Bank consensus engine failed: {e}. Triggering Hybrid AI Fallback...")
-        
-        # Hardened Fallback: If 0 transactions found after both attempts, trigger AI
-        if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
-            print(f"DEBUG: Access Bank engines returned 0 txns. Triggering Hybrid AI Fallback...")
-            txns = extract_transactions_via_ai(str(pdf_path))
-            if txns: return normalize_remarks(txns), metadata
-
-    # --- 0b) Special Case: Zenith Table Strategy
-    if bank_identifier == "zenith":
-        try:
-             # Try table strategy first
-             zenith_txns = extract_zenith_via_tables(Path(pdf_path), metadata)
-             if zenith_txns:
-                 return normalize_remarks(zenith_txns), metadata
-        except Exception as e:
-             print(f"DEBUG: Zenith table strategy failed: {e}. Trying Hybrid AI Fallback...")
-             if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
-                 txns = extract_transactions_via_ai(str(pdf_path))
-                 if txns: return normalize_remarks(txns), metadata
-
     # --- 0c) Special Case: Ecobank Dedicated Extractor
     # Also attempt for 'generic'/'unknown' banks — tables with (Transaction Date,
     # Description, Value Date, Debit, Credit, Balance) are characteristic of Ecobank
@@ -2789,22 +2787,30 @@ def extract_access_via_tables(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict
                         continue
                         
                     try:
+                        # If the table parser inserted empty padding columns, adjust the map
+                        current_map = dict(map_idx)
+                        if len(row) >= 10 and not row[2] and not row[4] and not row[7]:
+                            # 10 column padded layout
+                            current_map = {"date": 0, "desc": 1, "ref": 3, "vdate": 5, "debit": 6, "credit": 8, "balance": 9}
+                        elif len(row) >= 8 and current_map.get("desc") == 7:
+                            pass # Layout B is 8 cols
+                            
                         # Ensure enough columns for the chosen mapping
-                        max_idx = max(map_idx.values())
+                        max_idx = max(current_map.values())
                         if len(row) <= max_idx:
                             continue
                         
-                        raw_date = row[map_idx["date"]]
+                        raw_date = row[current_map["date"]]
                         if not is_date(raw_date):
                             continue
                             
-                        description = row[map_idx["desc"]]
-                        reference = row[map_idx["ref"]] if "ref" in map_idx else ""
-                        value_date = row[map_idx["vdate"]] if "vdate" in map_idx else ""
+                        description = row[current_map["desc"]]
+                        reference = row[current_map["ref"]] if "ref" in current_map else ""
+                        value_date = row[current_map["vdate"]] if "vdate" in current_map else ""
                         
-                        debit = parse_money(row[map_idx["debit"]])
-                        credit = parse_money(row[map_idx["credit"]])
-                        balance = parse_money(row[map_idx["balance"]])
+                        debit = parse_money(row[current_map["debit"]])
+                        credit = parse_money(row[current_map["credit"]])
+                        balance = parse_money(row[current_map["balance"]])
                         
                         all_transactions.append({
                             "date": parse_date_smart(raw_date),
