@@ -35,8 +35,8 @@ def extract_text_with_gemini_vision(image_bytes: bytes) -> str:
     try:
         genai.configure(api_key=api_key)
         
-        # Use gemini-1.5-flash for speed and good OCR performance
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # Use gemini-2.0-flash for state-of-the-art OCR
+        model = genai.GenerativeModel('gemini-2.0-flash')
         
         # Construct the prompt
         prompt = (
@@ -97,18 +97,18 @@ def extract_transactions_via_ai(pdf_path: str, max_pages: int = 10, bank_identif
     _current_key_index += 1
     
     try:
-        genai.configure(api_key=api_key, transport='rest')
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-2.0-flash')
         
         # User's strict workflow prompt
         prompt = (
-            "Extract the transaction table from this bank statement. "
-            "Format the output strictly as a CSV with headers: DATE, DESCRIPTION, DEBIT, CREDIT, BALANCE. "
+            "Extract the transaction table from this bank statement into a structured CSV format. \n"
+            "Output headers: DATE, DESCRIPTION, DEBIT, CREDIT, BALANCE. \n"
             "Rules:\n"
-            "1. Do not include commas in amount values (e.g. 1000.50 instead of 1,000.50).\n"
+            "1. Format amount values strictly as numbers (e.g. 1000.50, not 1,000.50).\n"
             "2. If a value is missing or zero, use 0.00.\n"
-            "3. Ensure the description is complete and not truncated.\n"
-            "4. Return ONLY the raw CSV text, no conversational text or markdown code blocks."
+            "3. Ensure the description is complete and captures all relevant narration details.\n"
+            "4. Return ONLY the raw CSV text without any markdown markers or extra text."
         )
         
         # Render pages to images
