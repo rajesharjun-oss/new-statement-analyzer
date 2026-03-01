@@ -764,7 +764,7 @@ export default function App() {
          {!hasFile && (
             <footer className="fixed bottom-0 w-full py-6 px-6 mx-auto max-w-[1200px] flex justify-between items-center text-[11px] text-zinc-700">
                <span>LedgerSentinel v2.4</span>
-               <span className="opacity-50 font-medium">© IBRAHIM ONAWOGA.</span>
+               <span className="opacity-50 font-medium">© IBRAHIM O.</span>
             </footer>
          )}
       </div>

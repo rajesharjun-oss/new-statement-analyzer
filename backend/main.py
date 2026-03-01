@@ -92,7 +92,7 @@ async def analyze_statement(
             empty_pct = empty_desc_count / len(transactions)
             detected_bank = metadata.get('bank', 'generic')
 
-            if empty_pct > 0.25 and detected_bank != 'gtbank' and file_ext == '.pdf':
+            if empty_pct > 0.25 and detected_bank not in ['gtbank', 'providus'] and file_ext == '.pdf':
                 print(f'WARN: {empty_pct:.0%} empty descriptions for bank={detected_bank}. Retrying with generic mapping...')
                 from pdf_extractor import extract_transactions as _et
                 retry_txns, retry_meta = _et(stored_path, bank_identifier='generic')

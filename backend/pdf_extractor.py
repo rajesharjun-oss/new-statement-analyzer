@@ -11,6 +11,7 @@ from typing import List, Dict, Tuple, Any, Optional
 from dataclasses import dataclass
 
 from uba_engine import detect_uba_columns, parse_uba_ocr_text
+from providus_engine import extract_providus_via_tables
 try:
     from gemini_vision import extract_text_with_gemini_vision, extract_transactions_via_ai
     GEMINI_AVAILABLE = True
@@ -169,51 +170,61 @@ def detect_providus_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[floa
     # Extract known columns from this row
     # Use simple x-coordinate mapping
     
-    def find_x(sub: str):
-        matches = [w["x0"] for w in best_row["words"] if sub in w["text"].upper()]
-        return min(matches) if matches else None
-        
-    def find_x_right(sub: str):
-        matches = [w["x1"] for w in best_row["words"] if sub in w["text"].upper()]
-        return max(matches) if matches else None
+    def find_col(sub: str):
+        """Return (x0, x1) of the first word matching sub, or (None, None)."""
+        for w in best_row["words"]:
+            if sub in w["text"].upper():
+                return w["x0"], w["x1"]
+        return None, None
 
-    x_txn = find_x("TXN")
-    x_val = find_x("VAL")
-    x_rem = find_x("REMARKS")
-    x_deb = find_x_right("DEBIT")
-    x_cred = find_x_right("CREDIT")
-    x_bal = find_x_right("BALANCE")
-    
-    if x_txn is None:
+    x_txn_l, x_txn_r   = find_col("TXN")
+    x_val_l, x_val_r   = find_col("VAL")
+    x_rem_l, x_rem_r   = find_col("REMARKS")
+    x_deb_l, x_deb_r   = find_col("DEBIT")
+    x_cred_l, x_cred_r = find_col("CREDIT")
+    x_bal_l, x_bal_r   = find_col("BALANCE")
+
+    if x_txn_l is None:
         return None
 
     # Build columns
-    cols = [("date", x_txn)]
+    cols = [("date", x_txn_l, x_txn_r if x_txn_r else x_txn_l + 50)]
     
-    if x_val is not None:
-        cols.append(("value_date", x_val))
-    if x_rem is not None:
-        cols.append(("description", x_rem))
-    if x_deb is not None:
-        cols.append(("debit", x_deb))
-    if x_cred is not None:
-        cols.append(("credit", x_cred))
-    if x_bal is not None:
-        cols.append(("balance", x_bal))
+    if x_val_l is not None:
+        cols.append(("value_date", x_val_l, x_val_r if x_val_r else x_val_l + 50))
+    if x_rem_l is not None:
+        cols.append(("description", x_rem_l, x_rem_r if x_rem_r else x_rem_l + 60))
+    if x_deb_l is not None:
+        cols.append(("debit", x_deb_l, x_deb_r if x_deb_r else x_deb_l + 40))
+    if x_cred_l is not None:
+        cols.append(("credit", x_cred_l, x_cred_r if x_cred_r else x_cred_l + 40))
+    if x_bal_l is not None:
+        cols.append(("balance", x_bal_l, x_bal_r if x_bal_r else x_bal_l + 40))
         
-    # Sort by X
+    # Sort by X left edge
     cols = sorted(cols, key=lambda x: x[1])
     
-    # Calculate cuts
+    # Calculate cuts intelligently
+    cut_points = []
+    for i in range(len(cols) - 1):
+        name1, l1, r1 = cols[i]
+        name2, l2, r2 = cols[i+1]
+        
+        mid = (r1 + l2) / 2
+        
+        # Give right-aligned description string more bounds up to debit col
+        if name1 == "description" and name2 == "debit":
+            # the descriptor tends to overrun; cut boundary right before debit header
+            mid = l2 - 5
+            
+        cut_points.append(mid)
+
     cuts = {}
-    for i, (name, x) in enumerate(cols):
-        if i == 0:
-            cuts[name] = (-math.inf, (x + cols[i+1][1]) / 2)
-        elif i == len(cols) - 1:
-             cuts[name] = ((cols[i-1][1] + x) / 2, math.inf)
-        else:
-             cuts[name] = ((cols[i-1][1] + x) / 2, (x + cols[i+1][1]) / 2)
-             
+    for i, (name, l, r) in enumerate(cols):
+        start = cut_points[i-1] if i > 0 else -math.inf
+        end = cut_points[i] if i < len(cut_points) else math.inf
+        cuts[name] = (start, end)
+        
     print(f"DEBUG: Providus Columns: {cuts}")
     return cuts
 
@@ -277,7 +288,7 @@ def detect_column_cuts_from_header(words: List[Dict[str, Any]], bank_identifier:
                     
                 # Bonus if this matches the user/auto-detected bank
                 if bank_identifier and name.lower() in bank_identifier.lower():
-                     score += 5
+                     score += 50  # Huge bonus to force priority for the correct bank
                 
                 print(f"DEBUG: Detector {name} found {len(cuts)} columns. Score: {score}")
                 
@@ -641,7 +652,12 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
             metadata["bank"] = bank_identifier
             print(f"DEBUG: Detected Template: {bank_identifier}")
         
-    # --- 0a) Special Case: Access Bank Table-Based Strategy
+    # --- 0a) Special Case: Providus Table Strategy
+    if bank_identifier == "providus":
+         providus_txns, prov_meta = extract_providus_via_tables(Path(pdf_path), metadata)
+         if providus_txns: return normalize_remarks(providus_txns), prov_meta
+             
+    # --- 0b) Special Case: Access Bank Table-Based Strategy
     if bank_identifier == "accessbank":
         try:
              txns, meta = extract_access_via_tables(Path(pdf_path), metadata)
@@ -691,20 +707,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto") -> Tuple[
             txns = extract_transactions_via_ai(str(pdf_path))
             if txns: return normalize_remarks(txns), metadata
 
-    # --- 0d) Special Case: Providus Extraction (Regex-based)
-    if bank_identifier == "providus":
-        try:
-             prov_txns, prov_meta = extract_providus_regex(Path(pdf_path), metadata)
-             if prov_txns:
-                 return normalize_remarks(prov_txns), prov_meta
-        except Exception as e:
-             print(f"DEBUG: Providus Regex strategy failed: {e}. Trying Hybrid AI Fallback...")
-        
-        # Hardened Fallback: If 0 transactions found, trigger AI
-        if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
-            print(f"DEBUG: Providus engine returned 0 txns. Triggering Hybrid AI Fallback...")
-            txns = extract_transactions_via_ai(str(pdf_path))
-            if txns: return normalize_remarks(txns), metadata
+
 
     # --- 0d) Special Case: FCMB Table Strategy
     if bank_identifier == "fcmb":
@@ -2983,65 +2986,7 @@ def extract_access_consensus(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict]
 
 
 
-def extract_providus_regex(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict], Dict]:
-    """
-    Robust line-by-line Regex extraction for Providus Bank.
-    Guarantees accuracy for Providus statements where lines are only visual.
-    """
-    print(f"DEBUG: Using Regex Strategy for Providus Bank: {pdf_path}")
-    transactions = []
-    # Regex to match Providus date format (e.g., 1-JAN-2026) at the start of a line
-    date_pattern = re.compile(r'^(\d{1,2}-[A-Z]{3}-\d{4})') 
-    
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text()
-            if not text: continue
-            
-            lines = text.split('\n')
-            for line in lines:
-                line = line.strip()
-                if date_pattern.match(line):
-                    # Split the line by multiple spaces
-                    parts = re.split(r'\s{2,}', line.strip())
-                    
-                    if len(parts) >= 5:
-                        try:
-                            raw_date = parts[0]
-                            val_date = parts[1] if re.match(r'\d{1,2}-[A-Z]{3}-\d{4}', parts[1]) else raw_date
-                            
-                            # Determine Remarks, Debit, Credit, Balance based on number of parts
-                            # Layout: [Txn Date, Val Date, Remarks, Debit, Credit, Balance]
-                            # Sometimes Debit or Credit is empty (missing part)
-                            
-                            # Safe index mapping from end
-                            balance = parse_money(parts[-1])
-                            credit = parse_money(parts[-2])
-                            debit = parse_money(parts[-3])
-                            
-                            # Remarks is everything between Val Date and Debit
-                            remarks_idx = 2 if re.match(r'\d{1,2}-[A-Z]{3}-\d{4}', parts[1]) else 1
-                            remarks = " ".join(parts[remarks_idx:-3])
-                            
-                            # Re-verify if it's a valid movementRow
-                            if debit or credit:
-                                transactions.append({
-                                    "date": parse_date_smart(raw_date),
-                                    "description": remarks if remarks else "No Description",
-                                    "reference": "",
-                                    "value_date": parse_date_smart(val_date) if val_date else "",
-                                    "debit": debit,
-                                    "credit": credit,
-                                    "balance": balance,
-                                    "category": "Unallocated",
-                                    "_page": page.page_number
-                                })
-                        except Exception as e:
-                            print(f"DEBUG: Error parsing Providus regex line: {e}")
-                            continue
 
-    print(f"DEBUG: Providus Regex extraction found {len(transactions)} transactions.")
-    return transactions, metadata
 
 
 def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> Tuple[List[Dict], Dict]:
