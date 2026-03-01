@@ -151,16 +151,22 @@ def extract_providus_via_tables(pdf_path: Path, metadata: Dict[str, Any]) -> Tup
                     credit = float(credit_str.replace(",", "")) if credit_str else 0.0
                     bal = float(bal_str.replace(",", "")) if bal_str else 0.0
                     
+                    # Extract reference if present (often /digits at the end)
+                    ref = ""
+                    ref_match = re.search(r'/(\d{10,})$', desc.strip())
+                    if ref_match:
+                        ref = ref_match.group(1)
+                    
                     txn = {
                         "date": parsed_date,
                         "value_date": parse_date_smart(row_dict.get("value_date", "")) or parsed_date,
                         "description": desc,
-                        "reference": "", # Often embedded in desc
+                        "reference": ref, 
                         "debit": debit,
                         "credit": credit,
                         "balance": bal,
                         "category": "Uncategorized",
-                        "remarks": desc # Fallback
+                        "remarks": desc
                     }
                     
                     if not is_noise_row(txn):

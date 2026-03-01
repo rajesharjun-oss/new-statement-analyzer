@@ -11,7 +11,11 @@ banks = {
     'fcmb': 'temp_uploads/FCMB test.pdf',
     'sterling': 'temp_uploads/STERLING test.pdf',
     'uba': 'temp_uploads/UBA test.pdf',
-    'wema': 'temp_uploads/WEMA test.pdf'
+    'wema': 'temp_uploads/WEMA test.pdf',
+    'zenith': 'temp_uploads/Zenith bank test.pdf',
+    'access': 'temp_uploads/Access bank test.pdf',
+    'fbn': 'temp_uploads/FBN 2024.pdf',
+    'providus': 'temp_uploads/Adam Providus.pdf'
 }
 
 for b, p in banks.items():

@@ -53,7 +53,8 @@ def detect_sterling_columns(words):
     x_bal_l, x_bal_r = find_x(["BALANCE"], anchor_row)
 
     if x_narr_l is None or x_in_l is None: return None
-
+    
+    cuts = {}
     # Define boundaries
     cuts['date'] = (0, x_narr_l - 2)
     cuts['description'] = (x_narr_l - 2, x_in_l - 2 if x_in_l else x_out_l - 2)

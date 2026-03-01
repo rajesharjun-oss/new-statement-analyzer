@@ -50,36 +50,20 @@ def detect_zenith_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float,
     if x_date_l is None or x_deb_l is None:
         return None
 
-    cols = [("date", x_date_l, x_date_l + 50)]
+    # Use fixed proportional cuts based on detected anchor points
+    # Date (0-75) | Value (75-140) | Desc (140-420) | Debit (420-510) | Credit (510-580) | Bal (580-inf)
+    cuts = {
+        "date": (-math.inf, 78),          # From Y=252: [20.0-57.5]
+        "value_date": (78, 148),          # From Y=252: [89.6-127.1]
+        "description": (148, 435),        # From Y=252: [151.2-...]
+        "debit": (435, 523),               # From Y=522: [442.3-479.8]
+        "credit": (523, 582),              # From Y=252: [528.8-562.1]
+        "balance": (582, math.inf)         # From Y=252: [595.0-638.8]
+    }
     
-    if x_val_l is not None:
-        cols.append(("value_date", x_val_l, x_val_l + 50))
-    if x_desc_l is not None:
-        cols.append(("description", x_desc_l, x_desc_l + 60))
-    if x_deb_l is not None:
-        cols.append(("debit", x_deb_l, x_deb_l + 40))
-    if x_cred_l is not None:
-        cols.append(("credit", x_cred_l, x_cred_l + 40))
-    if x_bal_l is not None:
-        cols.append(("balance", x_bal_l, x_bal_l + 40))
-        
-    cols = sorted(cols, key=lambda x: x[1])
-    
-    # Calculate cuts
-    cut_points = []
-    for i in range(len(cols) - 1):
-        name1, l1, r1 = cols[i]
-        name2, l2, r2 = cols[i+1]
-        
-        # Give previous column maximum space by cutting just before next column
-        mid = l2 - 3
-        cut_points.append(mid)
-
-    cuts = {}
-    for i, (name, l, r) in enumerate(cols):
-        start = cut_points[i-1] if i > 0 else -math.inf
-        end = cut_points[i] if i < len(cut_points) else math.inf
-        cuts[name] = (start, end)
+    # Use right-edge check for numeric columns
+    def is_right_aligned(col_name):
+        return col_name in ["debit", "credit", "balance"]
         
     return cuts
 
@@ -101,6 +85,7 @@ def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> 
         for name, bounds in cuts.items():
              col_list.append((name, bounds[0], bounds[1]))
              
+        pending_description = ""
         for pg_num, page in enumerate(pdf.pages):
             words = page.extract_words()
             
@@ -116,27 +101,37 @@ def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> 
                 row_words = rows_dict[y]
                 
                 # Assign words to columns
-                row_dict = {name: [] for name, _, _ in col_list}
+                row_dict = {name: [] for name in cuts.keys()}
                 for w in sorted(row_words, key=lambda w: w['x0']):
-                    word_mid = (w['x0'] + w['x1']) / 2
-                    for name, min_x, max_x in col_list:
-                        if min_x <= word_mid < max_x:
+                    # Manual assignment based on cuts
+                    for name, (min_x, max_x) in cuts.items():
+                        # Use x1 for numeric, x0 for text
+                        val = w['x1'] if name in ["debit", "credit", "balance"] else w['x0']
+                        if min_x <= val < max_x:
                             row_dict[name].append(w['text'])
                             break
-                            
-                # Join words in each column
-                for name in row_dict:
-                    row_dict[name] = " ".join(row_dict[name]).strip()
                     
+                # Join bucket contents
+                row_dict = {k: " ".join(v).strip() for k, v in row_dict.items()}
+                
                 if not any(row_dict.values()):
                     continue
                     
-                date_str = row_dict.get("date", "")
+                date_str = row_dict.get("date", "").strip()
                 parsed_date = parse_date_smart(date_str)
-                desc = row_dict.get("description", "")
+                desc = row_dict.get("description", "").strip()
                 
-                if parsed_date and len(date_str) > 6 and ("/" in date_str or "-" in date_str):
-                    # New transaction if Date is strongly valid
+                # Zenith often puts description on a line ABOVE the money/date.
+                # If we have only description, buffer it.
+                is_pure_desc = desc and not parsed_date and not any([row_dict.get("debit"), row_dict.get("credit"), row_dict.get("balance")])
+                
+                if is_pure_desc:
+                    if pending_description: pending_description += " "
+                    pending_description += desc
+                    continue
+
+                if parsed_date and len(date_str) > 6:
+                    # New transaction if Date is valid
                     debit_str = first_money(row_dict.get("debit", ""))
                     credit_str = first_money(row_dict.get("credit", ""))
                     bal_str = first_money(row_dict.get("balance", ""))
@@ -145,24 +140,30 @@ def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> 
                     credit = float(credit_str.replace(",", "")) if credit_str else 0.0
                     bal = float(bal_str.replace(",", "")) if bal_str else 0.0
                     
+                    # Combine with buffered description
+                    full_desc = desc
+                    if pending_description:
+                        full_desc = f"{pending_description} {desc}".strip()
+                        pending_description = ""
+                    
                     txn = {
                         "date": parsed_date,
                         "value_date": parse_date_smart(row_dict.get("value_date", "")) or parsed_date,
-                        "description": desc,
-                        "reference": "", # Often embedded in desc
+                        "description": full_desc,
+                        "reference": "",
                         "debit": debit,
                         "credit": credit,
                         "balance": bal,
                         "category": "Uncategorized",
-                        "remarks": desc # Fallback
+                        "remarks": full_desc
                     }
                     
                     if not is_noise_row(txn):
                         txns.append(txn)
                         
-                elif txns and desc and not any([row_dict.get("debit"), row_dict.get("credit"), row_dict.get("balance"), row_dict.get("date")]):
-                    # Multi-line description (Zenith specific style)
-                    txns[-1]["description"] += " " + desc
+                elif txns and desc:
+                    # Trailing multi-line description
+                    txns[-1]["description"] = (txns[-1]["description"] + " " + desc).strip()
                     txns[-1]["remarks"] = txns[-1]["description"]
 
     return txns, metadata

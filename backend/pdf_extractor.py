@@ -11,6 +11,7 @@ from typing import List, Dict, Tuple, Any, Optional
 from dataclasses import dataclass
 
 from uba_engine import detect_uba_columns, parse_uba_ocr_text
+from access_engine import extract_access_via_coordinates
 from providus_engine import extract_providus_via_tables
 from zenith_engine import extract_zenith_via_coordinates
 from wema_engine import extract_wema_via_coordinates
@@ -638,6 +639,11 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
          if txns: return normalize_remarks(txns), {"method": "gemini_vision"}
          print("DEBUG: UBA Gemini Vision returned 0 txns.")
          return [], {"error": "UBA Gemini Vision returned 0 txns"}
+
+    if bank_identifier == "access":
+         from access_engine import extract_access_via_coordinates
+         acc_txns, acc_meta = extract_access_via_coordinates(Path(pdf_path), metadata)
+         if acc_txns: return normalize_remarks(acc_txns), acc_meta
     
     column_debug = {}  # Define in outer scope for metadata access
     
