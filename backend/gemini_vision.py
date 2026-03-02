@@ -45,12 +45,11 @@ def extract_text_with_gemini_vision(image_bytes: bytes) -> str:
             "Group related fields (Date, Description, Debit, Credit, Balance) together in a clean row-based text format."
         )
         
-        # Prepare the image parts
+        # PREVENT WINDOWS CRASH: Use PIL.Image instead of raw bytes dict
+        from PIL import Image
+        import io
         image_parts = [
-            {
-                "mime_type": "image/png",
-                "data": image_bytes
-            }
+            Image.open(io.BytesIO(image_bytes))
         ]
         
         response = model.generate_content([prompt, image_parts[0]])
@@ -117,10 +116,11 @@ def extract_transactions_via_ai(pdf_path: str, max_pages: int = 10, bank_identif
             img_bytes = render_page_to_bytes(pdf_path, i, zoom=3.0) # Higher zoom for better OCR
             if not img_bytes:
                 break
-            image_parts.append({
-                "mime_type": "image/png",
-                "data": img_bytes
-            })
+            # FIX FOR WINDOWS: Avoid passing raw dicts with large bytes, use PIL.Image directly
+            # to prevent STATUS_STACK_OVERFLOW in protobuf C extensions
+            from PIL import Image
+            import io
+            image_parts.append(Image.open(io.BytesIO(img_bytes)))
             
         print(f"DEBUG: Gemini Vision - Rendered {len(image_parts)} pages for {bank_identifier}")
         if not image_parts:
@@ -136,7 +136,7 @@ def extract_transactions_via_ai(pdf_path: str, max_pages: int = 10, bank_identif
             
         # Step 2: Save raw CSV output (cleaning markdown if present)
         raw_csv = response.text.strip()
-        raw_csv = re.sub(r'^```csv\s*', '', raw_csv, flags=re.I)
+        raw_csv = re.sub(r'^```(csv|json)\s*', '', raw_csv, flags=re.I)
         raw_csv = re.sub(r'```$', '', raw_csv, flags=re.I)
         
         # Log raw result for debugging
@@ -146,23 +146,39 @@ def extract_transactions_via_ai(pdf_path: str, max_pages: int = 10, bank_identif
             
         # Step 3: Use pandas to read the CSV and convert to standard format
         try:
-            df = pd.read_csv(io.StringIO(raw_csv))
+            # error_bad_lines=False / on_bad_lines='skip' is used to drop rows with too many/few columns
+            df = pd.read_csv(io.StringIO(raw_csv), on_bad_lines='skip')
             # Normalize column names to lowercase
-            df.columns = [c.strip().lower() for c in df.columns]
+            df.columns = [str(c).strip().lower() for c in df.columns]
             
+            def safe_float(val):
+                if pd.isnull(val): return 0.0
+                try:
+                    # Remove all non-numeric characters except . and -
+                    s = str(val).replace(',', '').strip()
+                    s = re.sub(r'[^\d\.\-]', '', s)
+                    if not s or s == '-' or s == '.': return 0.0
+                    return float(s)
+                except ValueError:
+                    return 0.0
+
             # Map columns to our standard schema
             standard_txns = []
             for _, row in df.iterrows():
-                standard_txns.append({
-                    'date': str(row.get('date', '')),
-                    'description': str(row.get('description', '')),
-                    'debit': float(str(row.get('debit', '0')).replace(',','')) if pd.notnull(row.get('debit')) else 0.0,
-                    'credit': float(str(row.get('credit', '0')).replace(',','')) if pd.notnull(row.get('credit')) else 0.0,
-                    'balance': float(str(row.get('balance', '0')).replace(',','')) if pd.notnull(row.get('balance')) else 0.0,
-                    'reference': '',
-                    'remarks': str(row.get('description', '')),
-                    'category': 'Uncategorized'
-                })
+                try:
+                    standard_txns.append({
+                        'date': str(row.get('date', '')).strip(),
+                        'description': str(row.get('description', '')).strip(),
+                        'debit': safe_float(row.get('debit', 0)),
+                        'credit': safe_float(row.get('credit', 0)),
+                        'balance': safe_float(row.get('balance', 0)),
+                        'reference': '',
+                        'remarks': str(row.get('description', '')).strip(),
+                        'category': 'Uncategorized'
+                    })
+                except Exception as row_e:
+                    print(f"DEBUG: Skipping malformed AI row: {row_e}")
+                    continue
             return standard_txns
             
         except Exception as pe:

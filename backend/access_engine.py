@@ -9,35 +9,83 @@ from typing import Dict, List, Tuple, Any
 
 def detect_access_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
     """
-    Detect column boundaries for Access Bank (Date | Transaction Details | Reference | Value Date | Withdrawals | Lodgements | Balance)
+    Detect column boundaries for Access Bank
     """
-    # From debug_access.py:
-    # Date at [130.7 - 148.0]
-    # Details at [200.7 - 246.0]
-    # Reference at [410.5 - 449.2]
-    # Value Date at [480.5 - 521.4]
-    # Withdrawals at [550.4 - 597.5]
-    # Lodgements at [620.4 - 667.9]
-    # Balance at [690.3 - 721.0]
-    
-    # We verify if we are indeed in an Access statement
-    header_keywords = ["TRANSACTION", "DETAILS", "LODGEMENTS", "WITHDRAWALS", "REFERENCE"]
-    header_count = sum(1 for w in words if any(k in w['text'].upper() for k in header_keywords))
-    
-    if header_count < 3:
-        return None
+    # Collect all potential header words first
+    header_keywords = ["TRANSACTION", "DETAILS", "LODGEMENTS", "WITHDRAWALS", "REFERENCE", "BALANCE", "DATE"]
+    header_words = []
+    for w in words:
+        txt = w["text"].upper().strip()
+        if any(k in txt for k in header_keywords) or "DATE" in txt:
+            header_words.append(w)
+            
+    if not header_words: return None
 
-    # Use robust coordinate-based cuts derived from the sample
-    cuts = {
-        "date": (100, 185),
-        "description": (185, 405),
-        "reference": (405, 478),
-        "value_date": (478, 540),
-        "debit": (540, 610),
-        "credit": (610, 680),
-        "balance": (680, 800)
-    }
+    # Access Bank often has multi-line headers (e.g. Y=250 and Y=258)
+    # We collect all header words in the 240-270 range
+    best_band = [w for w in header_words if 240 <= w['top'] <= 270]
     
+    if len(best_band) < 3:
+        # Fallback to the largest single-line band if the absolute range fails
+        tops = [w['top'] for w in header_words]
+        best_band = [] # Reset for fallback
+        for t in set([round(x, 1) for x in tops]):
+            band = [w for w in header_words if abs(w['top'] - t) < 3.0]
+            if len(band) > len(best_band): best_band = band
+            
+    def find_col(sub: str):
+        for w in best_band:
+            if sub in w["text"].upper(): return w["x0"], w["x1"]
+        return None, None
+
+    # Find both edges for each column with broader match
+    headers = []
+    def add_h(name, sub, alt=None):
+        l, r = find_col(sub)
+        if l is None and alt: l, r = find_col(alt)
+        if l is not None: headers.append((name, l, r))
+
+    add_h("date", "DATE")
+    add_h("description", "DETAILS", "TRANSACTION")
+    add_h("reference", "REFERENCE", "REF")
+    add_h("value_date", "VALUE", "VAL")
+    add_h("debit", "WITHDRAWALS", "DEBIT")
+    add_h("credit", "LODGEMENTS", "CREDIT")
+    add_h("balance", "BALANCE", "BAL")
+    
+    headers = sorted(headers, key=lambda x: x[1])
+    
+    # Check if we have enough headers to be dynamic
+    if len(headers) >= 4:
+        # Calculate cuts at the midpoint of GAPS
+        cuts = {}
+        for i in range(len(headers)):
+            name, x0, x1 = headers[i]
+            # Use actual x1 if available, else x0+gap
+            start = cuts[headers[i-1][0]][1] if i > 0 else -math.inf
+            
+            if i < len(headers) - 1:
+                next_name, next_x0, next_x1 = headers[i+1]
+                end = (x1 + next_x0) / 2
+            else:
+                end = math.inf
+            cuts[name] = (start, end)
+    else:
+        # Robust fallback to standard Access coordinates
+        print(f"WARN [Access]: Deep header search failed (found {len(headers)}). Using standard fallbacks.")
+        cuts = {
+            "date": (-math.inf, 185),
+            "description": (185, 405),
+            "reference": (405, 478),
+            "value_date": (478, 540),
+            "debit": (540, 610),
+            "credit": (610, 680),
+            "balance": (680, math.inf)
+        }
+    
+    print(f"DEBUG [Access]: Detected headers {headers}")
+    print(f"DEBUG [Access]: Derived cuts: {cuts}")
+        
     return cuts
 
 def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:

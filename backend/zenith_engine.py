@@ -50,20 +50,34 @@ def detect_zenith_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float,
     if x_date_l is None or x_deb_l is None:
         return None
 
-    # Use fixed proportional cuts based on detected anchor points
-    # Date (0-75) | Value (75-140) | Desc (140-420) | Debit (420-510) | Credit (510-580) | Bal (580-inf)
-    cuts = {
-        "date": (-math.inf, 78),          # From Y=252: [20.0-57.5]
-        "value_date": (78, 148),          # From Y=252: [89.6-127.1]
-        "description": (148, 435),        # From Y=252: [151.2-...]
-        "debit": (435, 523),               # From Y=522: [442.3-479.8]
-        "credit": (523, 582),              # From Y=252: [528.8-562.1]
-        "balance": (582, math.inf)         # From Y=252: [595.0-638.8]
-    }
+    # Find both edges for each column
+    headers = []
+    if x_date_l is not None: headers.append(("date", x_date_l, find_col("DATE")[1]))
+    if x_val_l is not None: headers.append(("value_date", x_val_l, find_col("VALUE")[1]))
+    if x_desc_l is not None: headers.append(("description", x_desc_l, find_col("DESCRIPTION")[1]))
+    if x_deb_l is not None: headers.append(("debit", x_deb_l, find_col("DEBIT")[1]))
+    if x_cred_l is not None: headers.append(("credit", x_cred_l, find_col("CREDIT")[1]))
+    if x_bal_l is not None: headers.append(("balance", x_bal_l, find_col("BALANCE")[1]))
     
-    # Use right-edge check for numeric columns
-    def is_right_aligned(col_name):
-        return col_name in ["debit", "credit", "balance"]
+    headers = sorted(headers, key=lambda x: x[1])
+    
+    # Calculate cuts at the midpoint of GAPS
+    cuts = {}
+    for i in range(len(headers)):
+        name, x0, x1 = headers[i]
+        start = cuts[headers[i-1][0]][1] if i > 0 else -math.inf
+        
+        if i < len(headers) - 1:
+            next_name, next_x0, next_x1 = headers[i+1]
+            # Use the midpoint between current right edge and next left edge
+            end = (x1 + next_x0) / 2
+        else:
+            end = math.inf
+            
+        cuts[name] = (start, end)
+    
+    print(f"DEBUG [Zenith]: Detected headers {headers}")
+    print(f"DEBUG [Zenith]: Gap-based cuts derived: {cuts}")
         
     return cuts
 
