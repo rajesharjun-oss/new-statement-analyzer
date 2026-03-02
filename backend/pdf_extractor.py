@@ -469,7 +469,23 @@ def detect_template(first_page_text: str) -> str:
     # Normalize: replace newlines with spaces, then collapse multiple spaces
     text = " ".join(first_page_text.lower().replace("\n", " ").split())
 
-    # --- Priority 1: Explicit bank name ---
+    # --- Priority 1: Column-header fingerprints ---
+    # GTBank requires BOTH structural signals to avoid false positives
+    gtbank_signals = (
+        ("originating branch" in text) +
+        ("remarks" in text) +
+        ("trans. date" in text or "trans date" in text)
+    )
+    if gtbank_signals >= 2:
+        return "gtbank"
+    if "value date" in text and ("transaction date" in text or "tran date" in text) and "ecobank" in text:
+        return "ecobank"
+    if "txn date" in text and "val date" in text:
+        return "providus"
+    if "transaction details" in text and "value date" in text:
+        return "zenith"
+
+    # --- Priority 2: Explicit bank name ---
     if "ecobank" in text:
         return "ecobank"
     if "guaranty trust" in text or "gtbank" in text or " gtb " in text:
@@ -494,22 +510,6 @@ def detect_template(first_page_text: str) -> str:
         return "sterling"
     if "stanbic" in text:
         return "stanbic"
-
-    # --- Priority 2: Column-header fingerprints ---
-    # GTBank requires BOTH structural signals to avoid false positives
-    gtbank_signals = (
-        ("originating branch" in text) +
-        ("remarks" in text) +
-        ("trans. date" in text or "trans date" in text)
-    )
-    if gtbank_signals >= 2:
-        return "gtbank"
-    if "value date" in text and ("transaction date" in text or "tran date" in text):
-        return "ecobank"
-    if "transaction details" in text:
-        return "zenith"
-    if "txn date" in text and "val date" in text:
-        return "providus"
 
     print("DEBUG [detect_template]: Could not identify bank - returning 'generic'")
     return "generic"
@@ -608,6 +608,34 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
         "closing_balance": None,
     }
 
+    # --- AUTO-DETECT BANK BEFORE ROUTING ---
+    if bank_identifier == "auto":
+        with pdfplumber.open(pdf_path) as pdf:
+            combined_text = ""
+            for p_idx in range(min(3, len(pdf.pages))):
+                pg_text = pdf.pages[p_idx].extract_text() or ""
+                if pg_text.strip():
+                    combined_text += "\n" + pg_text
+                    if len(combined_text) > 2000:
+                        break
+
+            bank_identifier = detect_template(combined_text)
+
+            # HARD GUARD: GTBank only allowed if positively detected with 2+ signals
+            if STRICT_TEMPLATE_MODE and bank_identifier == "gtbank":
+                norm = " ".join(combined_text.lower().replace("\n", " ").split())
+                gtbank_signals = (
+                    ("originating branch" in norm) +
+                    ("remarks" in norm) +
+                    ("trans. date" in norm or "trans date" in norm)
+                )
+                if gtbank_signals < 2:
+                    print(f"WARN: GTBank detected but only {gtbank_signals} signal(s). Downgrading to generic.")
+                    bank_identifier = "generic"
+
+            metadata["bank"] = bank_identifier
+            print(f"DEBUG: Detected Template (Pre-Routing): {bank_identifier}")
+
     # --- TOP-LEVEL ROUTING: Skip auto-detection if bank is known ---
     if bank_identifier == "providus":
          prov_txns, prov_meta = extract_providus_via_tables(Path(pdf_path), metadata)
@@ -665,34 +693,6 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
                         metadata[key] = last_meta[key]
             except Exception as e:
                 print(f"DEBUG: Failed to extract text from last page: {e}")
-
-        # --- 2) Auto-detect bank if not specified ---
-        if bank_identifier == "auto":
-            # Scan up to 3 pages; some banks (e.g. Ecobank) have blank page 1
-            combined_text = ""
-            for p_idx in range(min(3, len(pdf.pages))):
-                pg_text = pdf.pages[p_idx].extract_text() or ""
-                if pg_text.strip():
-                    combined_text += "\n" + pg_text
-                    if len(combined_text) > 2000:
-                        break
-
-            bank_identifier = detect_template(combined_text)
-
-            # HARD GUARD: GTBank only allowed if positively detected with 2+ signals
-            if STRICT_TEMPLATE_MODE and bank_identifier == "gtbank":
-                norm = " ".join(combined_text.lower().replace("\n", " ").split())
-                gtbank_signals = (
-                    ("originating branch" in norm) +
-                    ("remarks" in norm) +
-                    ("trans. date" in norm or "trans date" in norm)
-                )
-                if gtbank_signals < 2:
-                    print(f"WARN: GTBank detected but only {gtbank_signals} signal(s). Downgrading to generic.")
-                    bank_identifier = "generic"
-
-            metadata["bank"] = bank_identifier
-            print(f"DEBUG: Detected Template: {bank_identifier}")
         
     # --- 0c) Special Case: Ecobank Dedicated Extractor
     # Also attempt for 'generic'/'unknown' banks — tables with (Transaction Date,
