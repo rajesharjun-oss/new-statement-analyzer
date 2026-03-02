@@ -110,7 +110,7 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> Tu
                  
             rows_dict = {}
             for w in words:
-                y = round(w['top'] / 3) * 3 
+                y = round(w['top'] / 8) * 8 
                 if y not in rows_dict:
                     rows_dict[y] = []
                 rows_dict[y].append(w)
@@ -140,6 +140,9 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> Tu
                     desc_parts.append(row_dict.get("tran_id", ""))
                 desc = " ".join(desc_parts).strip()
                 desc = re.sub(r"\s+", " ", desc)
+                
+                if '15448040' in desc or '14848075' in desc:
+                    print(f"DEBUG WEMA EXTRACT: RAW D: {repr(row_dict.get('debit'))}, RAW C: {repr(row_dict.get('credit'))}, DESC: {desc}")
                 
                 if parsed_date and len(date_str) > 6 and ("/" in date_str or "-" in date_str):
                     pass # Valid new date

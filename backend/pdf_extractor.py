@@ -340,8 +340,8 @@ def parse_date_smart(date_str: str) -> str | None:
     except:
         return None
 
-# Strict money parsing
-MONEY_RE = re.compile(r"^-?\d{1,3}(?:,\d{3})*(?:\.\d{2})$|^-?\d+(?:\.\d{2})$")
+# Strict money parsing (Allowing 1 or 2 decimal places for squeezed numbers)
+MONEY_RE = re.compile(r"^-?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})$|^-?\d+(?:\.\d{1,2})$")
 
 def first_money(s: str) -> str:
     """Extract first valid money amount from string"""
@@ -354,7 +354,7 @@ def first_money(s: str) -> str:
     return ""
 
 # Split decimal detection
-MONEY_FULL_RE = re.compile(r"^-?\d{1,3}(?:,\d{3})*(?:\.\d{2})$|^-?\d+(?:\.\d{2})$")
+MONEY_FULL_RE = re.compile(r"^-?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})$|^-?\d+(?:\.\d{1,2})$")
 PARTIAL_DOT_RE = re.compile(r"^-?\d{1,3}(?:,\d{3})*\.$|^-?\d+\.$")
 DEC_TAIL_RE = re.compile(r"^\d{1,2}$")
 
@@ -382,7 +382,13 @@ def is_noise_row(row: dict) -> bool:
     return any(k in text for k in [
         "ACCOUNT SUMMARY",
         "OPENING BALANCE",
+        "OPENING BAL",
         "CLOSING BALANCE",
+        "CLOSING BAL",
+        "CURRENT BAL",
+        "TOTAL DEBIT",
+        "TOTAL CREDIT",
+        "EFF. AVAIL. BAL",
         "CURRENCY",
         "STATEMENT PERIOD",
     ]) or (
