@@ -11,7 +11,7 @@ def detect_providus_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[floa
     """
     Detect column boundaries for Providus Bank (TXN DATE | VAL DATE | REMARKS | DEBIT | CREDIT | BALANCE)
     """
-    header_keywords = ["TXN", "DATE", "VAL", "REMARKS", "DEBIT", "CREDIT", "BALANCE"]
+    header_keywords = ["TXN", "DATE", "VAL", "REMARKS", "DEBIT", "CREDIT", "BALANCE", "DESCRIPTION", "DETAILS", "NARRATION"]
     
     header_words = []
     for w in words:
@@ -42,9 +42,14 @@ def detect_providus_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[floa
                 return w["x0"], w["x1"]
         return None, None
 
+    # Providus columns can vary slightly (REMARKS, DESCRIPTION, DETAILS, NARRATION)
     x_txn_l, x_txn_r   = find_col("TXN")
     x_val_l, x_val_r   = find_col("VAL")
     x_rem_l, x_rem_r   = find_col("REMARKS")
+    if x_rem_l is None: x_rem_l, x_rem_r = find_col("DESCRIPTION")
+    if x_rem_l is None: x_rem_l, x_rem_r = find_col("DETAILS")
+    if x_rem_l is None: x_rem_l, x_rem_r = find_col("NARRATION")
+    
     x_deb_l, x_deb_r   = find_col("DEBIT")
     x_cred_l, x_cred_r = find_col("CREDIT")
     x_bal_l, x_bal_r   = find_col("BALANCE")
@@ -96,7 +101,8 @@ def extract_providus_via_tables(pdf_path: Path, metadata: Dict[str, Any]) -> Tup
         cuts = detect_providus_columns(words)
         
         if not cuts:
-             raise ValueError("Could not detect Providus column bounds")
+             print("WARN: Could not detect Providus column bounds")
+             return [], {}
              
         print(f"DEBUG: Active Providus Cuts: {cuts}")
         
