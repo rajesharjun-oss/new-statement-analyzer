@@ -608,6 +608,21 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
         "closing_balance": None,
     }
 
+    # --- 1) Parse metadata beforehand so specific routes get it ---
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            first_text = pdf.pages[0].extract_text() or ""
+            metadata.update(parse_statement_metadata(first_text))
+            
+            if len(pdf.pages) > 1:
+                last_text = pdf.pages[-1].extract_text() or ""
+                last_meta = parse_statement_metadata(last_text)
+                for key in ["statement_total_debit", "statement_total_credit", "closing_balance", "opening_balance"]:
+                    if last_meta.get(key) is not None:
+                        metadata[key] = last_meta[key]
+    except Exception as e:
+        print(f"DEBUG: Initial metadata extraction failed: {e}")
+
     # --- AUTO-DETECT BANK BEFORE ROUTING ---
     if bank_identifier == "auto":
         with pdfplumber.open(pdf_path) as pdf:
@@ -678,21 +693,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
     with pdfplumber.open(pdf_path) as pdf:
         pages_data: List[Tuple[int, List[Dict[str, Any]]]] = []
 
-        # --- 1) Parse metadata (important for validation) ---
-        # Scan Page 1 (Period, Name) and Page Last (Grand Totals)
-        first_text = pdf.pages[0].extract_text() or ""
-        metadata.update(parse_statement_metadata(first_text))
-        
-        if len(pdf.pages) > 1:
-            try:
-                last_text = pdf.pages[-1].extract_text() or ""
-                last_meta = parse_statement_metadata(last_text)
-                # Update totals from last page if present
-                for key in ["statement_total_debit", "statement_total_credit", "closing_balance"]:
-                    if last_meta.get(key) is not None:
-                        metadata[key] = last_meta[key]
-            except Exception as e:
-                print(f"DEBUG: Failed to extract text from last page: {e}")
+        # (Metadata is now parsed globally above before routing)
         
     # --- 0c) Special Case: Ecobank Dedicated Extractor
     # Also attempt for 'generic'/'unknown' banks — tables with (Transaction Date,
@@ -1059,6 +1060,8 @@ def parse_statement_metadata(text: str) -> Dict[str, Any]:
                      min_idx = idx
         
         cleaned_name = raw_name[:min_idx].strip()
+        # Remove trailing date ranges that might have gotten compressed onto the same physical line
+        cleaned_name = re.sub(r"\d{2}[-/]\d{2}[-/]\d{2,4}\s*(?:to|-)\s*\d{2}[-/]\d{2}[-/]\d{2,4}$", "", cleaned_name, flags=re.IGNORECASE).strip()
         # Remove trailing punctuation
         cleaned_name = cleaned_name.rstrip(":,.-")
         
