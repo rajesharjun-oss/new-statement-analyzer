@@ -3,6 +3,7 @@ WEMA Bank Dedicated Coordinate Extractor
 """
 import pdfplumber
 import math
+import re
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
 
@@ -133,7 +134,12 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> Tu
                     
                 date_str = row_dict.get("date", "")
                 parsed_date = parse_date_smart(date_str)
-                desc = row_dict.get("description", "")
+                # Wema narrations often spill into Tran ID column due to width constraints
+                desc_parts = [row_dict.get("description", "")]
+                if row_dict.get("tran_id"):
+                    desc_parts.append(row_dict.get("tran_id", ""))
+                desc = " ".join(desc_parts).strip()
+                desc = re.sub(r"\s+", " ", desc)
                 
                 if parsed_date and len(date_str) > 6 and ("/" in date_str or "-" in date_str):
                     pass # Valid new date
