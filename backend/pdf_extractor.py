@@ -488,6 +488,10 @@ def detect_template(first_page_text: str) -> str:
         return "ecobank"
     if "txn date" in text and "val date" in text:
         return "providus"
+    # Access Bank: uses "Transaction Details" + "Withdrawals" + "Lodgements"
+    # Must check BEFORE Zenith since both share "transaction details" + "value date"
+    if "transaction details" in text and ("withdrawals" in text or "lodgements" in text):
+        return "access"
     if "transaction details" in text and "value date" in text:
         return "zenith"
 
@@ -501,7 +505,7 @@ def detect_template(first_page_text: str) -> str:
     if "zenith" in text:
         return "zenith"
     if "access bank" in text or "access diamond" in text:
-        return "accessbank"
+        return "access"
     if "united bank for africa" in text or " uba " in text:
         return "uba"
     if "first bank" in text or "firstbank" in text:
