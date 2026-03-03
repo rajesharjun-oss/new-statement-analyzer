@@ -1624,11 +1624,35 @@ def detect_fidelity_columns(words: List[Dict], bank_identifier: str) -> Dict[str
     cols = []
     # (name, left_edge, right_edge)
     cols.append(("date", lx_trans, rx_trans))
-    if lx_value is not None: cols.append(("value_date", lx_value, rx_value))
-    if lx_channel is not None: cols.append(("channel", lx_channel, rx_channel))
+    if lx_value is not None:
+        cols.append(("value_date", lx_value, rx_value))
+    else:
+        # Fallback if Value Date is completely missing but Date is present
+        cols.append(("value_date", rx_trans + 10, rx_trans + 40))
+        
+    if lx_channel is not None: 
+        cols.append(("channel", lx_channel, rx_channel))
+    else:
+        # If Channel is entirely missing, we still need to reserve some space for its data
+        # Typically it's between Value Date and Details
+        v_right = rx_value if lx_value is not None else rx_trans + 40
+        cols.append(("channel", v_right + 10, v_right + 50))
+        
     cols.append(("description", lx_details, rx_details))
-    if lx_pay_in is not None: cols.append(("credit", lx_pay_in, rx_pay_in))
-    if lx_pay_out is not None: cols.append(("debit", lx_pay_out, rx_pay_out))
+    
+    if lx_pay_in is not None: 
+        cols.append(("credit", lx_pay_in, rx_pay_in))
+    else:
+        # Fallback for credit if missing
+        cols.append(("credit", rx_details + 50, rx_details + 120))
+        
+    if lx_pay_out is not None: 
+        cols.append(("debit", lx_pay_out, rx_pay_out))
+    else:
+        # Fallback for debit if missing
+        c_right = rx_pay_in if lx_pay_in is not None else rx_details + 120
+        cols.append(("debit", c_right + 10, c_right + 80))
+        
     cols.append(("balance", lx_bal, rx_bal))
 
     cols.sort(key=lambda x: x[1])
@@ -1641,7 +1665,12 @@ def detect_fidelity_columns(words: List[Dict], bank_identifier: str) -> Dict[str
             left = x0_curr - 10
         else:
             prev_x1 = cols[i-1][2]
-            left = (prev_x1 + x0_curr) / 2
+            # Custom fix for Date -> Value Date overlap. 
+            # If the current column is "value_date" and previous was "date", cut earlier.
+            if name == "value_date" and cols[i-1][0] == "date":
+                left = x0_curr - 15  # Tighter bound instead of midpoint
+            else:
+                left = (prev_x1 + x0_curr) / 2
             
         if i < len(cols) - 1:
             next_name, next_x0, next_x1 = cols[i+1]
@@ -2722,9 +2751,13 @@ def extract_fidelity_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
     
     all_rows = []
     with pdfplumber.open(pdf_path) as pdf:
-        # Detect columns from page 1
-        page1 = pdf.pages[0]
-        words = page1.extract_words()
+        try:
+            page1 = pdf.pages[0]
+            words = page1.extract_words()
+        except Exception as e:
+            print(f"DEBUG: Initial pdfplumber crashed: {e}. Trying pypdf for headers...")
+            words = extract_words_from_pypdf(str(pdf_path), 0)
+            
         cuts = detect_fidelity_columns(words, 'fidelity')
         
         if not cuts:
@@ -2744,7 +2777,7 @@ def extract_fidelity_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
                     p_words = extract_words_from_pypdf(str(pdf_path), i)
                 
                 if not p_words: continue
-                
+            
                 rows = group_words_to_rows(p_words, y_tol=3.0)
                 for r_idx, r in enumerate(rows):
                     if is_noise_row(r): continue
