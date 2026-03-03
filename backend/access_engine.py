@@ -90,6 +90,30 @@ def detect_access_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float,
 
 def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     from pdf_extractor import parse_date_smart, first_money, is_noise_row
+    import pandas as pd
+    
+    def _parse_access_date(date_str: str) -> str | None:
+        """
+        Access Bank uses M/D/YYYY (US format) for transaction dates.
+        e.g. 10/1/2025 = October 1, 2025 (NOT January 10, 2025)
+        But Value Date uses DD-MMM-YYYY (e.g. 01-Oct-2025).
+        """
+        s = (date_str or "").strip()
+        if not s or len(s) < 6:
+            return None
+        
+        # If it contains slashes, treat as M/D/YYYY (Access Bank US format)
+        if "/" in s:
+            try:
+                dt = pd.to_datetime(s, dayfirst=False, errors='coerce')
+                if pd.notna(dt):
+                    return dt.strftime("%d-%b-%Y")
+            except:
+                pass
+            
+        # Otherwise fallback to the standard parser
+        return parse_date_smart(s)
+    
     txns = []
     
     with pdfplumber.open(pdf_path) as pdf:
@@ -141,7 +165,7 @@ def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> 
                     continue
                     
                 date_str = row_dict.get("date", "")
-                parsed_date = parse_date_smart(date_str)
+                parsed_date = _parse_access_date(date_str)
                 desc = row_dict.get("description", "")
                 ref = row_dict.get("reference", "")
                 
@@ -168,7 +192,7 @@ def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> 
                     
                     txn = {
                         "date": parsed_date,
-                        "value_date": parse_date_smart(row_dict.get("value_date", "")) or parsed_date,
+                        "value_date": _parse_access_date(row_dict.get("value_date", "")) or parsed_date,
                         "description": desc,
                         "reference": ref,
                         "debit": debit,
