@@ -1504,11 +1504,64 @@ def detect_access_columns(words: List[Dict], bank_identifier: str) -> Dict[str, 
     return cuts
 
 def detect_fidelity_columns(words: List[Dict], bank_identifier: str) -> Dict[str, Tuple[float, float]] | None:
-    """Fidelity: Transaction Date | Value Date | Channel | Details | Pay In | Pay Out | Balance"""
+    """Fidelity: Transaction Date | Value Date | Channel | Details | Pay In | Pay Out | Balance OR Date | Transaction Details | Reference | Value Date | Withdrawals | Lodgements | Balance"""
     if bank_identifier != "fidelity": return None
     
-    # Fidelity headers are often split: ["Pay", "In"], ["Pay", "Out"]
-    # We look for a row containing most of these keywords
+    # 1. Try Layout 2 (Access Bank style: Withdrawals / Lodgements)
+    # -----------------------------------------------------------------
+    def find_x(regex):
+        matches = [w for w in words if re.search(regex, w["text"], re.I)]
+        return min([w["x0"] for w in matches]) if matches else None
+
+    def find_x_right(regex):
+        matches = [w for w in words if re.search(regex, w["text"], re.I)]
+        return max([w["x1"] for w in matches]) if matches else None
+
+    x_date = find_x(r"Date")
+    x_details = find_x(r"Transaction\s*Details|Transaction|Details|Narration|Description|Particulars")
+    x_ref = find_x(r"Ref|Chq")
+    x_val = find_x(r"Value")
+    x_with = find_x_right(r"Withdraw|Debit|Dr\b")
+    x_lodge = find_x_right(r"Lodg|Deposit|Credit|Cr\b")
+    x_bal = find_x_right(r"Balance|Bal\b")
+
+    if all([x_date, x_with, x_lodge, x_bal]):
+        print("DEBUG: Detected NEW Fidelity layout (Access Style)")
+        cuts = {}
+        
+        # Determine safest boundaries
+        # Date: 0 to Details
+        next_to_date = x_details if x_details else (x_ref if x_ref else x_with)
+        cuts["date"] = (0, next_to_date - 5)
+        
+        # Details: next_to_date to Reference
+        next_to_details = x_ref if x_ref else (x_val if x_val else x_with)
+        cuts["description"] = (next_to_date - 5, next_to_details - 5)
+        
+        # Reference: x_ref to Value Date
+        if x_ref:
+            next_to_ref = x_val if x_val else x_with
+            cuts["reference"] = (x_ref - 5, next_to_ref - 5)
+        else:
+            cuts["reference"] = (0, 0)
+            
+        # Value Date
+        if x_val:
+            # Value Date and Withdrawals (Debit) are very close and horizontally overlapping.
+            # Cut at x_with - 35 (approx 515) to separate '02-Oct-2025' from '513,000.00'
+            cut_point = x_with - 35
+            cuts["value_date"] = (x_val - 5, cut_point)
+            cuts["debit"] = (cut_point, x_with + 5)
+        else:
+            cuts["value_date"] = (0, 0)
+            cuts["debit"] = (x_with - 80, x_with + 5)
+            
+        cuts["credit"] = (x_lodge - 65, x_lodge + 5)
+        cuts["balance"] = (x_bal - 80, x_bal + 5)
+        return cuts
+
+    # 2. Try Layout 1 (Classic Fidelity: Pay In / Pay Out)
+    # -----------------------------------------------------------------
     rows = group_words_to_rows(words, y_tol=3.0)
     best_row = None
     max_score = 0
@@ -1541,11 +1594,21 @@ def detect_fidelity_columns(words: List[Dict], bank_identifier: str) -> Dict[str
         return None, None
 
     def find_phrase_bounds(p1, p2):
+        # 1. Single word
+        for w in r_words:
+            if re.search(p1, w["text"], re.I) and re.search(p2, w["text"], re.I):
+                return (w["x0"], w["x1"])
+        
+        # 2. Consecutive words
         for i in range(len(r_words) - 1):
             if re.search(p1, r_words[i]["text"], re.I) and re.search(p2, r_words[i+1]["text"], re.I):
                 return (r_words[i]["x0"], r_words[i+1]["x1"])
-        x0, x1 = find_bounds(p1)
-        return x0, x1
+                
+        # 3. Fallback: find distinguishing p2
+        for w in r_words:
+            if re.search(rf"\b{p2}\b", w["text"], re.I):
+                return (w["x0"], w["x1"])
+        return None, None
 
     lx_trans, rx_trans = find_bounds(r"Transaction")
     lx_value, rx_value = find_bounds(r"Value")
