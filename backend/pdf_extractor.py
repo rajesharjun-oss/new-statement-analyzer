@@ -251,6 +251,7 @@ def detect_column_cuts_from_header(words: List[Dict[str, Any]], bank_identifier:
         ("Access", detect_access_columns),
         ("Fidelity", detect_fidelity_columns),
         ("AptSecurities", detect_apt_columns),
+        ("GTCO", detect_gtco_columns),
         ("GTBank", detect_gtbank_columns) # Fallback last
     ]
     
@@ -265,15 +266,16 @@ def detect_column_cuts_from_header(words: List[Dict[str, Any]], bank_identifier:
     
     for name, detector_func in detectors:
         try:
-            # UBA and Access need extra args
+            # Propagate the outer bank_identifier (hint) to detectors
+            print(f"DEBUG: Trying detector {name} with bank_identifier={bank_identifier}...")
             if name == "UBA":
-                cuts = detector_func(words, "uba")
+                cuts = detector_func(words, bank_identifier)
             elif name == "Access":
-                cuts = detector_func(words, "accessbank")
+                cuts = detector_func(words, bank_identifier)
             elif name == "Fidelity":
-                cuts = detector_func(words, "fidelity")
+                cuts = detector_func(words, bank_identifier)
             elif name == "AptSecurities":
-                cuts = detector_func(words, "apt_securities")
+                cuts = detector_func(words, bank_identifier)
             elif name == "FirstBank":
                 cuts = detector_func(words)
             elif name == "Wema":
@@ -288,7 +290,9 @@ def detect_column_cuts_from_header(words: List[Dict[str, Any]], bank_identifier:
                 score = len(cuts)
                 
                 # Bonus for mandatory columns (Date, Debit, Credit)
-                if "TransDate" in cuts and "Debit" in cuts and "Credit" in cuts:
+                # Note: GTBank uses 'date', 'debit', 'credit' but others might use 'TransDate'
+                mandatory = ["date", "debit", "credit"]
+                if all(col in cuts for col in mandatory):
                     score += 2
                     
                 # Bonus if this matches the user/auto-detected bank
@@ -301,9 +305,12 @@ def detect_column_cuts_from_header(words: List[Dict[str, Any]], bank_identifier:
                     best_score = score
                     best_cuts = cuts
                     best_name = name
-                    
+            else:
+                print(f"DEBUG: Detector {name} returned NO cuts.")
         except Exception as e:
             print(f"DEBUG: Detector {name} crashed: {e}")
+            import traceback
+            traceback.print_exc()
             continue
 
     if best_cuts:
@@ -319,8 +326,9 @@ def parse_date_smart(date_str: str) -> str | None:
     Parse various date formats robustly.
     Normalization: DD-MMM-YYYY (e.g., 15-Jan-2023)
     """
-    s = (date_str or "").strip()
-    if not s or len(s) < 6:
+    # Remove soft hyphens \xad often found in GTCO PDFs
+    s = (date_str or "").replace("\xad", "").strip()
+    if not s or len(s) < 4: # Relaxed for partial matches during merging
         return None
     
     # Standard: 01-Jan-2023
@@ -475,7 +483,38 @@ def detect_template(first_page_text: str) -> str:
     # Normalize: replace newlines with spaces, then collapse multiple spaces
     text = " ".join(first_page_text.lower().replace("\n", " ").split())
 
-    # --- Priority 1: Column-header fingerprints ---
+    # --- Priority 1: Explicit bank name (Header only) ---
+    # We restrict to the first 1500 chars to avoid false positives from transaction descriptions
+    # (e.g. transferring money to "Access Bank" in a Sterling statement)
+    header_text = text[:1500]
+    if "ecobank" in header_text:
+        return "ecobank"
+    if "gtco" in header_text:
+        return "gtco"
+    if "guaranty trust" in header_text or "gtbank" in header_text or " gtb " in header_text:
+        return "gtbank"
+    if "providus" in header_text:
+        return "providus"
+    if "zenith" in header_text:
+        return "zenith"
+    if "access bank" in header_text or "access diamond" in header_text:
+        return "access"
+    if "united bank for africa" in header_text or " uba " in header_text:
+        return "uba"
+    if "first bank" in header_text or "firstbank" in header_text:
+        return "firstbank"
+    if "fidelity" in header_text:
+        return "fidelity"
+    if "fcmb" in header_text or "first city monument" in header_text:
+        return "fcmb"
+    if "wema" in header_text:
+        return "wema"
+    if "sterling" in header_text:
+        return "sterling"
+    if "stanbic" in header_text:
+        return "stanbic"
+
+    # --- Priority 2: Column-header fingerprints ---
     # GTBank requires BOTH structural signals to avoid false positives
     gtbank_signals = (
         ("originating branch" in text) +
@@ -488,38 +527,14 @@ def detect_template(first_page_text: str) -> str:
         return "ecobank"
     if "txn date" in text and "val date" in text:
         return "providus"
+    if "money in" in text and "money out" in text and "narration" in text:
+        return "sterling"
     # Access Bank: uses "Transaction Details" + "Withdrawals" + "Lodgements"
     # Must check BEFORE Zenith since both share "transaction details" + "value date"
     if "transaction details" in text and ("withdrawals" in text or "lodgements" in text):
         return "access"
     if "transaction details" in text and "value date" in text:
         return "zenith"
-
-    # --- Priority 2: Explicit bank name ---
-    if "ecobank" in text:
-        return "ecobank"
-    if "guaranty trust" in text or "gtbank" in text or " gtb " in text:
-        return "gtbank"
-    if "providus" in text:
-        return "providus"
-    if "zenith" in text:
-        return "zenith"
-    if "access bank" in text or "access diamond" in text:
-        return "access"
-    if "united bank for africa" in text or " uba " in text:
-        return "uba"
-    if "first bank" in text or "firstbank" in text:
-        return "firstbank"
-    if "fidelity" in text:
-        return "fidelity"
-    if "fcmb" in text or "first city monument" in text:
-        return "fcmb"
-    if "wema" in text:
-        return "wema"
-    if "sterling" in text:
-        return "sterling"
-    if "stanbic" in text:
-        return "stanbic"
 
     print("DEBUG [detect_template]: Could not identify bank - returning 'generic'")
     return "generic"
@@ -646,16 +661,28 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
 
             bank_identifier = detect_template(combined_text)
 
-            # HARD GUARD: GTBank only allowed if positively detected with 2+ signals
+            # HARD GUARD: GTBank only allowed if positively detected (with 2+ signals OR explicit header name)
             if STRICT_TEMPLATE_MODE and bank_identifier == "gtbank":
-                norm = " ".join(combined_text.lower().replace("\n", " ").split())
+                low_text = combined_text.lower()
+                norm = " ".join(low_text.replace("\n", " ").split())
                 gtbank_signals = (
                     ("originating branch" in norm) +
                     ("remarks" in norm) +
                     ("trans. date" in norm or "trans date" in norm)
                 )
-                if gtbank_signals < 2:
-                    print(f"WARN: GTBank detected but only {gtbank_signals} signal(s). Downgrading to generic.")
+                
+                # Explicit override: If the header says "Guaranty Trust" or "GTCO", we trust it even with 0 signals
+                explicit_name = "guaranty trust" in low_text or "gtco" in low_text
+                
+                if gtbank_signals < 2 and not explicit_name:
+                    print(f"WARN: GTBank detected but only {gtbank_signals} signal(s) and no explicit name. Downgrading to generic.")
+                    bank_identifier = "generic"
+
+            # HARD GUARD: GTCO only allowed if positively detected
+            if bank_identifier == "gtco":
+                low_text = combined_text.lower()
+                if "gtco" not in low_text:
+                    print(f"WARN: GTCO detected by keyword but 'gtco' not in text. Downgrading to generic.")
                     bank_identifier = "generic"
 
             metadata["bank"] = bank_identifier
@@ -695,8 +722,25 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
 
     if bank_identifier == "access":
          from access_engine import extract_access_via_coordinates
-         acc_txns, acc_meta = extract_access_via_coordinates(Path(pdf_path), metadata)
-         if acc_txns: return normalize_remarks(acc_txns), acc_meta
+         try:
+             acc_txns, acc_meta = extract_access_via_coordinates(Path(pdf_path), metadata)
+             if acc_txns:
+                 print(f"DEBUG: Access engine returned {len(acc_txns)} transactions")
+                 return normalize_remarks(acc_txns), acc_meta
+             print(f"WARN: Access engine returned 0 transactions. Trying AI fallback...")
+         except Exception as e:
+             print(f"WARN: Access engine crashed: {e}. Trying AI fallback...")
+         
+         # AI fallback for Access Bank
+         if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+             try:
+                 ai_txns = extract_transactions_via_ai(str(pdf_path), max_pages=15, bank_identifier='access')
+                 if ai_txns:
+                     print(f"DEBUG: Access AI fallback returned {len(ai_txns)} transactions")
+                     return normalize_remarks(ai_txns), metadata
+             except Exception as e:
+                 print(f"WARN: Access AI fallback also failed: {e}")
+         print(f"WARN: All Access extraction methods failed. Falling through to generic...")
     
     column_debug = {}  # Define in outer scope for metadata access
     
@@ -724,17 +768,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
 
 
 
-    # --- 0d) Special Case: FCMB Table Strategy
-    if bank_identifier == "fcmb":
-        try:
-             fcmb_txns = extract_fcmb_via_tables(Path(pdf_path), metadata)
-             if fcmb_txns:
-                 return normalize_remarks(fcmb_txns), metadata
-        except Exception as e:
-             print(f"DEBUG: FCMB table strategy failed: {e}. Trying Hybrid AI Fallback...")
-             if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
-                 txns = extract_transactions_via_ai(str(pdf_path))
-                 if txns: return normalize_remarks(txns), metadata
+
 
     # --- 0e) Special Case: Fidelity Table Strategy
     if bank_identifier == "fidelity":
@@ -828,7 +862,10 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
                 print(f"DEBUG: Page {page_num} has no words, skipping...")
                 continue
 
-            row_groups = group_words_to_rows(words, y_tol=2.5)
+            # --- 3a) Group words into rows with bank-specific tolerance ---
+            # GTCO (GTBank) vertically stacks dates, needing higher tolerance.
+            tol = 12.0 if bank_identifier in ["gtbank", "gtco"] else 2.5
+            row_groups = group_words_to_rows(words, y_tol=tol)
 
             for rg in row_groups:
                 line_text = " ".join([w["text"] for w in rg["words"]]).lower()
@@ -892,7 +929,8 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
     print(f"DEBUG: Total transactions after merge: {len(transactions)}")
     
     # --- 4) Repair field mixing (GTBank-specific cleanup) ---
-    transactions = repair_fields_batch(transactions)
+    if bank_identifier in ["gtbank", "gtco"]:
+        transactions = repair_fields_batch(transactions)
 
     # --- 7) Convert to final format with numeric values ---
     # First, sort by statement order (page, row) - DON'T sort by category or date later!
@@ -912,7 +950,8 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
             desc_parts.append(branch_val)
         if narration_val:
             desc_parts.append(narration_val)
-        remarks = " ".join(desc_parts).strip()
+        remarks = " ".join(desc_parts).replace("\xad", "").strip()
+        remarks = re.sub(r"\s+", " ", remarks)
 
         # Parse amounts
         deb_val = parse_money(txn.get("debit", ""))
@@ -934,7 +973,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
             "reference": ref_val,
             "originating_branch": branch_val,
             "remarks": remarks,       # Full combined string (ref + branch + narration)
-            "description": narration_val,  # Just the narration — no reference prepended
+            "description": narration_val.replace("\xad", "").strip(),  # Just the narration — no reference prepended
             "debit": deb_val,
             "credit": cred_val,
             "balance": parse_money(txn.get("balance", "")),
@@ -1509,7 +1548,10 @@ def detect_access_columns(words: List[Dict], bank_identifier: str) -> Dict[str, 
 
 def detect_fidelity_columns(words: List[Dict], bank_identifier: str) -> Dict[str, Tuple[float, float]] | None:
     """Fidelity: Transaction Date | Value Date | Channel | Details | Pay In | Pay Out | Balance OR Date | Transaction Details | Reference | Value Date | Withdrawals | Lodgements | Balance"""
-    if bank_identifier != "fidelity": return None
+    # HARD GUARD: Fidelity only allowed if positively detected OR if we are in 'auto' mode and searching.
+    # If bank_identifier is already something specific like 'gtbank', and it's NOT 'fidelity', reject immediately.
+    if bank_identifier and bank_identifier != "auto" and "fidelity" not in bank_identifier.lower():
+        return None
     
     # 1. Try Layout 2 (Access Bank style: Withdrawals / Lodgements)
     # -----------------------------------------------------------------
@@ -1732,22 +1774,103 @@ def detect_apt_columns(words: List[Dict], bank_identifier: str) -> Dict[str, Tup
 
 
 
+
+def detect_gtco_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
+    """
+    Detect column boundaries for GTCO from the header row.
+    Specialized for GTCO's multi-line stacked headers and soft-hyphen encoding.
+    """
+    # GTCO headers are multi-line (stacked).
+    rows = group_words_to_rows(words, y_tol=3.0)
+    
+    # GTCO specific keywords
+    keyword_map = r"(Trans|Value|Ref|Deb|Cred|Bal|Particulars|Remarks|Details|Branch)"
+    
+    best_row_idx = -1
+    max_score = 0
+    for idx, r in enumerate(rows):
+        # We also look for soft-hyphens which are common in GTCO headers
+        score = sum(1 for w in r["words"] if re.search(keyword_map, w["text"].replace("\xad", ""), re.I))
+        if score > max_score:
+            max_score = score
+            best_row_idx = idx
+            
+    if best_row_idx == -1 or max_score < 3:
+        return None
+
+    header_top = rows[best_row_idx]["top"]
+    header_band = (header_top - 25, header_top + 25) # Slightly wider band for GTCO
+    header_words = [w for w in words if header_band[0] <= w["top"] <= header_band[1]]
+
+    def find_x(regex: str):
+        """Find left edge (x0) for left-aligned columns"""
+        xs = [w["x0"] for w in header_words if re.search(regex, w["text"].replace("\xad", ""), re.I)]
+        return min(xs) if xs else None
+    
+    def find_x_right(regex: str):
+        """Find right edge (x1) for right-aligned numeric columns"""
+        xs = [w["x1"] for w in header_words if re.search(regex, w["text"].replace("\xad", ""), re.I)]
+        return max(xs) if xs else None
+    
+    x_trans = find_x(r"Trans")
+    x_value = find_x(r"Value")
+    x_ref   = find_x(r"Refer")
+    x_deb   = find_x_right(r"Deb")
+    x_cred  = find_x_right(r"Cred")
+    x_bal   = find_x_right(r"Bal")
+    x_branch = find_x(r"Originat|Branch")
+    x_rem   = find_x(r"Remarks?|Particulars|Details")
+
+    if any(v is None for v in [x_trans, x_deb, x_cred, x_bal]):
+        return None
+
+    cols = [("date", x_trans)]
+    if x_value is not None: cols.append(("value_date", x_value))
+    if x_ref is not None: cols.append(("reference", x_ref))
+    cols.extend([("debit", x_deb), ("credit", x_cred), ("balance", x_bal)])
+    if x_branch is not None: cols.append(("branch", x_branch))
+    if x_rem is not None: cols.append(("description", x_rem))
+    
+    cols = sorted(cols, key=lambda x: x[1])
+    
+    cuts: Dict[str, Tuple[float, float]] = {}
+    for i, (name, x) in enumerate(cols):
+        if i == 0:
+            cuts[name] = (-math.inf, (x + cols[i+1][1]) / 2)
+        elif i == len(cols) - 1:
+            cuts[name] = ((cols[i-1][1] + x) / 2, math.inf)
+        else:
+            cuts[name] = ((cols[i-1][1] + x) / 2, (x + cols[i+1][1]) / 2)
+    
+    print(f"DEBUG: GTCO Column boundaries: {[(name, f'{left:.1f}-{right:.1f}') for name, (left, right) in cuts.items()]}")
+    return cuts
+
 def detect_gtbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
     """
     Detect column boundaries for GTBank from the header row.
     """
-    if not words:
+    # GTCO (GTBank) headers can be multi-line (stacked).
+    # We group words by Y and find the "row" that has the MOST header keywords.
+    rows = group_words_to_rows(words, y_tol=3.0)
+    # Removing boundaries entirely for maximum robustness
+    keyword_map = r"(Trans|Value|Ref|Deb|Cred|Bal|Particulars|Remarks|Details|Branch)"
+    
+    best_row_idx = -1
+    max_score = 0
+    for idx, r in enumerate(rows):
+        score = sum(1 for w in r["words"] if re.search(keyword_map, w["text"], re.I))
+        if score > max_score:
+            max_score = score
+            best_row_idx = idx
+            
+    if best_row_idx == -1 or max_score < 3:
+        print(f"DEBUG [detect_gtbank_columns]: No header row found. Max score: {max_score}")
         return None
 
-    # find header band by locating tokens like Debit/Credit/Balance/Trans
-    header_candidates = [w["top"] for w in words if re.search(r"(Trans|Value|Debit|Credit|Balance|Remarks|Refer|Particulars|Details|Branch|Originat)", w["text"], re.I)]
-    if not header_candidates:
-        return None
-
-    # pick the most common top band
-    header_top = sorted(header_candidates)[len(header_candidates)//2]
-    band = (header_top - 6, header_top + 6)
-    header_words = [w for w in words if band[0] <= w["top"] <= band[1]]
+    # Found a header line. Expand to include +/- 25 pixels around it to capture stacked labels
+    header_top = rows[best_row_idx]["top"]
+    header_band = (header_top - 20, header_top + 20)
+    header_words = [w for w in words if header_band[0] <= w["top"] <= header_band[1]]
 
     def find_x(regex: str):
         """Find left edge (x0) for left-aligned columns"""
@@ -1758,22 +1881,22 @@ def detect_gtbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float,
         """Find right edge (x1) for right-aligned numeric columns"""
         xs = [w["x1"] for w in header_words if re.search(regex, w["text"], re.I)]
         return max(xs) if xs else None
-
+    
     # Left-aligned columns - use left edge
     x_trans = find_x(r"Trans")
     x_value = find_x(r"Value")
     x_ref   = find_x(r"Refer")
     
-    # Right-aligned numeric columns - use right edge for better alignment
+    # Right-aligned numeric columns - use right edge
     x_deb   = find_x_right(r"Deb")
     x_cred  = find_x_right(r"Cred")
     x_bal   = find_x_right(r"Bal")
     
-    # Other columns
-    x_branch = find_x(r"Originat|Branch")  # Originating Branch column
-    x_rem   = find_x(r"Remarks?|Particulars|Details")  # Description column
+    x_branch = find_x(r"Originat|Branch")
+    x_rem   = find_x(r"Remarks?|Particulars|Details")
 
     if any(v is None for v in [x_trans, x_deb, x_cred, x_bal]):
+        print(f"DEBUG [detect_gtbank_columns]: Missing required columns. Returning None.")
         return None
 
     cols = [
@@ -1960,115 +2083,107 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     i = 0
     while i < len(rows):
-        r = rows[i]
-        
-        # Standardized keys
-        tdate = (r.get("date") or "").strip()
-        ref = (r.get("reference") or "").strip()
-        rem = (r.get("description") or "").strip()
-        deb = (r.get("debit") or "").strip()
-        cred = (r.get("credit") or "").strip()
-        bal = (r.get("balance") or "").strip()
-        branch = (r.get("branch") or "").strip()
-        
-        # Access raw text if available
-        raw_text = r.get("_raw_text", "")
-        if not raw_text:
-             raw_text = " ".join([tdate, ref, rem, deb, cred, bal, branch])
+        try:
+            r = rows[i]
+            
+            # Standardized keys
+            tdate = (r.get("date") or "").strip()
+            ref = (r.get("reference") or "").strip()
+            rem = (r.get("description") or "").strip()
+            deb = (r.get("debit") or "").strip()
+            cred = (r.get("credit") or "").strip()
+            bal = (r.get("balance") or "").strip()
+            branch = (r.get("branch") or "").strip()
+            
+            # Access raw text if available
+            raw_text = r.get("_raw_text", "")
+            if not raw_text:
+                 raw_text = " ".join([tdate, ref, rem, deb, cred, bal, branch])
 
-        full_line_text = raw_text.upper()
-        
-        # --- FIX 5: SKIP SUMMARY ROWS ---
-        if "CLOSING BALANCE" in full_line_text:
-             i += 1
-             continue
-        if "OPENING BALANCE" in full_line_text:
+            full_line_text = raw_text.upper()
+            
+            # --- FIX: SKIP SUMMARY ROWS ---
+            if "CLOSING BALANCE" in full_line_text or "OPENING BALANCE" in full_line_text:
+                 i += 1
+                 continue
+
+            # --- FIX: SPLIT DECIMAL MERGE ---
+            if i + 1 < len(rows):
+                next_r = rows[i+1]
+                next_deb = (next_r.get("debit") or "").strip()
+                next_cred = (next_r.get("credit") or "").strip()
+                next_bal = (next_r.get("balance") or "").strip()
+                
+                def try_merge_dec(curr_val, next_val):
+                    if not curr_val or not next_val: return None
+                    curr_val = curr_val.strip()
+                    next_val = next_val.strip()
+                    if curr_val.endswith('.') and re.match(r'^\d{1,2}$', next_val):
+                         return curr_val + next_val
+                    if re.match(r'.*\.\d$', curr_val) and re.match(r'^\d$', next_val):
+                         return curr_val + next_val
+                    return None
+
+                m_d = try_merge_dec(deb, next_deb)
+                if m_d: deb = m_d; rows[i+1]["debit"] = ""
+                m_c = try_merge_dec(cred, next_cred)
+                if m_c: cred = m_c; rows[i+1]["credit"] = ""
+                m_b = try_merge_dec(bal, next_bal)
+                if m_b: bal = m_b; rows[i+1]["balance"] = ""
+
+            # --- FIX: ANCHOR LOGIC ---
+            has_date = bool(parse_date_smart(tdate))
+            has_amt = bool(deb or cred)
+            has_bal = bool(bal)
+            
+            # --- FIX: RIGHT-TO-LEFT FALLBACK (If date+bal but no amount) ---
+            if has_date and has_bal and not has_amt:
+                 money_tokens = re.findall(r'[\d,]+(?:\.\d+)?', raw_text)
+                 money_tokens = [m for m in money_tokens if re.search(r'\d', m)]
+                 if len(money_tokens) >= 2:
+                     pot_bal = clean_as_float(money_tokens[-1])
+                     if abs(pot_bal - clean_as_float(bal)) < 1.0:
+                          if not deb and not cred:
+                               deb = money_tokens[-2]
+            
+            is_anchor = has_date and (has_amt or has_bal)
+
+            if is_anchor:
+                if current:
+                    out.append(current)
+                
+                current = {
+                    "_page": r.get("_page"),
+                    "_row": r.get("_row"),
+                    "date": parse_date_smart(tdate),
+                    "value_date": (r.get("value_date") or "").strip(),
+                    "reference": ref,
+                    "debit": deb,
+                    "credit": cred,
+                    "balance": bal,
+                    "description": rem,
+                    "branch": branch,
+                    "raw_text": raw_text
+                }
+            else:
+                # Merging logic
+                if current:
+                    desc_dt = parse_date_smart(rem)
+                    assigned_dt = False
+                    if desc_dt and not current["value_date"]:
+                         current["value_date"] = desc_dt
+                         assigned_dt = True
+                    
+                    if ref: current["reference"] = (current["reference"] + " " + ref).strip()
+                    if not assigned_dt and rem: 
+                         current["description"] = (current["description"] + " " + rem).strip()
+                    if branch: current["branch"] = (current["branch"] + " " + branch).strip()
+                    
+            i += 1
+        except Exception as e:
+            print(f"DEBUG [merge_multiline_rows] CRASH at index {i}: {e}")
             i += 1
             continue
-
-        # --- FIX 2: SPLIT DECIMAL MERGE ---
-        if i + 1 < len(rows):
-            next_r = rows[i+1]
-            next_deb = (next_r.get("debit") or "").strip()
-            next_cred = (next_r.get("credit") or "").strip()
-            next_bal = (next_r.get("balance") or "").strip()
-            
-            def try_merge_dec(curr_val, next_val):
-                if not curr_val or not next_val: return None
-                curr_val = curr_val.strip()
-                next_val = next_val.strip()
-                if curr_val.endswith('.') and re.match(r'^\d{1,2}$', next_val):
-                     return curr_val + next_val
-                if re.match(r'.*\.\d$', curr_val) and re.match(r'^\d$', next_val):
-                     return curr_val + next_val
-                return None
-
-            m_d = try_merge_dec(deb, next_deb)
-            if m_d: deb = m_d; rows[i+1]["debit"] = ""
-            m_c = try_merge_dec(cred, next_cred)
-            if m_c: cred = m_c; rows[i+1]["credit"] = ""
-            m_b = try_merge_dec(bal, next_bal)
-            if m_b: bal = m_b; rows[i+1]["balance"] = ""
-
-        # --- FIX 1: STRICT ANCHOR LOGIC ---
-        has_date = bool(parse_date_smart(tdate))
-        has_amt = bool(deb or cred)
-        has_bal = bool(bal)
-        
-        # --- FIX 3: RIGHT-TO-LEFT FALLBACK (If date+bal but no amount) ---
-        if has_date and has_bal and not has_amt:
-             # Try to parse from raw text
-             # FIX 1: Relaxed regex for money tokens (no length limit, optional decimals)
-             money_tokens = re.findall(r'[\d,]+(?:\.\d+)?', raw_text)
-             # Filter out non-money like just "," or "." if any
-             money_tokens = [m for m in money_tokens if re.search(r'\d', m)]
-             # Heuristic: If we have balance, check last token.
-             if len(money_tokens) >= 2:
-                 pot_bal = clean_as_float(money_tokens[-1])
-                 if abs(pot_bal - clean_as_float(bal)) < 1.0:
-                      # Match! Preceeding might be amt
-                      pot_amt = clean_as_float(money_tokens[-2])
-                      # Simple assignment to Debit for now (Validation will check direction)
-                      # Or check if credit column is populated? No it's empty.
-                      # Assume Debit default, let Fix 6 resolve if wrong.
-                      if not deb and not cred:
-                           deb = money_tokens[-2]
-                           current_flags = "Repaired (Right-to-Left)"
-        
-        is_anchor = has_date and (has_amt or has_bal) # Relaxed anchor for Fix 2
-
-        if is_anchor:
-            if current:
-                out.append(current)
-            
-            current = {
-                "_page": r.get("_page"),
-                "_row": r.get("_row"),
-                "date": parse_date_smart(tdate),
-                "value_date": (r.get("value_date") or "").strip(),
-                "reference": ref,
-                "debit": deb,
-                "credit": cred,
-                "balance": bal,
-                "description": rem,
-                "branch": branch,
-                "raw_text": raw_text
-            }
-        else:
-            # Merging logic
-            if current:
-                desc_dt = parse_date_smart(rem)
-                assigned_dt = False
-                if desc_dt and not current["value_date"]:
-                     current["value_date"] = desc_dt
-                     assigned_dt = True
-                
-                if ref: current["reference"] = (current["reference"] + " " + ref).strip()
-                if not assigned_dt and rem: 
-                    current["description"] = (current["description"] + " " + rem).strip()
-                if branch: current["branch"] = (current["branch"] + " " + branch).strip()
-                
-        i += 1
 
     if current:
         out.append(current)
@@ -2644,101 +2759,6 @@ def extract_zenith_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
     return final_txns
 
 
-def extract_fcmb_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
-    """
-    Specialized extractor for FCMB using pdfplumber's extract_tables()
-    Strategy: 
-    - Col 0: Date
-    - Last 3 Cols: Debit, Credit, Balance
-    - Middle: Description
-    """
-    print("DEBUG: Using FCMB Table-Based Extraction Strategy")
-    all_rows = []
-    
-    with pdfplumber.open(pdf_path) as pdf:
-        # Try to capture totals from page 1 text for metadata
-        try:
-            first_text = pdf.pages[0].extract_text()
-            # FCMB Summary Pattern
-            deb_match = re.search(r"Total Debit[:\s]*([\d,]+\.\d{2})", first_text, re.IGNORECASE)
-            cred_match = re.search(r"Total Credit[:\s]*([\d,]+\.\d{2})", first_text, re.IGNORECASE)
-            
-            if deb_match: 
-                metadata["statement_total_debit"] = clean_currency_str(deb_match.group(1))
-            if cred_match:
-                metadata["statement_total_credit"] = clean_currency_str(cred_match.group(1))
-        except:
-            pass
-
-        for page in pdf.pages:
-            tables = page.extract_tables()
-            for table in tables:
-                for row in table:
-                    # Clean proper None values and newlines
-                    clean_row = [str(cell).strip().replace("\\n", " ") if cell else "" for cell in row]
-                    if any(clean_row): 
-                         all_rows.append(clean_row)
-
-    if not all_rows:
-        print("DEBUG: No tables found in FCMB PDF.")
-        return []
-
-    final_txns = []
-    
-    for i, row in enumerate(all_rows):
-        # Skip empty or short rows
-        if not row or len(row) < 5: continue
-        
-        # Skip Headers (contain "DATE" and "PARTICULARS" etc)
-        row_str = "".join(row).upper()
-        if "DATE" in row_str and ("PARTICULARS" in row_str or "NARRATION" in row_str or "BALANCE" in row_str):
-            continue
-
-        # Check Date Column (Col 0)
-        date_str = row[0]
-        # Supports: 01/01/2023, 01-JAN-2023, 01 Jan 2024
-        if not is_date(date_str):
-             continue
-
-        date_parsed = parse_date(date_str)
-        
-        # Identify Financials (Last 3)
-        debit_str = row[-3]
-        credit_str = row[-2]
-        balance_str = row[-1]
-        
-        # Identify Description:
-        # Usually index 2 to -3 (Date, ValueDate, ...Desc..., Deb, Cred, Bal)
-        # But verify if Col 1 is ValueDate or part of Desc
-        start_desc = 1
-        # If Col 1 looks like a date, assume it's Value Date, so Desc starts at 2
-        if is_date(row[1]):
-            start_desc = 2
-            
-        desc_parts = row[start_desc:-3]
-        description = " ".join([d for d in desc_parts if d]).strip()
-        
-        d_float = clean_currency_str(debit_str)
-        c_float = clean_currency_str(credit_str)
-        b_float = clean_currency_str(balance_str)
-        
-        if d_float == 0 and c_float == 0: continue
-
-        txn = {
-            "date": date_parsed,
-            "value_date": parse_date(row[1]) if start_desc == 2 else "",
-            "reference": "",
-            "branch": "",
-            "description": description,
-            "debit": d_float,
-            "credit": c_float,
-            "balance": b_float,
-            "category": "Unallocated",
-            "is_reversal": False,
-            "_page": 0,
-            "_row": i
-        }
-        final_txns.append(txn)
 
     print(f"DEBUG: Extracted {len(final_txns)} transactions via FCMB Table strategy")
     return final_txns
