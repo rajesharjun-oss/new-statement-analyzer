@@ -1,6 +1,7 @@
 import pdfplumber
 import re
 from pathlib import Path
+from collections import defaultdict
 
 def detect_fcmb_columns(words):
     header_keywords = ["TRAN.", "DETAILS", "DEBIT", "CREDIT", "BALANCE"]
@@ -27,23 +28,25 @@ def detect_fcmb_columns(words):
         return None
 
     cuts = {}
-    def find_x(txt):
+    def find_x(keywords):
         for w in header_row:
-            if txt.upper() in w['text'].upper():
+            if any(k in w['text'].upper() for k in keywords):
                 return w['x0'], w['x1']
         return None, None
 
-    x_dt_l, _ = find_x("TRAN. DATE")
-    x_val_l, _ = find_x("VALUE DATE")
-    x_ref_l, _ = find_x("REF")
-    x_det_l, _ = find_x("DETAILS")
-    x_deb_l, x_deb_r = find_x("DEBIT")
-    x_cred_l, x_cred_r = find_x("CREDIT")
-    x_bal_l, x_bal_r = find_x("BALANCE")
+    x_dt_l, _ = find_x(["TRAN", "DATE"])
+    x_val_l, _ = find_x(["VALUE"])
+    x_ref_l, _ = find_x(["REF"])
+    x_det_l, _ = find_x(["DETAILS", "TRANSACTION"])
+    x_deb_l, x_deb_r = find_x(["DEBIT"])
+    x_cred_l, x_cred_r = find_x(["CREDIT"])
+    x_bal_l, x_bal_r = find_x(["BALANCE"])
 
-    if x_dt_l is None or x_det_l is None: return None
+    if None in [x_dt_l, x_det_l, x_deb_l, x_cred_l, x_bal_l]: 
+        return None
 
-    cuts['date'] = (0, x_val_l - 2 if x_val_l else x_ref_l - 2)
+    date_right = x_val_l or x_ref_l or x_det_l
+    cuts['date'] = (0, date_right - 2)
     cuts['description'] = (x_det_l - 2, x_deb_l - 5)
     cuts['debit'] = (x_deb_l - 5, x_cred_l - 5)
     cuts['credit'] = (x_cred_l - 5, x_bal_l - 5)
@@ -106,16 +109,30 @@ def extract_fcmb_via_coordinates(pdf_path: Path, config: dict):
                 if not parsed_date and not (deb or cred): continue
                 if is_noise_row({'description': desc}): continue
                 if "DEBIT" in desc.upper() and "CREDIT" in desc.upper(): continue
+                if "BALANCE BROUGHT FORWARD" in desc.upper().replace("  ", " "): continue
+                if "BALANCE CARRIED FORWARD" in desc.upper().replace("  ", " "): continue
+                
+                # FCMB-specific: skip percentages at the end or empty descriptions
+                if not desc.strip(): continue
+                if '%' in deb or '%' in cred: continue
 
                 if deb or cred:
                     print(f"DEBUG: FCMB Row P{pg_num+1} | Date: {last_date} | Deb: {deb} | Cred: {cred}")
 
+                def safe_float(val_str):
+                    if not val_str: return 0.0
+                    clean = re.sub(r'[^\d.-]', '', val_str.replace('(', '-').replace(')', ''))
+                    try:
+                        return float(clean)
+                    except ValueError:
+                        return 0.0
+
                 transactions.append({
                     'date': last_date if last_date else "",
                     'description': desc,
-                    'debit': float(deb.replace(',','')) if deb else 0.0,
-                    'credit': float(cred.replace(',','')) if cred else 0.0,
-                    'balance': float(bal.replace(',','')) if bal else 0.0,
+                    'debit': safe_float(deb),
+                    'credit': safe_float(cred),
+                    'balance': safe_float(bal),
                     'remarks': desc,
                     'category': 'Uncategorized'
                 })
