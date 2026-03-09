@@ -472,6 +472,7 @@ export default function App() {
                                           <option value="wema">Wema Bank</option>
                                           <option value="providus">Providus Bank</option>
                                           <option value="fcmb">FCMB</option>
+                                          <option value="sterling">Sterling Bank</option>
                                        </select>
                                     </div>
 

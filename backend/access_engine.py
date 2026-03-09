@@ -19,19 +19,22 @@ def detect_access_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float,
         if any(k in txt for k in header_keywords) or "DATE" in txt:
             header_words.append(w)
             
-    if not header_words: return None
+    if not header_words:
+        print(f"DEBUG [Access]: No header keywords found at all")
+        return None
 
-    # Access Bank often has multi-line headers (e.g. Y=250 and Y=258)
-    # We collect all header words in the 240-270 range
-    best_band = [w for w in header_words if 240 <= w['top'] <= 270]
+    # Fully dynamic: find the Y-band with the most header keywords
+    # Use 5px tolerance to handle multi-line headers (e.g. Y=250 and Y=258)
+    tops = sorted(set([round(w['top'], 0) for w in header_words]))
+    best_band = []
     
-    if len(best_band) < 3:
-        # Fallback to the largest single-line band if the absolute range fails
-        tops = [w['top'] for w in header_words]
-        best_band = [] # Reset for fallback
-        for t in set([round(x, 1) for x in tops]):
-            band = [w for w in header_words if abs(w['top'] - t) < 3.0]
-            if len(band) > len(best_band): best_band = band
+    for t in tops:
+        # Collect all header words within 8px of this Y position (handles multi-line headers)
+        band = [w for w in header_words if abs(w['top'] - t) < 8.0]
+        if len(band) > len(best_band):
+            best_band = band
+    
+    print(f"DEBUG [Access]: Found {len(header_words)} header words, best band has {len(best_band)} words at Y~{round(best_band[0]['top']) if best_band else '?'}")
             
     def find_col(sub: str):
         for w in best_band:
@@ -117,17 +120,19 @@ def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> 
     txns = []
     
     with pdfplumber.open(pdf_path) as pdf:
-        words_p0 = pdf.pages[0].extract_words()
-        cuts = detect_access_columns(words_p0)
+        cuts = None
+        
+        # Try up to first 5 pages to find header row (PDFs may have cover/summary pages)
+        for pg_idx in range(min(5, len(pdf.pages))):
+            words = pdf.pages[pg_idx].extract_words()
+            cuts = detect_access_columns(words)
+            if cuts:
+                print(f"DEBUG [Access]: Header found on page {pg_idx}")
+                break
         
         if not cuts:
-             # Try page 1 if page 0 failed (sometimes cover page)
-             if len(pdf.pages) > 1:
-                words_p1 = pdf.pages[1].extract_words()
-                cuts = detect_access_columns(words_p1)
-             
-             if not cuts:
-                return [], {}
+            print(f"DEBUG [Access]: Header detection failed on all pages")
+            return [], metadata
              
         print(f"DEBUG: Active Access Cuts: {cuts}")
         
