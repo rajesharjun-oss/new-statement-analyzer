@@ -864,7 +864,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
 
             # --- 3a) Group words into rows with bank-specific tolerance ---
             # GTCO (GTBank) vertically stacks dates, needing higher tolerance.
-            tol = 12.0 if bank_identifier in ["gtbank", "gtco"] else 2.5
+            tol = 15.0 if bank_identifier in ["gtbank", "gtco"] else 2.5
             row_groups = group_words_to_rows(words, y_tol=tol)
 
             for rg in row_groups:
@@ -1958,10 +1958,12 @@ def assign_row_to_cols(row_words: List[Dict[str, Any]], cuts: Dict[str, Tuple[fl
     # Create bucket list for each column
     bucket = {k: [] for k in cuts.keys()}
     
+    # Right-aligned columns use x1 (End) instead of x0 (Start)
+    # Using lowercase for robustness across different bank naming conventions
     right_aligned_cols = {
-        "Debit", "Credit", "Balance", 
-        "Withdrawal", "Lodgement", "Lodgements", "Withdrawals",
-        "Debits", "Credits", "Pay Out", "Pay In"
+        "debit", "credit", "balance", 
+        "withdrawal", "lodgement", "lodgements", "withdrawals",
+        "debits", "credits", "pay out", "pay in"
     }
 
     # Ensure words are sorted left-to-right
@@ -1971,7 +1973,8 @@ def assign_row_to_cols(row_words: List[Dict[str, Any]], cuts: Dict[str, Tuple[fl
     for w in row_words:
         x0, x1 = w["x0"], w["x1"]
         for col, (l, r) in cuts.items():
-            if col in right_aligned_cols:
+            # Use lowercase comparison for the column name
+            if col.lower() in right_aligned_cols:
                 ref_point = x1
             else:
                 ref_point = x0
@@ -2050,21 +2053,35 @@ def assign_row_to_cols(row_words: List[Dict[str, Any]], cuts: Dict[str, Tuple[fl
 def group_words_to_rows(words: List[Dict[str, Any]], y_tol: float = 3.0) -> List[Dict[str, Any]]:
     """
     Group words into physical rows (by Y coordinate)
-    Tolerance tuned to 3.0 (from 3.5) to avoid merging distinct tight rows
+    Uses a stable-top approach to prevent "row eating" where rows merge 
+    uncontrollably when y_tol is high.
     """
     rows: List[Dict[str, Any]] = []
+    # Sort primarily by top, then left
     for w in sorted(words, key=lambda d: (d["top"], d["x0"])):
         placed = False
-        for r in rows:
-            if abs(w["top"] - r["top"]) <= y_tol:
-                r["words"].append(w)
-                r["top"] = (r["top"] + w["top"]) / 2
-                placed = True
-                break
+        # Optimization: only check the last row first, as words are sorted by top
+        if rows and abs(w["top"] - rows[-1]["initial_top"]) <= y_tol:
+            rows[-1]["words"].append(w)
+            placed = True
+        
         if not placed:
-            rows.append({"top": w["top"], "words": [w]})
+            # Fallback for slightly out-of-order words: check all rows
+            for r in rows:
+                if abs(w["top"] - r["initial_top"]) <= y_tol:
+                    r["words"].append(w)
+                    placed = True
+                    break
+        
+        if not placed:
+            rows.append({"top": w["top"], "initial_top": w["top"], "words": [w]})
+            
     for r in rows:
         r["words"].sort(key=lambda d: d["x0"])
+        # Update 'top' to be the average of all words for legacy compatibility
+        if r["words"]:
+            r["top"] = sum(w["top"] for w in r["words"]) / len(r["words"])
+            
     return rows
 
 def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
