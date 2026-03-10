@@ -10,13 +10,13 @@ import pdf_extractor
 import pdfplumber
 
 def test_gtco_extraction():
-    pdf_path = "temp_uploads/GTCO test.pdf"
+    pdf_path = "temp_uploads/GTCO test 2.pdf"
     if not os.path.exists(pdf_path):
         print(f"Error: {pdf_path} not found")
         # Try finding it
         for root, dirs, files in os.walk("."):
             for f in files:
-                if "GTCO test.pdf" in f:
+                if "GTCO test 2.pdf" in f:
                     pdf_path = os.path.join(root, f)
                     break
     
@@ -44,7 +44,7 @@ def test_gtco_extraction():
         
     # Full extraction
     try:
-        transactions, metadata = pdf_extractor.extract_transactions(pdf_path, bank_identifier="auto")
+        transactions, metadata = pdf_extractor.extract_transactions(pdf_path, bank_identifier="gtco", config={"max_pages": 1})
         print(f"Total Transactions: {len(transactions)}")
         if transactions:
             print(f"First transaction: {transactions[0]}")

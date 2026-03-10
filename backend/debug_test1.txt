@@ -1,0 +1,44 @@
+﻿
+--- Testing ECOBANK: 190cb33d-d970-48a5-9016-91999032a290.pdf ---
+DEBUG: Using Table Strategy for Ecobank: backend\temp_uploads\190cb33d-d970-48a5-9016-91999032a290.pdf
+DEBUG: Ecobank table extraction found 58 transactions.
+  Transactions: 58
+  Account Name: THE 16 PLUS SCHOOL LIMITED
+  First TXN: 01-Jun-2025 | OPENING BALANCE
+
+--- Testing ECOBANK: 220c7ed0-f074-4f0a-9901-d2164f8f77e2.pdf ---
+DEBUG: Using Table Strategy for Ecobank: backend\temp_uploads\220c7ed0-f074-4f0a-9901-d2164f8f77e2.pdf
+DEBUG: Ecobank table extraction found 58 transactions.
+  Transactions: 58
+  Account Name: THE 16 PLUS SCHOOL LIMITED
+  First TXN: 01-Jun-2025 | OPENING BALANCE
+
+--- Testing ACCESSBANK: 3c570c8c-b9c1-46da-98b6-15eb94a1d182.pdf ---
+DEBUG: Using Table Strategy for Access Bank: backend\temp_uploads\3c570c8c-b9c1-46da-98b6-15eb94a1d182.pdf
+DEBUG: Access Bank table extraction found 129 transactions.
+  Transactions: 129
+  Account Name: 
+  First TXN: 10-Jan-2025 | Opening Balance
+
+--- Testing ECOBANK: 5a1ad6ba-f43d-441b-8b85-2d3a57c9adbe.pdf ---
+DEBUG: Using Table Strategy for Ecobank: backend\temp_uploads\5a1ad6ba-f43d-441b-8b85-2d3a57c9adbe.pdf
+DEBUG: Ecobank table extraction found 58 transactions.
+  Transactions: 58
+  Account Name: THE 16 PLUS SCHOOL LIMITED
+  First TXN: 01-Jun-2025 | OPENING BALANCE
+
+--- Testing ACCESSBANK: 61bb7ac2-b22a-4096-a835-0f473fa162e2.pdf ---
+DEBUG: Using Table Strategy for Access Bank: backend\temp_uploads\61bb7ac2-b22a-4096-a835-0f473fa162e2.pdf
+DEBUG: Access Bank table extraction found 129 transactions.
+  Transactions: 129
+  Account Name: 
+  First TXN: 10-Jan-2025 | Opening Balance
+
+--- Testing ACCESSBANK: 75f6e800-4485-4306-99f0-54abaad1bafa.pdf ---
+DEBUG: Using Table Strategy for Access Bank: backend\temp_uploads\75f6e800-4485-4306-99f0-54abaad1bafa.pdf
+DEBUG: Access Bank table extraction found 129 transactions.
+  Transactions: 129
+  Account Name: 
+  First TXN: 10-Jan-2025 | Opening Balance
+
+--- Testing ACCESSBANK: 77de3426-ffeb-4eed-9e0f-d3e8fc1ff

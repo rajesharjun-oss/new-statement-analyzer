@@ -2041,11 +2041,21 @@ def assign_row_to_cols(row_words: List[Dict[str, Any]], cuts: Dict[str, Tuple[fl
                 if best_word_idx != -1:
                     bucket[target_col].append(bucket[source_col].pop(best_word_idx))
 
-    # CLEANUP: Remove internal spaces in numeric fields
+    # SMART CLEANUP: In numeric fields, prevent joining independent numbers (like RefIDs) with amounts
     for col in ["debit", "credit", "balance"]:
         if col in bucket and bucket[col]:
-            full_str = "".join(bucket[col])
-            bucket[col] = [full_str.replace(" ", "")]
+            if len(bucket[col]) > 1:
+                # If we have multiple tokens, identify which one looks like an actual money value (e.g. has a dot)
+                money_candidates = [v for v in bucket[col] if "." in v and re.search(r"\d", v)]
+                if money_candidates:
+                    # Pick the rightmost money candidate (standard for right-aligned columns)
+                    bucket[col] = [money_candidates[-1].replace(" ", "")]
+                else:
+                    # Fallback: join them (to handle split decimals)
+                    full_str = "".join(bucket[col])
+                    bucket[col] = [full_str.replace(" ", "")]
+            else:
+                bucket[col] = [bucket[col][0].replace(" ", "")]
 
     return {col: " ".join(vals).strip() for col, vals in bucket.items()}
 
