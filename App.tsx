@@ -462,6 +462,7 @@ export default function App() {
                                        >
                                           <option value="auto">Auto-Detect Bank</option>
                                           <option value="gtbank">GTBank</option>
+                                          <option value="gtco">GTCO</option>
                                           <option value="ecobank">Ecobank</option>
                                           <option value="accessbank">Access Bank</option>
                                           <option value="fidelity">Fidelity Bank</option>
@@ -765,7 +766,7 @@ export default function App() {
          {!hasFile && (
             <footer className="fixed bottom-0 w-full py-6 px-6 mx-auto max-w-[1200px] flex justify-between items-center text-[11px] text-zinc-700">
                <span>LedgerSentinel v2.4</span>
-               <span className="opacity-50 font-medium">© IBRAHIM O.</span>
+               <span className="opacity-50 font-medium">© IBRAHIM ONAWOGA.</span>
             </footer>
          )}
       </div>
