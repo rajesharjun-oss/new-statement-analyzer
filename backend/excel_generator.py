@@ -1,11 +1,19 @@
-"""
-Excel Generator
-Creates Excel file from categorized transactions
-"""
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill
 from typing import List, Dict, Any
+import re
 from pathlib import Path
+
+# Illegal characters for Excel/XML
+# See: https://stackoverflow.com/questions/13010323/illegal-characters-in-openpyxl-excel
+ILLEGAL_CHARACTERS_RE = re.compile(r'[\000-\010\013\014\016-\037]')
+
+def clean_for_excel(val):
+    """Strip illegal characters that break openpyxl/XML"""
+    if not isinstance(val, str):
+        return val
+    # Some bank statements contain characters like \0 (null) or other control chars
+    return ILLEGAL_CHARACTERS_RE.sub('', val)
 
 def generate_excel(transactions: List[Dict], validation: Dict[str, Any], output_path: Path):
     """
@@ -40,11 +48,11 @@ def generate_excel(transactions: List[Dict], validation: Dict[str, Any], output_
             txn.get('originating_branch') or ''
         )
         ws.append([
-            str(txn.get('date', '')),       # String prevents Excel date conversion
-            str(txn.get('value_date', '')), # String prevents Excel date conversion
-            txn.get('reference', ''),
-            desc,                           # Narration only — reference is already in its own column
-            txn.get('category', 'Unallocated'),
+            clean_for_excel(str(txn.get('date', ''))),       # String prevents Excel date conversion
+            clean_for_excel(str(txn.get('value_date', ''))), # String prevents Excel date conversion
+            clean_for_excel(txn.get('reference', '')),
+            clean_for_excel(desc),                           # Narration only — reference is already in its own column
+            clean_for_excel(txn.get('category', 'Unallocated')),
             txn.get('debit', 0),
             txn.get('credit', 0),
             txn.get('balance', 0)
