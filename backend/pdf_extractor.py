@@ -1963,7 +1963,8 @@ def assign_row_to_cols(row_words: List[Dict[str, Any]], cuts: Dict[str, Tuple[fl
     right_aligned_cols = {
         "debit", "credit", "balance", 
         "withdrawal", "lodgement", "lodgements", "withdrawals",
-        "debits", "credits", "pay out", "pay in"
+        "debits", "credits", "pay out", "pay in",
+        "deposit", "deposits", "withdrawal(dr)", "deposit(cr)"
     }
 
     # Ensure words are sorted left-to-right
@@ -2388,11 +2389,13 @@ def detect_firstbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[flo
 
     # 5. Withdrawal (Debit)
     idx_deb, w_deb = find_word_x("WITHDRAWAL") 
+    if not w_deb: idx_deb, w_deb = find_word_x("WITHDRAW")
     if not w_deb: idx_deb, w_deb = find_word_x("DR")
     if w_deb: bounds["debit"] = (w_deb["x0"], w_deb["x1"])
 
     # 6. Deposit (Credit)
     idx_cred, w_cred = find_word_x("DEPOSIT")
+    if not w_cred: idx_cred, w_cred = find_word_x("LODGEMENT")
     if not w_cred: idx_cred, w_cred = find_word_x("CR")
     if w_cred: bounds["credit"] = (w_cred["x0"], w_cred["x1"])
 
