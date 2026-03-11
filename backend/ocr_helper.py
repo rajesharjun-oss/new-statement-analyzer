@@ -44,7 +44,7 @@ except ImportError:
 
 # Import Gemini Vision if available
 try:
-    from gemini_vision import extract_text_with_gemini_vision
+    from standard_ocr import extract_text_with_gemini_vision
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
