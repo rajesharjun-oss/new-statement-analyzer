@@ -241,7 +241,6 @@ def categorize_single_transaction(txn: Dict) -> Dict:
 
 from openai import OpenAI
 import google.generativeai as genai
-from gemini_vision import _clean_ai_json
 import httpx
 
 _openai_key_index = 0

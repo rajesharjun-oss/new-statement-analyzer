@@ -18,7 +18,7 @@ from wema_engine import extract_wema_via_coordinates
 from sterling_engine import extract_sterling_via_coordinates
 from fcmb_engine import extract_fcmb_via_coordinates
 try:
-    from gemini_vision import extract_text_with_gemini_vision, extract_transactions_via_ai
+    from standard_ocr import extract_text_with_gemini_vision, extract_transactions_via_ai
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
