@@ -1,0 +1,46 @@
+﻿DEBUG: extract_transactions called with bank_identifier='fcmb'
+DEBUG: FCMB Scan P0 words: 283
+DEBUG: FCMB Scan P1 words: 316
+DEBUG: FCMB Scan P2 words: 336
+DEBUG: Page 0 words count: 283
+DEBUG: Starting Smart Template Detection for bank hint: fcmb
+DEBUG: Trying detector Providus with bank_identifier=fcmb...
+DEBUG: Detector Providus returned NO cuts.
+DEBUG: Trying detector Zenith with bank_identifier=fcmb...
+DEBUG: Detector Zenith returned NO cuts.
+DEBUG: Trying detector Wema with bank_identifier=fcmb...
+DEBUG: Found Wema Header Row: ['Date', 'Reference', 'Descrip\x00on', 'ValueDate', 'Deposit', 'Withdrawal', 'Balance']
+DEBUG: Detector Wema found 5 columns. Score: 7
+DEBUG: Trying detector FCMB with bank_identifier=fcmb...
+DEBUG: Found FCMB Header Row: ['Date', 'Reference', 'Descrip\x00on', 'ValueDate', 'Deposit', 'Withdrawal', 'Balance']
+DEBUG: Detector FCMB found 7 columns. Score: 59
+DEBUG: Trying detector FirstBank with bank_identifier=fcmb...
+DEBUG: Found FirstBank Header Row: ['Date', 'Reference', 'Descrip\x00on', 'ValueDate', 'Deposit', 'Withdrawal', 'Balance']
+DEBUG: Detector FirstBank found 6 columns. Score: 8
+DEBUG: Trying detector Ecobank with bank_identifier=fcmb...
+DEBUG: Entering detect_ecobank_columns
+DEBUG: TransDate raw width: 58.457271929514604 - 43.81249791447918 = 14.644774015035424
+DEBUG: Detector Ecobank returned NO cuts.
+DEBUG: Trying detector UBA with bank_identifier=fcmb...
+DEBUG: Detector UBA returned NO cuts.
+DEBUG: Trying detector Access with bank_identifier=fcmb...
+DEBUG: Detector Access returned NO cuts.
+DEBUG: Trying detector Fidelity with bank_identifier=fcmb...
+DEBUG: Detector Fidelity returned NO cuts.
+DEBUG: Trying detector AptSecurities with bank_identifier=fcmb...
+DEBUG: Detector AptSecurities returned NO cuts.
+DEBUG: Trying detector GTCO with bank_identifier=fcmb...
+DEBUG: Detector GTCO returned NO cuts.
+DEBUG: Trying detector GTBank with bank_identifier=fcmb...
+DEBUG [detect_gtbank_columns]: Missing required columns. Returning None.
+DEBUG: Detector GTBank returned NO cuts.
+DEBUG: Selected Best Template: FCMB (Score: 59)
+DEBUG: Generic detect result: {'date': (0.0, 76.74279315359436), 'reference': (76.74279315359436, 136.2093396668371), 'description': (136.2093396668371, 266.4754392301765), 'value_date': (266.4754392301765, 392.73519140435326), 'credit': (392.73519140435326, 439.94282849420426), 'debit': (439.94282849420426, 497.40436975055917), 'balance': (497.40436975055917, 1000.0)}
+DEBUG: Header detected on page 1
+DEBUG: FOUND CUTS: {'date': (0.0, 76.74279315359436), 'reference': (76.74279315359436, 136.2093396668371), 'description': (136.2093396668371, 266.4754392301765), 'value_date': (266.4754392301765, 392.73519140435326), 'credit': (392.73519140435326, 439.94282849420426), 'debit': (439.94282849420426, 497.40436975055917), 'balance': (497.40436975055917, 1000.0)}
+DEBUG: Detected columns: {'date': '0.0 to 76.7', 'reference': '76.7 to 136.2', 'description': '136.2 to 266.5', 'value_date': '266.5 to 392.7', 'credit': '392.7 to 439.9', 'debit': '439.9 to 497.4', 'balance': '497.4 to 1000.0'}
+Row 0: {'account_no': '2002201192', 'date': '02-Oct-2025', 'value_date': '01-Oct-2025', 'reference': '8530043328394 80 NIP/251001085', 'originating_branch': '', 'remarks': '8530043328394 80 NIP/251001085 web: Jute Bag Purchase', 'description': 'web: Jute Bag Purchase', 'debit': 8530043328394.0, 'credit': 0.0, 'balance': 985000.0, 'category': 'Unallocated', 'is_reversal': False, '_page': 1, '_row': None}
+Row 1: {'account_no': '2002201192', 'date': '02-Oct-2025', 'value_date': '02-Oct-2025', 'reference': '8530043328394 80', 'originating_branch': '', 'remarks': '8530043328394 80 TRANSACTION CHARGE-web: Jute Bag Purchase', 'description': 'TRANSACTION CHARGE-web: Jute Bag Purchase', 'debit': 8530043328394.0, 'credit': 0.0, 'balance': 53.75, 'category': 'Unallocated', 'is_reversal': False, '_page': 1, '_row': None}
+Row 2: {'account_no': '2002201192', 'date': '02-Oct-2025', 'value_date': '01-Oct-2025', 'reference': '000144966699 NIP/251002110', 'originating_branch': '', 'remarks': '000144966699 NIP/251002110 web: TRF to MAKINDE AKOLADE OLUWADARE/web:Ridging', 'description': 'web: TRF to MAKINDE AKOLADE OLUWADARE/web:Ridging', 'debit': 144966699.0, 'credit': 0.0, 'balance': 4500000.0, 'category': 'Unallocated', 'is_reversal': False, '_page': 1, '_row': None}
+Row 3: {'account_no': '2002201192', 'date': '02-Oct-2025', 'value_date': '02-Oct-2025', 'reference': '1270043362403 25 NIP/251002110', 'originating_branch': '', 'remarks': '1270043362403 25 NIP/251002110 web: September Salary', 'description': 'web: September Salary', 'debit': 1270043362403.0, 'credit': 0.0, 'balance': 50000.0, 'category': 'Unallocated', 'is_reversal': False, '_page': 1, '_row': None}
+Row 4: {'account_no': '2002201192', 'date': '02-Oct-2025', 'value_date': '02-Oct-2025', 'reference': '1270043362403 25 NIP/251002113', 'originating_branch': '', 'remarks': '1270043362403 25 NIP/251002113 TRANSACTION CHARGE-web: September Salary', 'description': 'TRANSACTION CHARGE-web: September Salary', 'debit': 1270043362403.0, 'credit': 0.0, 'balance': 26.88, 'category': 'Unallocated', 'is_reversal': False, '_page': 1, '_row': None}
