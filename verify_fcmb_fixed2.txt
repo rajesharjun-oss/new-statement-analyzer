@@ -1,0 +1,49 @@
+﻿DEBUG: extract_transactions called with bank_identifier='fcmb'
+DEBUG: FCMB Scan P0 words: 283
+DEBUG: FCMB Scan P1 words: 316
+DEBUG: FCMB Scan P2 words: 336
+DEBUG: Page 0 words count: 283
+DEBUG: Starting Smart Template Detection for bank hint: fcmb
+DEBUG: Trying detector Providus with bank_identifier=fcmb...
+DEBUG: Detector Providus returned NO cuts.
+DEBUG: Trying detector Zenith with bank_identifier=fcmb...
+DEBUG: Detector Zenith returned NO cuts.
+DEBUG: Trying detector Wema with bank_identifier=fcmb...
+DEBUG: Found Wema Header Row: ['Date', 'Reference', 'Descrip\x00on', 'ValueDate', 'Deposit', 'Withdrawal', 'Balance']
+DEBUG: Detector Wema found 5 columns. Score: 7
+DEBUG: Trying detector FCMB with bank_identifier=fcmb...
+DEBUG: Found FCMB Header Row: ['Date', 'Reference', 'Descrip\x00on', 'ValueDate', 'Deposit', 'Withdrawal', 'Balance']
+DEBUG: Detector FCMB found 7 columns. Score: 59
+DEBUG: Trying detector FirstBank with bank_identifier=fcmb...
+DEBUG: Found FirstBank Header Row: ['Date', 'Reference', 'Descrip\x00on', 'ValueDate', 'Deposit', 'Withdrawal', 'Balance']
+DEBUG: Detector FirstBank found 6 columns. Score: 8
+DEBUG: Trying detector Ecobank with bank_identifier=fcmb...
+DEBUG: Entering detect_ecobank_columns
+DEBUG: TransDate raw width: 58.457271929514604 - 43.81249791447918 = 14.644774015035424
+DEBUG: Detector Ecobank returned NO cuts.
+DEBUG: Trying detector UBA with bank_identifier=fcmb...
+DEBUG: Detector UBA returned NO cuts.
+DEBUG: Trying detector Access with bank_identifier=fcmb...
+DEBUG: Detector Access returned NO cuts.
+DEBUG: Trying detector Fidelity with bank_identifier=fcmb...
+DEBUG: Detector Fidelity returned NO cuts.
+DEBUG: Trying detector AptSecurities with bank_identifier=fcmb...
+DEBUG: Detector AptSecurities returned NO cuts.
+DEBUG: Trying detector GTCO with bank_identifier=fcmb...
+DEBUG: Detector GTCO returned NO cuts.
+DEBUG: Trying detector GTBank with bank_identifier=fcmb...
+DEBUG [detect_gtbank_columns]: Missing required columns. Returning None.
+DEBUG: Detector GTBank returned NO cuts.
+DEBUG: Selected Best Template: FCMB (Score: 59)
+DEBUG: Generic detect result: {'date': (0.0, 76.74279315359436), 'reference': (76.74279315359436, 136.2093396668371), 'description': (136.2093396668371, 266.4754392301765), 'value_date': (266.4754392301765, 392.73519140435326), 'credit': (392.73519140435326, 458.1856244571736), 'debit': (458.1856244571736, 509.5991925869728), 'balance': (509.5991925869728, 1000.0)}
+DEBUG: Header detected on page 1
+DEBUG: FOUND CUTS: {'date': (0.0, 76.74279315359436), 'reference': (76.74279315359436, 136.2093396668371), 'description': (136.2093396668371, 266.4754392301765), 'value_date': (266.4754392301765, 392.73519140435326), 'credit': (392.73519140435326, 458.1856244571736), 'debit': (458.1856244571736, 509.5991925869728), 'balance': (509.5991925869728, 1000.0)}
+DEBUG: Detected columns: {'date': '0.0 to 76.7', 'reference': '76.7 to 136.2', 'description': '136.2 to 266.5', 'value_date': '266.5 to 392.7', 'credit': '392.7 to 458.2', 'debit': '458.2 to 509.6', 'balance': '509.6 to 1000.0'}
+
+Statement 1:
+  Account Name: ENSHET HEIGHTS GLOBAL LTD
+  Transactions: 217
+  Validation: None (Match: False)
+  Credit Transactions Found: 26
+  Extracted Total Debit: 791,652,454.22
+  Extracted Total Credit: 363,649,000.00

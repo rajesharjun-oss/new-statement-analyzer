@@ -72,80 +72,94 @@ async def analyze_statement(
         content = await file.read()
         stored_path.write_bytes(content)
 
-        # Step 1: Extract transactions
+        # Step 1: Extract transactions (Now returns a list of statement groups)
         if file_ext == ".pdf":
-            transactions, metadata = extract_transactions(stored_path, bank_identifier=bank.lower())
+            statement_results = extract_transactions(stored_path, bank_identifier=bank.lower())
         else:
-            # Excel/CSV handling
-            transactions, metadata = extract_excel_transactions(stored_path)
+            # Excel/CSV handling - typically one statement
+            txns, meta = extract_excel_transactions(stored_path)
+            statement_results = [{"transactions": txns, "metadata": meta}]
 
-        # Step 2: Validate totals
-        validation_result = validate_totals(transactions, metadata)
+        processed_statements = []
+        for stmt in statement_results:
+            txns = stmt.get("transactions", [])
+            meta = stmt.get("metadata", {})
+            
+            # Step 2: Validate totals
+            validation_result = validate_totals(txns, meta)
 
-        # Step 2b: FAIL-FAST check — if >25% of descriptions empty and bank is not GTBank,
-        # retry extraction with generic keyword mapping before proceeding.
-        if transactions:
-            empty_desc_count = sum(
-                1 for t in transactions
-                if not (t.get('description') or t.get('remarks') or '').strip()
-            )
-            empty_pct = empty_desc_count / len(transactions)
-            detected_bank = metadata.get('bank', 'generic')
+            # Step 2b: FAIL-FAST check for generic retry
+            if txns and not meta.get("_retried"):
+                empty_desc_count = sum(1 for t in txns if not (t.get('description') or t.get('remarks') or '').strip())
+                empty_pct = empty_desc_count / len(txns)
+                detected_bank = meta.get('bank', 'generic')
 
-            if empty_pct > 0.25 and detected_bank not in ['gtbank', 'providus', 'zenith', 'access', 'uba', 'fcmb', 'wema', 'sterling'] and file_ext == '.pdf':
-                print(f'WARN: {empty_pct:.0%} empty descriptions for bank={detected_bank}. Retrying with generic mapping...')
-                from pdf_extractor import extract_transactions as _et
-                retry_txns, retry_meta = _et(stored_path, bank_identifier='generic')
-                retry_empty = sum(
-                    1 for t in retry_txns
-                    if not (t.get('description') or t.get('remarks') or '').strip()
-                )
-                if retry_txns and retry_empty < empty_desc_count:
-                    print(f'INFO: Generic retry improved descriptions. Using retry results.')
-                    transactions = retry_txns
-                    metadata = retry_meta
-                    validation_result = validate_totals(transactions, metadata)
+                if empty_pct > 0.25 and detected_bank not in ['gtbank', 'providus', 'zenith', 'access', 'uba', 'fcmb', 'wema', 'sterling'] and file_ext == '.pdf':
+                    print(f'WARN: {empty_pct:.0%} empty descriptions. Retrying statement with generic mapping...')
+                    from pdf_extractor import extract_transactions as _et
+                    retry_results = _et(stored_path, bank_identifier='generic')
+                    # Find matching account in retry results
+                    for rs in retry_results:
+                         if rs['metadata'].get('account_no') == meta.get('account_no'):
+                              txns = rs['transactions']
+                              meta = rs['metadata']
+                              meta["_retried"] = True
+                              validation_result = validate_totals(txns, meta)
+                              break
+            
+            # Step 3: Categorize (rules + AI fallback)
+            categorized_txns = categorize_transactions(txns)
+            
+            processed_statements.append({
+                "transactions": categorized_txns,
+                "metadata": meta,
+                "validation": validation_result
+            })
 
-        # Step 3: Categorize (rules + AI fallback)
-        categorized_transactions = categorize_transactions(transactions)
+        # Step 4: Generate Excel (Pass all statements)
+        generate_excel(processed_statements, {}, excel_path)
 
-        # Step 4: Generate Excel
-        generate_excel(categorized_transactions, validation_result, excel_path)
+        # Build combined summary based on ALL statements
+        total_debit = 0.0
+        total_credit = 0.0
+        total_txns = 0
+        
+        for s in processed_statements:
+            total_debit += sum(num(t.get("debit")) for t in s["transactions"])
+            total_credit += sum(num(t.get("credit")) for t in s["transactions"])
+            total_txns += len(s["transactions"])
 
-        # Build summary with numeric safety
-        total_debit = sum(num(t.get("debit")) for t in categorized_transactions)
-        total_credit = sum(num(t.get("credit")) for t in categorized_transactions)
+        # Pick first statement metadata for top-level summary display
+        primary_meta = processed_statements[0]["metadata"] if processed_statements else {}
+        primary_validation = processed_statements[0]["validation"] if processed_statements else {}
 
         # Robust period handling
-        dates = [t.get("date") for t in categorized_transactions if t.get("date")]
-        period = metadata.get("statement_period") or (f"{dates[0]} to {dates[-1]}" if dates else "N/A")
+        period = primary_meta.get("statement_period") or "N/A"
 
         # Absolute download URL
         download_url = str(request.base_url).rstrip("/") + f"/download/{file_id}"
 
         summary = {
-            "accountName": metadata.get("account_name", "Detected Organization"),
+            "accountName": primary_meta.get("account_name", "Detected Organization"),
             "period": period,
             "totalDebit": total_debit,
             "totalCredit": total_credit,
-            "transactionCount": len(categorized_transactions),
-            "validationStatus": validation_result.get("status", "Unknown"),
-            "totalsMatch": validation_result.get("totals_match", None),
-            "statementTotalDebit": validation_result.get("statement_total_debit", None),
-            "statementTotalCredit": validation_result.get("statement_total_credit", None),
-            "extractedTotalDebit": validation_result.get("extracted_total_debit", None),
-            "extractedTotalCredit": validation_result.get("extracted_total_credit", None),
-            "debit_diff": validation_result.get("debit_diff", None),
-            "credit_diff": validation_result.get("credit_diff", None),
-            "bank": bank.lower()
+            "transactionCount": total_txns,
+            "validationStatus": primary_validation.get("status", "Unknown"),
+            "totalsMatch": primary_validation.get("totals_match", None),
+            "bank": bank.lower(),
+            "multiStatement": len(processed_statements) > 1,
+            "statementCount": len(processed_statements)
         }
 
         success = True
+        preview_txns = processed_statements[0]["transactions"] if processed_statements else []
+        
         return {
             "file_id": file_id, 
             "summary": summary, 
             "downloadUrl": download_url,
-            "transactions": categorized_transactions
+            "transactions": preview_txns
         }
 
     except Exception as e:

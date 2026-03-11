@@ -1,0 +1,6 @@
+﻿DEBUG: Found FirstBank Header Row: ['Trans', 'Date', 'Ref.', 'Number', 'Transaction', 'Details', 'Value', 'Date', 'Withdrawal(DR)', 'Deposit(CR)', 'Balance']
+Cuts: {'date': (0.0, 89.001), 'reference': (89.001, 157.836), 'description': (157.836, 266.323), 'value_date': (266.323, 349.5295), 'debit': (349.5295, 420.25), 'credit': (420.25, 478.87), 'balance': (478.87, 1000.0)}
+Row: 10-Dec-2025 S4751947 FIP:GTB/EJIKE OLIVER EZEAK/CAPITAL 10-Dec-2025 0.00 2,000,000.00 32,803,372.11
+Assigned: {'date': '10-Dec-2025', 'reference': 'S4751947', 'description': 'FIP:GTB/EJIKE OLIVER EZEAK/CAPITAL', 'value_date': '10-Dec-2025', 'debit': '0.00', 'credit': '2,000,000.00', 'balance': '32,803,372.11'}
+Row: 10-Dec-2025 803406 CLG: 43DALEJI PROPERTIES LTD 10-Dec-2025 393,163.00 0.00 32,410,209.11
+Assigned: {'date': '10-Dec-2025', 'reference': '803406', 'description': 'CLG: 43DALEJI PROPERTIES LTD', 'value_date': '10-Dec-2025', 'debit': '393,163.00', 'credit': '0.00', 'balance': '32,410,209.11'}

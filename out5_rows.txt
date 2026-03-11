@@ -1,0 +1,50 @@
+﻿DEBUG: Found FCMB Header Row: ['Date', 'Reference', 'Descrip\x00on', 'ValueDate', 'Deposit', 'Withdrawal', 'Balance']
+
+--- Row 0 ---
+Account Name: ENSHET HEIGHTS GLOBAL LTD Cleared Balance: 15,330,284.76 Cr
+Word: 'Account' x0=48.5 x1=71.3
+Word: 'Name:' x0=72.9 x1=91.4
+Word: 'ENSHET' x0=109.0 x1=130.9
+Word: 'HEIGHTS' x0=132.5 x1=157.0
+Word: 'GLOBAL' x0=158.5 x1=180.7
+Word: 'LTD' x0=182.2 x1=192.2
+Word: 'Cleared' x0=361.0 x1=382.3
+Word: 'Balance:' x0=383.9 x1=407.5
+Word: '15,330,284.76' x0=498.4 x1=538.4
+Word: 'Cr' x0=539.9 x1=546.0
+Assigned: {'date': 'Account Name:', 'reference': 'ENSHET HEIGHTS', 'description': 'GLOBAL LTD', 'value_date': 'Cleared Balance:', 'credit': '', 'debit': '', 'balance': '15,330,284.76'}
+
+--- Row 1 ---
+Address: 3RD FLOOR, 23 OPEBI ROAD, Uncleared Balance: 0.00
+Word: 'Address:' x0=48.5 x1=72.6
+Word: '3RD' x0=109.0 x1=120.4
+Word: 'FLOOR,' x0=122.0 x1=142.4
+Word: '23' x0=144.0 x1=151.0
+Word: 'OPEBI' x0=152.5 x1=169.5
+Word: 'ROAD,' x0=171.0 x1=188.9
+Word: 'Uncleared' x0=361.0 x1=389.6
+Word: 'Balance:' x0=391.1 x1=414.8
+Word: '0.00' x0=533.8 x1=546.0
+Assigned: {'date': 'Address:', 'reference': '3RD FLOOR,', 'description': '23 OPEBI ROAD,', 'value_date': 'Uncleared Balance:', 'credit': '', 'debit': '', 'balance': '0.00'}
+
+--- Row 2 ---
+PENTAGON PLAZA,ROAD,,
+Word: 'PENTAGON' x0=109.0 x1=140.4
+Word: 'PLAZA,ROAD,,' x0=142.0 x1=180.9
+Assigned: {'date': '', 'reference': 'PENTAGON', 'description': 'PLAZA,ROAD,,', 'value_date': '', 'credit': '', 'debit': '', 'balance': ''}
+
+--- Row 3 ---
+Available Balance: 15,261,644.31 Cr
+Word: 'Available' x0=361.0 x1=386.2
+Word: 'Balance:' x0=387.8 x1=411.4
+Word: '15,261,644.31' x0=498.4 x1=538.4
+Word: 'Cr' x0=539.9 x1=546.0
+Assigned: {'date': '', 'reference': '', 'description': '', 'value_date': 'Available Balance:', 'credit': '', 'debit': '', 'balance': '15,261,644.31'}
+
+--- Row 4 ---
+PRIVATE AND CONFIDENTIAL .
+Word: 'PRIVATE' x0=43.5 x1=80.1
+Word: 'AND' x0=82.2 x1=101.2
+Word: 'CONFIDENTIAL' x0=103.6 x1=168.8
+Word: '.' x0=356.0 x1=358.4
+Assigned: {'date': 'PRIVATE', 'reference': 'AND CONFIDENTIAL', 'description': '', 'value_date': '.', 'credit': '', 'debit': '', 'balance': ''}
