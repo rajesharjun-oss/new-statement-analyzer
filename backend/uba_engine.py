@@ -1,5 +1,27 @@
 import json
+import re
 from typing import List, Dict, Tuple, Any
+
+# Import shared utilities from pdf_extractor
+try:
+    from pdf_extractor import group_words_to_rows
+except ImportError:
+    # Fallback if running standalone
+    def group_words_to_rows(words, y_tol=3.0):
+        if not words:
+            return []
+        sorted_words = sorted(words, key=lambda w: (w["top"], w["x0"]))
+        rows = []
+        current_row = {"top": sorted_words[0]["top"], "words": [sorted_words[0]]}
+        for w in sorted_words[1:]:
+            if abs(w["top"] - current_row["top"]) <= y_tol:
+                current_row["words"].append(w)
+            else:
+                rows.append(current_row)
+                current_row = {"top": w["top"], "words": [w]}
+        rows.append(current_row)
+        return rows
+
 
 def parse_uba_ocr_text(json_text: str) -> List[Dict[str, Any]]:
     """
@@ -15,39 +37,30 @@ def parse_uba_ocr_text(json_text: str) -> List[Dict[str, Any]]:
         print(f"DEBUG: Parsed {len(rows)} JSON rows from OCR")
         
         for row in rows:
-            # Map JSON keys to our standard schema
-            # Keys might vary slightly depending on OCR, so we try a few variants
-            
             def get_val(keys):
                 for k in keys:
                     if k in row and row[k]:
                         return row[k]
                 return ""
 
-            # Date
             trans_date = get_val(["Txn Date", "Trans Date", "Date", "TRANS DATE"])
             value_date = get_val(["Value Date", "Val Date", "VALUE DATE"]) or trans_date
-            
-            # Description
-            desc = get_val(["Description", "Narration", "Details", "Particulars", "NARRATION"])
-            
-            # Reference
-            ref = get_val(["Reference", "Ref", "Chq No", "Cheque No", "CHQ NO"])
-            
-            # Amounts
+            desc = get_val(["Description", "Narration", "Details", "Particulars", "NARRATION",
+                            "Transaction Remarks", "Remarks"])
+            ref = get_val(["Reference", "Ref", "Chq No", "Cheque No", "CHQ NO",
+                           "Cheque Number"])
+
             def parse_amt(val):
                 if not val: return 0.0
                 if isinstance(val, (int, float)): return float(val)
                 return float(str(val).replace(',', '').replace(' ', ''))
 
-            debit = parse_amt(get_val(["Debit", "Dr", "DEBIT"]))
-            credit = parse_amt(get_val(["Credit", "Cr", "CREDIT"]))
+            debit = parse_amt(get_val(["Debit", "Dr", "DEBIT", "Withdrawal", "WITHDRAWAL"]))
+            credit = parse_amt(get_val(["Credit", "Cr", "CREDIT", "Deposit", "DEPOSIT"]))
             balance = parse_amt(get_val(["Balance", "Bal", "BALANCE"]))
             
             if not trans_date:
                 continue
-            
-            # USER REQUEST: Filter non-zero transactions
             if debit == 0.0 and credit == 0.0:
                 continue
 
@@ -64,8 +77,6 @@ def parse_uba_ocr_text(json_text: str) -> List[Dict[str, Any]]:
             
     except json.JSONDecodeError as e:
         print(f"DEBUG: JSON parse error: {e}")
-        # Logic to handle if it returned markdown json code block?
-        # Typically "```json ... ```"
         if "```json" in json_text:
              try:
                  clean_json = json_text.split("```json")[1].split("```")[0].strip()
@@ -77,129 +88,163 @@ def parse_uba_ocr_text(json_text: str) -> List[Dict[str, Any]]:
         
     return transactions
 
-def detect_uba_columns(words: List[Dict], bank_identifier: str) -> Dict[str, Tuple[float, float]] | None:
-    # ... (Keep existing layout layouts logic)
+
+def detect_uba_columns(words: List[Dict], bank_identifier: str = "") -> Dict[str, Tuple[float, float]] | None:
     """
-    Detect UBA column boundaries
-    Headers: TRANS DATE | VALUE DATE | NARRATION | CHQ NO | DEBIT | CREDIT | BALANCE
+    Detect UBA column boundaries from header row.
+    Supports two template variants:
+      Template A: TRANS DATE | VALUE DATE | NARRATION | CHQ NO | DEBIT | CREDIT | BALANCE
+      Template B: Transaction | Value Date | Cheque Number | Transaction Remarks | Withdrawal | Deposit | Balance
     """
-    if bank_identifier != "uba":
+    if not words:
         return None
-    
-    # Look for UBA header tokens (7 columns)
-    header_tokens = {
-        "TRANS": [], "DATE": [], "VALUE": [], "NARRATION": [],
-        "CHQ": [], "NO": [], "DEBIT": [], "CREDIT": [], "BALANCE": [],
-        "REMARKS": [] # Fallback
-    }
-    
-    for w in words:
-        txt = w["text"].upper().strip()
-        if txt in header_tokens:
-            header_tokens[txt].append(w)
-    
-    # Build column candidates
-    columns = []
-    
-    # 1. TRANS DATE
-    if header_tokens["TRANS"] and header_tokens["DATE"]:
-        # Find TRANS closest to left, then closest DATE to its right
-        trans = min(header_tokens["TRANS"], key=lambda w: w["x0"])
-        dates = [d for d in header_tokens["DATE"] if d["x0"] > trans["x0"] and d["top"] < trans["bottom"] + 10]
-        if dates:
-            date1 = min(dates, key=lambda w: w["x0"])
-            columns.append(("date", trans["x0"], date1["x1"]))
-            
-    # 2. VALUE DATE
-    if header_tokens["VALUE"] and len(header_tokens["DATE"]) >= 2:
-        value = min(header_tokens["VALUE"], key=lambda w: w["x0"])
-        dates = [d for d in header_tokens["DATE"] if d["x0"] > value["x0"] and d["top"] < value["bottom"] + 10]
-        if dates:
-            date2 = min(dates, key=lambda w: w["x0"])
-            columns.append(("value_date", value["x0"], date2["x1"]))
 
-    # 3. NARRATION (or Remarks)
-    if header_tokens["NARRATION"]:
-        narr = header_tokens["NARRATION"][0]
-        columns.append(("description", narr["x0"], narr["x1"]))
-    elif header_tokens["REMARKS"]:
-        rem = header_tokens["REMARKS"][0]
-        columns.append(("description", rem["x0"], rem["x1"]))
+    # --- Step 1: Find the header row by scoring ---
+    keywords = [
+        "TRANSACTION", "TRANS", "VALUE", "DATE", "NARRATION", "REMARKS",
+        "CHQ", "CHEQUE", "NUMBER", "DEBIT", "CREDIT", "BALANCE",
+        "WITHDRAWAL", "DEPOSIT"
+    ]
 
-    # 4. CHQ NO
-    # Sometimes it's split "CHQ" "NO"
-    if header_tokens["CHQ"]:
-        chq = header_tokens["CHQ"][0]
-        # Check for NO
-        no_candidates = [n for n in header_tokens["NO"] if n["x0"] > chq["x0"] and n["top"] < chq["bottom"] + 10]
-        right_edge = chq["x1"]
-        if no_candidates:
-            no = min(no_candidates, key=lambda w: w["x0"])
-            right_edge = no["x1"]
-        
-        columns.append(("reference", chq["x0"], right_edge))
+    rows = group_words_to_rows(words, y_tol=3.0)
 
-    # 5. DEBIT
-    if header_tokens["DEBIT"]:
-        deb = header_tokens["DEBIT"][0]
-        columns.append(("debit", deb["x0"], deb["x1"]))
-    
-    # 6. CREDIT
-    if header_tokens["CREDIT"]:
-        cred = header_tokens["CREDIT"][0]
-        columns.append(("credit", cred["x0"], cred["x1"]))
-    
-    # 7. BALANCE
-    if header_tokens["BALANCE"]:
-        bal = header_tokens["BALANCE"][0]
-        columns.append(("balance", bal["x0"], bal["x1"]))
-    
-    if len(columns) < 5:  # Allow missing CHQ NO but need basics
+    best_row = None
+    best_row_idx = -1
+    max_score = 0
+
+    for idx, r in enumerate(rows):
+        row_text_upper = " ".join([w["text"].upper() for w in r["words"]])
+
+        # Mandatory: must have DATE and BALANCE
+        if "DATE" not in row_text_upper:
+            continue
+        if "BALANCE" not in row_text_upper:
+            continue
+        # Must have at least one amount keyword
+        if not any(x in row_text_upper for x in ["DEBIT", "CREDIT", "WITHDRAWAL", "DEPOSIT"]):
+            continue
+
+        score = 0
+        for w in r["words"]:
+            for k in keywords:
+                if k in w["text"].upper():
+                    score += 1
+
+        if score > max_score:
+            max_score = score
+            best_row = r
+            best_row_idx = idx
+
+    if not best_row or max_score < 4:
         return None
-    
-    # Sort by x0
-    columns.sort(key=lambda c: c[1])
-    
-    # Assign names based on sorted order to be safe? 
-    # Or trust the header finding. Trust headers.
-    
-    # Build cuts map: name -> (left_boundary, right_boundary)
+
+    print(f"DEBUG: Found UBA Header Row: {[w['text'] for w in best_row['words']]}")
+
+    # --- Step 2: Also check the row immediately below for multi-line headers ---
+    # UBA Template B splits "Transaction" + "Date" and "Cheque" + "Number" across two rows
+    header_words = list(best_row["words"])
+    if best_row_idx + 1 < len(rows):
+        next_row = rows[best_row_idx + 1]
+        next_text = " ".join([w["text"].upper() for w in next_row["words"]])
+        # If next row has "DATE" or "NUMBER" it's likely continuation
+        if any(k in next_text for k in ["DATE", "NUMBER"]):
+            header_words.extend(next_row["words"])
+            print(f"DEBUG: UBA multi-line header, added row: {[w['text'] for w in next_row['words']]}")
+
+    # Sort header words by x0
+    sorted_words = sorted(header_words, key=lambda w: w["x0"])
+
+    # --- Step 3: Find column anchors ---
+    def find_word(text_part, start_idx=0):
+        for i in range(start_idx, len(sorted_words)):
+            if text_part in sorted_words[i]["text"].upper():
+                return i, sorted_words[i]
+        return -1, None
+
+    bounds = {}
+
+    # 1. Transaction Date / Trans Date
+    idx_td, w_td = find_word("TRANS")
+    if not w_td:
+        idx_td, w_td = find_word("DATE")
+    if w_td:
+        bounds["date"] = (w_td["x0"], w_td["x1"])
+
+    # 2. Value Date
+    idx_vd, w_vd = find_word("VALUE")
+    if w_vd:
+        bounds["value_date"] = (w_vd["x0"], w_vd["x1"])
+
+    # 3. Description (Narration / Transaction Remarks / Remarks)
+    idx_desc, w_desc = find_word("NARRATION")
+    if not w_desc:
+        idx_desc, w_desc = find_word("REMARKS")
+    if w_desc:
+        bounds["description"] = (w_desc["x0"], w_desc["x1"])
+
+    # 4. Reference (CHQ NO / Cheque Number)
+    idx_ref, w_ref = find_word("CHQ")
+    if not w_ref:
+        idx_ref, w_ref = find_word("CHEQUE")
+    if w_ref:
+        bounds["reference"] = (w_ref["x0"], w_ref["x1"])
+
+    # 5. Debit / Withdrawal
+    idx_deb, w_deb = find_word("DEBIT")
+    if not w_deb:
+        idx_deb, w_deb = find_word("WITHDRAWAL")
+    if w_deb:
+        bounds["debit"] = (w_deb["x0"], w_deb["x1"])
+
+    # 6. Credit / Deposit
+    idx_cred, w_cred = find_word("CREDIT")
+    if not w_cred:
+        idx_cred, w_cred = find_word("DEPOSIT")
+    if w_cred:
+        bounds["credit"] = (w_cred["x0"], w_cred["x1"])
+
+    # 7. Balance
+    idx_bal, w_bal = find_word("BALANCE")
+    if w_bal:
+        bounds["balance"] = (w_bal["x0"], w_bal["x1"])
+
+    # Mandatory: need at least date + one amount + balance
+    if "date" not in bounds or ("debit" not in bounds and "credit" not in bounds):
+        print("DEBUG: UBA detected header but missing critical columns")
+        return None
+
+    # --- Step 4: Build cuts with right-edge bias for numeric columns ---
+    sorted_cols = sorted(bounds.items(), key=lambda item: item[1][0])
+
     cuts = {}
-    for i, (name, left_start, right_end) in enumerate(columns):
-        # Left Bound:
-        # If first column, 0.
-        # Else, midpoint between prev_right and curr_left?
-        # Or just use prev_right (tight packing).
-         
-        if i == 0:
-            left_bound = 0
-        else:
-            prev_right = columns[i-1][2]
-            # Give slightly more space to the description column if possible?
-            # Standard approach: split difference
-            left_bound = (prev_right + left_start) / 2
-            
-            # Correction: NARRATION is usually wide.
-            # If prev is ValueDate and curr is Narration
-            if columns[i-1][0] == "value_date" and name == "description":
-                left_bound = prev_right + 2 # Tight to ValueDate
-        
-        # Right Bound
-        # If last column, explicit right_end + margin (or page width)
-        # Else, next column's left bound
-        
-        if i == len(columns) - 1:
-             right_bound = 1000 # Max width
-        else:
-             # Next column's start
-             next_left = columns[i+1][1]
-             # Midpoint
-             right_bound = (right_end + next_left) / 2
-             
-             # Correction: Narration end
-             if name == "description":
-                 right_bound = columns[i+1][1] - 5 # Give content to text, nums align right usually.
-        
-        cuts[name] = (left_bound, right_bound)
+    for i in range(len(sorted_cols)):
+        col_name, (l, r) = sorted_cols[i]
 
+        if i == 0:
+            start = 0.0
+        else:
+            prev_name, (prev_l, prev_r) = sorted_cols[i-1]
+            # Tight boundary for description → give it max room
+            if col_name == "description" and prev_name == "value_date":
+                start = prev_r + 2
+            elif col_name in ["debit", "credit", "balance"] and prev_name in ["debit", "credit"]:
+                start = (prev_r + r) / 2
+            else:
+                start = (prev_r + l) / 2
+
+        if i == len(sorted_cols) - 1:
+            end = 1000.0
+        else:
+            next_name, (next_l, next_r) = sorted_cols[i+1]
+            # Wide boundary for description
+            if col_name == "description":
+                end = next_l - 5
+            elif col_name in ["debit", "credit"] and next_name in ["debit", "credit", "balance"]:
+                end = (r + next_r) / 2
+            else:
+                end = (r + next_l) / 2
+
+        cuts[col_name] = (start, end)
+
+    print(f"DEBUG: UBA Column boundaries: {[(n, f'{l:.1f}-{r:.1f}') for n, (l, r) in cuts.items()]}")
     return cuts

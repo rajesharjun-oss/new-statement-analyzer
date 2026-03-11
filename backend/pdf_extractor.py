@@ -715,11 +715,28 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
          if fc_txns: return [{"transactions": normalize_remarks(fc_txns), "metadata": fc_meta}]
 
     if bank_identifier == "uba":
-         print("DEBUG: Routing UBA to Gemini Vision OCR...")
-         txns = extract_transactions_via_ai(str(pdf_path), max_pages=15, bank_identifier='uba')
-         if txns: return [{"transactions": normalize_remarks(txns), "metadata": {"method": "gemini_vision"}}]
-         print("DEBUG: UBA Gemini Vision returned 0 txns.")
-         return [{"transactions": [], "metadata": {"error": "UBA Gemini Vision returned 0 txns"}}]
+         # Smart routing: check if PDF has extractable text
+         uba_has_text = False
+         try:
+             with pdfplumber.open(pdf_path) as test_pdf:
+                 for pg in test_pdf.pages[:3]:
+                     wds = pg.extract_words(x_tolerance=2, y_tolerance=2)
+                     if len(wds) > 50:
+                         uba_has_text = True
+                         break
+         except Exception:
+             pass
+         
+         if uba_has_text:
+             print("DEBUG: UBA PDF has searchable text - using word-bucketing engine")
+             # Fall through to the generic word-bucketing engine below
+             pass
+         else:
+             print("DEBUG: UBA PDF is scanned - routing to Gemini Vision OCR...")
+             txns = extract_transactions_via_ai(str(pdf_path), max_pages=15, bank_identifier='uba')
+             if txns: return [{"transactions": normalize_remarks(txns), "metadata": {"method": "gemini_vision"}}]
+             print("DEBUG: UBA Gemini Vision returned 0 txns.")
+             return [{"transactions": [], "metadata": {"error": "UBA Gemini Vision returned 0 txns"}}]
 
     if bank_identifier == "access":
          from access_engine import extract_access_via_coordinates
