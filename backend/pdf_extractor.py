@@ -61,6 +61,33 @@ ECO_DATE_RE = re.compile(r"^\d{2}-[A-Za-z]{3}-\d{4}$")      # 05-Jun-2025 (Ecoba
 MONEY_RE = re.compile(r"^-?[\d,]+(?:\.\d{2})?$")             # Standard money pattern
 ECO_MONEY_RE = re.compile(r"^-?\d{1,3}(?:,\d{3})*(?:\.\d{2})$|^-?\d+(?:\.\d{2})$")
 
+BOILERPLATE_PATTERNS = [
+    re.compile(r"PLEASE\s+ADDRESS\s+ALL\s+ENQUIRIES", re.IGNORECASE),
+    re.compile(r"P\.?O\.?\s*BOX\s*\d*", re.IGNORECASE),
+    re.compile(r"VICTORIA\s+IS(?:LAND)?", re.IGNORECASE),
+    re.compile(r"IKOYI", re.IGNORECASE),
+    re.compile(r"LAGOS", re.IGNORECASE),
+    re.compile(r"RC\s*\d+", re.IGNORECASE),
+    re.compile(r"REGISTERED\s+OFFICE", re.IGNORECASE),
+    re.compile(r"MEMBER\s+OF\s+THE\s+NIGERIA\s+DEPOSIT\s+INSURANCE\s+CORPORATION", re.IGNORECASE),
+    re.compile(r"NDIC", re.IGNORECASE),
+    re.compile(r"WWW\.\S+\.COM", re.IGNORECASE),
+    re.compile(r"PLOT\s+\d+.*AKIN\s+ADESOLA", re.IGNORECASE),
+]
+
+def scrub_boilerplate(text: str) -> str:
+    """Remove common bank footer/boilerplate text from narrations."""
+    if not text: return ""
+    for pat in BOILERPLATE_PATTERNS:
+        text = pat.sub(" ", text)
+    
+    # Final cleanup of dangling punctuation or extra spaces
+    text = re.sub(r"[\.:,\s]{2,}", " ", text) # Collapse multiple punctuations
+    text = re.sub(r"[\.,\s]+$", "", text)
+    text = re.sub(r"^[\.:,\s]+", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
 @dataclass
 class ColumnBounds:
     # x-intervals used to assign words to columns
@@ -399,6 +426,14 @@ def is_noise_row(row: dict) -> bool:
         "EFF. AVAIL. BAL",
         "CURRENCY",
         "STATEMENT PERIOD",
+        "PLEASE ADDRESS ALL ENQUIRIES",
+        "P.O.BOX",
+        "REGISTERED OFFICE",
+        "VICTORIA ISLAND",
+        "MEMBER OF THE NIGERIA DEPOSIT INSURANCE CORPORATION",
+        "NDIC",
+        "WWW.GTBANK.COM",
+        "AKIN ADESOLA",
     ]) or (
         # Strict totals check: only skip if it looks like a summary line (usually end of page)
         re.search(r"^\s*TOTAL\s+DEBITS?\s*$", text) or
@@ -958,6 +993,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
             if narration_val:
                 desc_parts.append(narration_val)
             remarks = " ".join(desc_parts).replace("\xad", "").strip()
+            remarks = scrub_boilerplate(remarks)
             remarks = re.sub(r"\s+", " ", remarks)
 
             deb_val = parse_money(txn.get("debit", ""))
@@ -2129,8 +2165,12 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
             full_line_text = raw_text.upper()
             
-            # --- FIX: SKIP SUMMARY ROWS ---
+            # --- FIX: SKIP SUMMARY & NOISE ROWS ---
             if "CLOSING BALANCE" in full_line_text or "OPENING BALANCE" in full_line_text:
+                 i += 1
+                 continue
+            
+            if is_noise_row(r):
                  i += 1
                  continue
 

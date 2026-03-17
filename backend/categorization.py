@@ -66,7 +66,7 @@ RULES = [
     
     # EXPENSES (Priority 7 - Override Transfers/Charges)
     Rule("R007A_EVENT_CONFERENCE", 7, r"SUMMIT|CONFERENCE|HEALTHTECH|KIGALI|NAMETAG|NAME\s*TAGS", "Event & Conference Expenses", 1.0, "debit"),
-    Rule("R007B_TRANSPORT_VEHICLE", 7, r"VEHICLE|TINT|VEHICLE\s*REG|CAR\s*REG|LICENSE|VEHICLE\s*PAPERS|FUEL\b|DIESEL\b", "Transport & Logistics", 1.0, "debit"),
+    Rule("R007B_TRANSPORT_VEHICLE", 7, r"VEHICLE|TINT|VEHICLE\s*REG|CAR\s*REG|LICENSE|VEHICLE\s*PAPERS|FUEL\b|DIESEL\b|TRANSPORT\b", "Transport & Logistics", 1.0, "debit"),
     Rule("R007C_REPAIRS_MAINTENANCE", 7, r"REPAIR|MAINTENANCE\s*(?!FEE|CHG|CHARGE|ACCT|ACCOUNT)|SERVICING|PLUMBING|ELECTRICAL|CARPENTRY", "Repairs & Maintenance", 0.9, "debit"),
     
     # --- NEW: SECURITY & SAFETY ---
@@ -77,7 +77,8 @@ RULES = [
     Rule("R007E_EXAM_GENERIC_PASSTHROUGH", 7, r"\bEXAM\b|EXAM\s*FEE|REGISTRATION\s*(?:EXAM|FORM|FEE)|ADMISSION|APPLICATION\s*FORM|COMMON\s*ENTRANCE", "Student Exam Fees (Pass-Through)", 0.95, "both"),
     
     Rule("R007F_CAPITAL_PROJECT_VALUATION", 7, r"VALUATION\s*INVOICE|VARIATION\s*INVOICE", "Capital Expenditure (CWIP)", 1.0, "debit"),
-    Rule("R007G_OFFICE_RENT_CORPORATE_SERVICES", 7, r"CORPORATE\s*SERVICES|SERVICED\s*OFFICE|VICTORIA\s*ISLAND|ADEOLA\s*ODEKU", "Office Rent / Lease", 0.92, "debit"),
+    Rule("R080_OFFICE_RENT_CORPORATE_SERVICES", 80, r"CORPORATE\s*SERVICES|SERVICED\s*OFFICE|ADEOLA\s*ODEKU", "Office Rent / Lease", 0.92, "debit"),
+    # Remove broad "VICTORIA ISLAND" from here, as it's common bank boilerplate
     
     Rule("R007H_ADMINISTRATIVE_EXPENSES", 7, r"MISCELLANEOUS|MISC\b|OFFICE\s*EXP|STATIONERY|PRINTING|COURIER|NEWSPAPER|SUBSCRIPTION|REGISTRATION\b|INTERNET|DATA\s*BUNDLE|AIRTIME", "Administrative Expenses", 0.95, "debit"),
     
@@ -85,17 +86,131 @@ RULES = [
     Rule("R090_GENERIC_OUTWARD_TRANSFER", 90, r"NIP\s*TO|TRF\s*TO|TRF\s*IFO|LOCAL\s*TRANSFERS", "Inter-Account / Treasury Transfer", 0.6, "debit"),
 ]
 
+# --- 2. VENDOR KNOWLEDGE BASE ---
+VENDOR_MAPPING = {
+    "Utilities & Bills": [
+        "IKEDC", "EKEDC", "PHCN", "KEDCO", "AEDC", "JEDC", "DSTV", "GOTV", "STARTIMES", "SMILE", "SPECTRANET", "OLUSESI WA"
+    ],
+    "Fuel & Energy": [
+        "TOTALENERGIES", "TOTAL\s+SERVICE", "NNPC", "OANDO", "BOVAS", "NORTH\s+WEST", "ETERNAL", "ARDova", "MOBIL", "EVELAND", "DAMAC OIL"
+    ],
+    "Telecommunications": [
+        "MTN", "AIRTEL", "GLO\b", "9MOBILE", "ETISALAT"
+    ],
+    "Staff Welfare & Catering": [
+        "CHICKEN\s+REPUBLIC", "THE\s+PLACE", "KFC", "DOMINO", "COLDSTONE", "MEGA\s+CHICKEN", "SWEET\s+SENSATION", "MAMA\s+CASS", "FOOD\s+COURT", "SHERBET FARMS", "GLOBAL LOKO"
+    ],
+    "Transport & Logistics": [
+        "UBER", "BOLT", "GIGL", "GIG\s+LOGISTICS", "DHL", "FEDEX", "UPS", "RED\s+STAR", "KAVUANI"
+    ],
+    "Professional Fees": [
+        "LAWYER", "AUDITOR", "CONSULTANT", "RETAINER", "LEGAL", "COVENANT\s+PARTNER"
+    ],
+    "Administrative Expenses": [
+        "JUMIA", "KONGA", "AMAZON", "STATIONERY", "OFFICE\s+DEPOT", "PAPER\s+PLUS", "SWIFT NETW"
+    ],
+    "Event & Conference Expenses": [
+        "CJ MULTI TRADE", "HEALTHTECH", "KIGALI", "SUMMIT"
+    ],
+    "Technical & Operations": [
+        "PROMOTEC", "SUNBETH GLOBAL"
+    ],
+    "General Vendor": [
+         "GREAT OMA"
+    ],
+    "Salaries & Wages": [
+        "OKPANACHI IVIE EMILY"
+    ]
+}
+
+# Convert Vendor Mapping to actual Rules for the Engine
+for category, keywords in VENDOR_MAPPING.items():
+    for i, keyword in enumerate(keywords):
+        RULES.append(Rule(
+            id=f"VEND_{category.replace(' ', '_').upper()}_{i}",
+            priority=15, # Higher than generic transfers (90) but lower than specific charges
+            pattern=rf"\b{keyword}\b",
+            category=category,
+            confidence=0.95,
+            side='debit'
+        ))
+
 # Sort rules by priority (ascending)
 SORTED_RULES = sorted(RULES, key=lambda r: r.priority)
+
+def extract_entity_from_narration(norm_desc: str) -> str:
+    """
+    Attempt to isolate the 'Subject' of the transaction (e.g. Vendor name).
+    Works across Access, Ecobank, Wema, and GTBank patterns.
+    """
+    entity = norm_desc
+
+    # 1. Clean common NIP/TRF/GAPS prefixes
+    prefixes = [
+        r"NIP TRANSFER", r"COB TRF TO", r"COB TRF", r"TRF FROM", r"NIP FROM",
+        r"PP ", r"REV PP", r"ONB TRANSFER FROM", r"POS PURCHASE", r"OMNI BO",
+        r"TRN IFO NIP OUTWARD ACCOUNT", r"LOCAL TRANSFERS OTHER BANKS",
+        r"GAPS\d*", r"TRSF IFO", r"FT IFO", r"BO\s+[\w\s]+\s+IFO"
+    ]
+    for p in prefixes:
+        entity = re.sub(r"^" + p, "", entity, flags=re.IGNORECASE).strip()
+    
+    # 2. Split by common delimiters (Order matters: comma/slash usually last)
+    # Wema/Standard: " TO ", " FROM ", " IFO ", ":"
+    # Ecobank: ","
+    # Access: "/"
+    for delim in [" TO ", " FROM ", " IFO ", ":", ",", "/"]:
+        if entity and delim in str(entity):
+            parts = str(entity).split(delim)
+            # For Ecobank ([ID] : [NAR] , [ENTITY]), we often want the last part
+            # For Access ([PURPOSE]/[BANK]/[ENTITY]), we often want the last part
+            # Let's iterate from the end to find the most likely name
+            for part in reversed(parts):
+                p = part.strip()
+                # Skip numeric IDs, short codes, or boilerplate
+                if len(p) > 3 and not re.match(r"^\d+$", p):
+                    if not any(p.startswith(x) for x in ["PP_", "GAPS", "REV_"]):
+                        # Skip generic purpose words
+                        if p.upper() not in ["OPERATIONS", "SALARY", "MAY SALARY", "JUNE SALARY"]:
+                            entity = p
+                            break
+    
+    # 3. Strip trailing junk (IDs, branch codes like 2505...)
+    entity = re.sub(r"\b\d{5,}\b", "", entity).strip()
+    
+    return entity
 
 def normalize_description(desc: str) -> str:
     if not desc:
         return ""
-    # Normalize: Upper case, remove special chars except spaces, collapse multiple spaces
-    # NOTE: Python regex char classes in [] don't need escaping for many chars, but safe to match TS logic
-    # TS: .replace(/[^A-Z0-9\s]/g, ' ')
-    desc = desc.upper()
-    desc = re.sub(r'[^A-Z0-9\s]', ' ', desc)
+    desc = str(desc).upper()
+    
+    # --- BOILERPLATE SCRUBBING ---
+    boilerplate = [
+        "PLEASE ADDRESS ALL ENQUIRIES",
+        "P.O.BOX",
+        "VICTORIA IS",  # Catches Victoria Is and Victoria Island
+        "IKOYI",
+        "LAGOS",
+        "RC NO",
+        "RC ",          # Catches RC 12345
+        "REGISTERED OFFICE",
+        "MEMBER OF THE NIGERIA DEPOSIT INSURANCE CORPORATION",
+        "NDIC",
+        "WWW.",
+        "PLOT 635, AKIN ADESOLA",
+    ]
+    for b in boilerplate:
+        desc = desc.replace(b, " ")
+    
+    # 1. Remove phone numbers (Nigerian format)
+    desc = re.sub(r'\b0[7-9][0-1]\d{8}\b', ' ', desc)
+    
+    # 2. Remove long numeric strings (likely IDs)
+    desc = re.sub(r'\b\d{10,}\b', ' ', desc)
+    
+    # 3. Final cleanup: alphanumeric, spaces, and slash/comma (used in bank structures)
+    desc = re.sub(r'[^A-Z0-9\s/,]', ' ', desc)
     desc = re.sub(r'\s+', ' ', desc)
     return desc.strip()
 
@@ -129,13 +244,10 @@ def categorize_single_transaction(txn: Dict) -> Dict:
     else:
         txn['is_reversal'] = False
         
-    # --- FIX 10: CLEAN DESCRIPTION NOISE ---
-    # Remove repetitive boilerplate
-    for noise in ["LOCAL TRANSFERS OTHER BANKS", "TRN IFO NIP OUTWARD ACCOUNT", "OMNI BO", "NIP TRANSFER", "FROM:"]:
-        if noise in norm_desc:
-            norm_desc = norm_desc.replace(noise, "").strip()
-            # Also clean up double spaces resulting from removal
-            norm_desc = re.sub(r'\s+', ' ', norm_desc)
+    # --- ENTITY EXTRACTION ---
+    # Attempt to isolate the "Who" (Vendor/Counterparty)
+    entity = extract_entity_from_narration(norm_desc)
+    txn['entity'] = entity
     
     # Store cleaned description for reference/UI if needed, but we use norm_desc for rules
     txn['clean_description'] = norm_desc
@@ -145,25 +257,22 @@ def categorize_single_transaction(txn: Dict) -> Dict:
         # --- FIX 9: SPECIFIC AMOUNT RULES ---
         abs_amt = abs(debit)
         
-        # Rule: Amount == 50 AND "LEVY" -> Bank Charges
-        if math.isclose(abs_amt, 50.00, abs_tol=0.01) and "LEVY" in norm_desc:
+        # Rule: Amount == 50 AND ("STAMP" or "LEVY") -> Bank Charges
+        if math.isclose(abs_amt, 50.00, abs_tol=0.01) and any(x in norm_desc for x in ["STAMP", "LEVY"]):
              updated_cat = "Bank Charges"
              confidence = 1.0
-             rule_id = "R013_LEVY_50_AMOUNT"
+             rule_id = "R010_BANK_STAMP_DUTY"
              decision_source = "RULE_SPECIFIC"
 
-        # Rule: Amount == 3.75 -> Bank Charges
-        elif math.isclose(abs_amt, 3.75, abs_tol=0.01):
+        # Rule: Amount == 3.75 or 53.75 (NIP fee) or 26.88 (SMS) -> Bank Charges
+        elif any(math.isclose(abs_amt, amt, abs_tol=0.01) for amt in [3.75, 53.75, 26.88]):
              updated_cat = "Bank Charges"
              confidence = 1.0
              rule_id = "R014_SPECIFIC_AMOUNT_CHARGES"
              decision_source = "RULE_SPECIFIC"
 
         # Corrected Standard Fee Checks (fallback with guard)
-        elif any(math.isclose(abs_amt, amt, abs_tol=0.01) for amt in [50.00, 52.50, 10.00, 4.00, 26.88]):
-            # 26.88 is common for some SMS charges
-            # Safe Guard: Only if it DOES contain charge-like keywords OR DOES NOT look like a payment/transfer
-            
+        elif any(math.isclose(abs_amt, amt, abs_tol=0.01) for amt in [50.00, 52.50, 10.00, 4.00]):
             looks_like_charge = re.search(r"CHG|FEE|VAT|SMS|COMM|MAINT|LEVY|DUTY", norm_desc)
             looks_like_transfer = re.search(r"TRF|NIP|PAYMENT|PYMT|WEB|POS|ATM|DATA|AIRTIME", norm_desc)
             
@@ -173,28 +282,15 @@ def categorize_single_transaction(txn: Dict) -> Dict:
                 rule_id = "AMT_STD_FEE"
                 decision_source = "RULE"
 
-    # 2. RULE ENGINE EXECUTION (Highest Priority overrides Amount)
-    # If amount rule triggered, we still check regex rules? 
-    # TS logic: "Rule Engine Execution (Highest Priority)" comes AFTER Amount check but returns immediately.
-    # WAIT: In TS, Amount check checks if(isDebit && isFeeAmount) ... return updated;
-    # So Amount check TAKES PRECEDENCE over Regex rules in the TS code I read (lines 228-235).
-    # BUT, the comments say "2. RULE ENGINE EXECUTION (Highest Priority)".
-    # Let's perform Regex check. If it matches, it typically overwrites or captures better logic.
-    # Actually, in TS code:
-    # 1. Amount Check -> Returns if matched.
-    # 2. Loop Rules -> Returns if matched.
-    # So Amount Check IS higher priority if it matches. I will follow TS logic.
-    
-    if updated_cat:
-        # If amount matched, we are done
-        pass
-    else:
+    # 2. RULE ENGINE EXECUTION
+    if not updated_cat:
         for rule in SORTED_RULES:
             if rule.side == 'debit' and not is_debit: continue
             if rule.side == 'credit' and not is_credit: continue
             
-            if rule.pattern.search(norm_desc):
-                if rule.exclude and rule.exclude.search(norm_desc):
+            # Use pattern match on the full normalized description
+            if rule.pattern.search(norm_desc or ""):
+                if rule.exclude and rule.exclude.search(norm_desc or ""):
                     continue
                 
                 updated_cat = rule.category
@@ -217,10 +313,9 @@ def categorize_single_transaction(txn: Dict) -> Dict:
         elif is_debit and re.search(r"(?:TRF|NIP|FRM|TO|MNY|TRANSFER|PYMT|PAYMENT|WEB|POS|ATM)", norm_desc):
             updated_cat = "Inter-Account / Treasury Transfer"
             confidence = 0.6
-            decision_source = "AI_HEURISTIC" # Mark as AI/Heuristic
+            decision_source = "AI_HEURISTIC"
             
         else:
-            # Change fallback defaults as requested
             updated_cat = "Uncategorized Expense" if is_debit else "Uncategorized Income"
             confidence = 0.0
             decision_source = "AI"
@@ -232,29 +327,30 @@ def categorize_single_transaction(txn: Dict) -> Dict:
     if decision_source:
         txn['decision_source'] = decision_source
     
-    # DEBUG LOG
-    if "SECURITY" in norm_desc or abs(debit) == 100000:
-        print(f"DEBUG: Desc='{norm_desc}' | Amt={debit} | Cat='{updated_cat}' | Rule='{rule_id}' | Source='{decision_source}'")
+    # DEBUG LOG for specific cases
+    if "SECURITY" in norm_desc or "HEALTH" in norm_desc:
+        print(f"DEBUG: Entity='{entity}' | Cat='{updated_cat}' | Source='{decision_source}' | Desc='{norm_desc}'")
 
     return txn
+
 
 
 from openai import OpenAI
 import google.generativeai as genai
 import httpx
 
-_openai_key_index = 0
+class AIState:
+    openai_key_index = 0
 
 def get_openai_client():
     """Parse comma-separated keys and return a rotated client instance"""
-    global _openai_key_index
     raw_keys = os.getenv('OPENAI_API_KEY', '')
     keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
     if not keys:
         return None
     
-    api_key = keys[_openai_key_index % len(keys)]
-    _openai_key_index += 1
+    api_key = keys[AIState.openai_key_index % len(keys)]
+    AIState.openai_key_index += 1
     return OpenAI(api_key=api_key, http_client=httpx.Client())
 
 # ... (keep existing imports and rules)
@@ -285,61 +381,85 @@ def categorize_transactions(transactions: List[Dict]) -> List[Dict]:
             
     return transactions
 
+def _clean_ai_json(text: str) -> str:
+    """Helper to clean common AI JSON formatting issues"""
+    if not text: return "[]"
+    text = text.strip()
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0]
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0]
+    return text.strip()
+
 def categorize_with_openai(transactions: List[Dict]):
     """
-    Use OpenAI to categorize unallocated transactions
+    Use OpenAI (GPT-4o) to categorize unallocated transactions
     """
     client = get_openai_client()
     if not client: return
     
-    input_data = [
-        f"Desc: {t.get('remarks', '') or t.get('description', '')} | Amount: {t.get('debit', 0) or t.get('credit', 0)}" 
-        for t in transactions
+    # Get all categories from VENDOR_MAPPING + Standard ones
+    available_categories = list(VENDOR_MAPPING.keys()) + [
+        "Operating Income", "Inter-Account / Treasury Transfer", "Bank Charges", 
+        "Salaries & Wages", "Staff Welfare", "Security & Safety", 
+        "Repairs & Maintenance", "Office Rent / Lease", "WHT Receivable", "Interest Income"
     ]
+    # Remove duplicates
+    available_categories = sorted(list(set(available_categories)))
     
-    prompt = f"""Categorize these bank transactions into one of these categories:
-- Salaries & Wages
-- Rent
-- Utilities
-- Fuel
-- Office Supplies
-- Professional Fees
-- Bank Charges
-- Tax
-- Income
-- Transfer Out
-- Transfer In
-- Unallocated
+    input_data = []
+    for t in transactions:
+        desc = t.get('remarks', '') or t.get('description', '')
+        entity = t.get('entity', 'Unknown')
+        amt = t.get('debit', 0) or t.get('credit', 0)
+        input_data.append(f"Entity: {entity} | Narration: {desc} | Amount: {amt}")
+    
+    categories_str = "\n".join([f"- {c}" for c in available_categories])
+    
+    prompt = f"""You are an expert accountant specializing in Nigerian bank statement analysis.
+Categorize these transactions into the EXACT categories provided below.
 
-Transactions:
+CATEGORIES:
+{categories_str}
+
+TRANSACTIONS:
 {chr(10).join(f'{i+1}. {data}' for i, data in enumerate(input_data))}
 
-Return only a JSON array of categories in order, like: ["Income", "Rent", "Utilities", ...]
+INSTRUCTIONS:
+1. Return ONLY a JSON array of category names in the exact same order as the input.
+2. Example output: ["Salaries & Wages", "Bank Charges", "Utilities & Bills"]
+3. If an entity like 'IKEDC' or 'EKEDC' is present, categorize as 'Utilities & Bills'.
+4. If it looks like a personal transfer to a person (e.g. 'OLAPEJU'), use 'Inter-Account / Treasury Transfer'.
+5. If it relates to 'SUMMIT', 'KIGALI', or 'HEALTHTECH', use 'Event & Conference Expenses'.
+6. If it's a small amount (50, 53.75, 26.88) with words like 'LEVY', 'DUTY', 'CHARGE', use 'Bank Charges'.
 """
     
     try:
+        # Use gpt-4o for high intelligence
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4o",
             messages=[{"role": "user", "content": prompt}],
             temperature=0
         )
         
-        # Parse response
+        content = _clean_ai_json(response.choices[0].message.content)
         import json
-        content = response.choices[0].message.content
-        if "```json" in content:
-            content = content.replace("```json", "").replace("```", "")
-        
         categories = json.loads(content)
         
         for i, category in enumerate(categories):
             if i < len(transactions):
-                transactions[i]['category'] = category
-                transactions[i]['decision_source'] = "AI"
-                transactions[i]['confidence'] = 0.85
+                # Ensure the category is valid
+                if category in available_categories:
+                    transactions[i]['category'] = category
+                else:
+                    # Fuzzy match or fallback
+                    transactions[i]['category'] = "Uncategorized Expense"
+                
+                transactions[i]['decision_source'] = "AI_GPT4"
+                transactions[i]['confidence'] = 0.9
                 
     except Exception as e:
-        print(f"OpenAI Categorization Error: {e}")
+        print(f"OpenAI GPT-4 Categorization Error: {e}")
 
 def categorize_with_gemini(transactions: List[Dict]):
     """
@@ -347,35 +467,31 @@ def categorize_with_gemini(transactions: List[Dict]):
     """
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key: return
+    
+    available_categories = list(VENDOR_MAPPING.keys()) + [
+        "Operating Income", "Inter-Account / Treasury Transfer", "Bank Charges", 
+        "Salaries & Wages", "Staff Welfare", "Security & Safety", 
+        "Repairs & Maintenance", "Office Rent / Lease"
+    ]
+    available_categories = sorted(list(set(available_categories)))
+    
     input_data = [
-        f"Desc: {t.get('remarks', '') or t.get('description', '')} | Amount: {t.get('debit', 0) or t.get('credit', 0)}" 
+        f"Entity: {t.get('entity', 'Unknown')} | Narration: {t.get('remarks', '') or t.get('description', '')}" 
         for t in transactions
     ]
     
-    prompt = f"""Categorize these bank transactions into one of these categories:
-- Salaries & Wages
-- Rent
-- Utilities
-- Fuel
-- Office Supplies
-- Professional Fees
-- Bank Charges
-- Tax
-- Income
-- Transfer Out
-- Transfer In
-- Unallocated
+    prompt = f"""Categorize these bank transactions:
+CATEGORIES: {", ".join(available_categories)}
 
-Transactions:
+TRANSACTIONS:
 {chr(10).join(f'{i+1}. {data}' for i, data in enumerate(input_data))}
 
-Return ONLY a JSON array of categories in order, like: ["Income", "Rent", "Utilities", ...]
+Return ONLY a JSON array of categories.
 """
     
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-1.5-flash")
-        
         response = model.generate_content(prompt)
         
         import json
@@ -385,8 +501,8 @@ Return ONLY a JSON array of categories in order, like: ["Income", "Rent", "Utili
         for i, category in enumerate(categories):
             if i < len(transactions):
                 transactions[i]['category'] = category
-                transactions[i]['decision_source'] = "AI"
-                transactions[i]['confidence'] = 0.85
+                transactions[i]['decision_source'] = "AI_GEMINI"
+                transactions[i]['confidence'] = 0.8
                 
     except Exception as e:
         print(f"Gemini Categorization Fallback Error: {e}")

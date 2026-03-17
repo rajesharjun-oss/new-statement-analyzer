@@ -1,0 +1,16 @@
+﻿
+============================================================
+  UBA test.pdf OCR (API End-to-End Test)
+============================================================
+Status: 200
+Account: Detected Organization
+Bank: uba
+Transaction Count: 85
+Total Debit: 32,954,575.73
+Total Credit: 170,065.28
+Validation: Statement totals missing (cannot fully validate). Extraction totals computed.
+
+First 3 transactions:
+  [0] date=17-Oct-2025 debit=6.0 credit=0.0 bal=912795.19 desc=SMS/SMS CHARGES SEP 27TH 2025 - OCT 3RD 2025 01102
+  [1] date=17-Oct-2025 debit=1000000.0 credit=0.0 bal=1912795.19 desc=OLUBUNMI/App To United Bank 000003251017225480043:
+  [2] date=17-Oct-2025 debit=250000.0 credit=0.0 bal=2162795.19 desc=OLUBUNMI/App To United Bank 0000032510171727230043
