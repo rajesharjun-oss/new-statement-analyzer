@@ -1,0 +1,8 @@
+﻿Testing UBA test.pdf (scanned/image PDF)...
+DEBUG: extract_transactions called with bank_identifier='uba'
+DEBUG: UBA PDF is scanned - routing to Gemini Vision OCR...
+DEBUG: Gemini Vision - Rendered 7 pages for uba
+
+Statement 1:
+  Method: gemini_vision
+  Transactions: 86

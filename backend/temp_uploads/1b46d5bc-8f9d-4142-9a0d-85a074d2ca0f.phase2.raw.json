@@ -1,0 +1,557 @@
+[
+  {
+    "date": "01-Oct-2025",
+    "description": "Opening Balance",
+    "debit": 0.0,
+    "credit": 912801.19,
+    "balance": 0.0
+  },
+  {
+    "date": "17-Oct-2025",
+    "description": "SMS/SMS CHARGESSEP 27TH 2025 - OCT3RD 2025:0110280153460009896184:TNF-AKINDUKO",
+    "debit": 6.00,
+    "credit": 0.0,
+    "balance": 912795.19
+  },
+  {
+    "date": "17-Oct-2025",
+    "description": "OLUBUNMI/App To UnitedBank 000003251017225480043:TNF-AKINDUKO",
+    "debit": 0.0,
+    "credit": 1000000.00,
+    "balance": 1912795.19
+  },
+  {
+    "date": "17-Oct-2025",
+    "description": "OLUBUNMI/App To UnitedBank 0000032510171727230043:FOR YAMIMOUTY FOR: 2TRANSACTIONS ON 17-OCT-25",
+    "debit": 0.0,
+    "credit": 250000.00,
+    "balance": 2162795.19
+  },
+  {
+    "date": "19-Oct-2025",
+    "description": "",
+    "debit": 100.00,
+    "credit": 0.0,
+    "balance": 2162695.19
+  },
+  {
+    "date": "26-Oct-2025",
+    "description": "TNF-AKINDUKOOLUBUNMI/App To UnitedBank 000003261026311400044:TNF-AKINDUKO/WOKILI AKINWUMI/trf via Ibank to",
+    "debit": 0.0,
+    "credit": 250000.00,
+    "balance": 2412695.19
+  },
+  {
+    "date": "27-Oct-2025",
+    "description": "ENS 0000132510272246050005:SMS/SMS CHARGES OCT 16TH 2025 - OCT22ND 2025",
+    "debit": 0.0,
+    "credit": 0.0,
+    "balance": 2602695.19
+  },
+  {
+    "date": "31-Oct-2025",
+    "description": "24102511361190010156770:SMS/SMS CHARGES OCT 23RD 2025 - OCT27TH 2025",
+    "debit": 18.00,
+    "credit": 0.0,
+    "balance": 2602677.19
+  },
+  {
+    "date": "31-Oct-2025",
+    "description": "2910251150150010222049:FOR STAMPDUTY FOR: 1TRANSACTIONS ON 26-OCT-25",
+    "debit": 12.00,
+    "credit": 0.0,
+    "balance": 2602665.19
+  },
+  {
+    "date": "02-Nov-2025",
+    "description": "FOR STAMPDUTY FOR: 1TRANSACTIONS ON 28-OCT-25",
+    "debit": 50.00,
+    "credit": 0.0,
+    "balance": 2602615.19
+  },
+  {
+    "date": "02-Nov-2025",
+    "description": "",
+    "debit": 50.00,
+    "credit": 0.0,
+    "balance": 2602565.19
+  },
+  {
+    "date": "05-Nov-2025",
+    "description": "TNF-GODWINSunday/ALAT NIPTRANSFER TO ENSHETHEIG 0000172511051648854649",
+    "debit": 0.0,
+    "credit": 0.0,
+    "balance": 2702565.19
+  },
+  {
+    "date": "06-Nov-2025",
+    "description": "SMS/SMS CHARGES OCT 28TH 2025 - NOV4TH 2025:05110505543500010422509:TNF-GODWIN",
+    "debit": 12.00,
+    "credit": 0.0,
+    "balance": 2702553.19
+  },
+  {
+    "date": "06-Nov-2025",
+    "description": "Sunday/ALAT NIPTRANSFER TO ENSHETHEIG 0000172511060715063149:TNF-GODWIN",
+    "debit": 0.0,
+    "credit": 150000.00,
+    "balance": 2852553.19
+  },
+  {
+    "date": "06-Nov-2025",
+    "description": "Sunday/ALAT NIPTRANSFER TO ENSHETHEIG 0000172511062006337537",
+    "debit": 0.0,
+    "credit": 0.0,
+    "balance": 3052553.19
+  },
+  {
+    "date": "06-Nov-2025",
+    "description": "CIB/UTO/DieselPurchase/DAMILOLA OLUMIDE AJA 08-NOV-25",
+    "debit": 393000.00,
+    "credit": 0.0,
+    "balance": 2659553.19
+  },
+  {
+    "date": "09-Nov-2025",
+    "description": "FOR STAMPDUTY FOR: 1TRANSACTIONS ON 07-NOV-25",
+    "debit": 50.00,
+    "credit": 0.0,
+    "balance": 2659503.19
+  },
+  {
+    "date": "09-Nov-2025",
+    "description": "FOR STAMPDUTY FOR: 1TRANSACTIONS ON 06-NOV-25",
+    "debit": 50.00,
+    "credit": 0.0,
+    "balance": 2659453.19
+  },
+  {
+    "date": "09-Nov-2025",
+    "description": "FGN STAMPDUTY FOR: 1TRANSACTIONS ON 05-NOV-25",
+    "debit": 50.00,
+    "credit": 0.0,
+    "balance": 2659403.19
+  },
+  {
+    "date": "08-Nov-2025",
+    "description": "TNF-RONALD/ Balance 00001525110815224500000:TNF-STRIDE DELIVERYSERVICES",
+    "debit": 0.0,
+    "credit": 200000.00,
+    "balance": 2859403.19
+  },
+  {
+    "date": "09-Nov-2025",
+    "description": "TNF-STRIDE DELIVERYSERVICES LIMITED/WebAppAdvance0000032411091125800044:CIB/UTO/Diesel/FirstDARBUT COMPANY",
+    "debit": 0.0,
+    "credit": 300000.00,
+    "balance": 3159403.19
+  },
+  {
+    "date": "11-Nov-2025",
+    "description": "0000042511111110832003:TNF-STRIDE DELIVERYSERVICES",
+    "debit": 99053.75,
+    "credit": 0.0,
+    "balance": 3060349.44
+  },
+  {
+    "date": "11-Nov-2025",
+    "description": "LIMITED/WebAppAdvance00000324111111500390044:TNF-GODWIN",
+    "debit": 0.0,
+    "credit": 170000.00,
+    "balance": 3230349.44
+  },
+  {
+    "date": "11-Nov-2025",
+    "description": "Sunday/ALAT NIPTRANSFER TO ENSHETHEIG 0000172511111734527527",
+    "debit": 0.0,
+    "credit": 0.0,
+    "balance": 3430349.44
+  },
+  {
+    "date": "11-Nov-2025",
+    "description": "CIB/UTO/Truck Repair/FIRST DARBUTCOMPANY 0000042511112059392003:CIB/UTO/Refund/GODWINSunday",
+    "debit": 28526.88,
+    "credit": 0.0,
+    "balance": 3401822.56
+  },
+  {
+    "date": "12-Nov-2025",
+    "description": "00000425111121526072003:TNF-FEMI FELIX/HIMSAH/FEMI FELIX A Trf for Cus 0901052511141105278045:",
+    "debit": 200053.75,
+    "credit": 0.0,
+    "balance": 3201768.81
+  },
+  {
+    "date": "14-Nov-2025",
+    "description": "CIB/UTO/Diesel/FirstDARBUT COMPANY 0000042511141133452003:CIB/UTO/Diesel Balance/First DARBUT COMPANY",
+    "debit": 0.0,
+    "credit": 270000.00,
+    "balance": 3471768.81
+  },
+  {
+    "date": "14-Nov-2025",
+    "description": "0000042511141142202003:FGN STAMPDUTY FOR: 2TRANSACTIONS ON 11-NOV-25",
+    "debit": 163053.75,
+    "credit": 0.0,
+    "balance": 3308715.06
+  },
+  {
+    "date": "16-Nov-2025",
+    "description": "",
+    "debit": 22026.88,
+    "credit": 0.0,
+    "balance": 3286688.18
+  },
+  {
+    "date": "16-Nov-2025",
+    "description": "FGN STAMPDUTY FOR: 1TRANSACTIONS ON 09-NOV-25",
+    "debit": 100.00,
+    "credit": 0.0,
+    "balance": 3286588.18
+  },
+  {
+    "date": "16-Nov-2025",
+    "description": "",
+    "debit": 50.00,
+    "credit": 0.0,
+    "balance": 3286538.18
+  },
+  {
+    "date": "16-Nov-2025",
+    "description": "FGN STAMPDUTY FOR: 1TRANSACTIONS ON 14-NOV-25",
+    "debit": 50.00,
+    "credit": 0.0,
+    "balance": 3286488.18
+  },
+  {
+    "date": "16-Nov-2025",
+    "description": "FGN STAMPDUTY FOR: 1TRANSACTIONS ON 10-NOV-25",
+    "debit": 50.00,
+    "credit": 0.0,
+    "balance": 3286438.18
+  },
+  {
+    "date": "16-Nov-2025",
+    "description": "SMS/SMS CHARGES NOV 5TH 2025 - NOV11TH 2025:1211250619040010555730:TNF-FEMI FELIX",
+    "debit": 84.00,
+    "credit": 0.0,
+    "balance": 3286354.18
+  },
+  {
+    "date": "16-Nov-2025",
+    "description": "HIMSAH/FEMI FELIX A Trf for Cus 0901052511161221217444:TNF-AFIDAFEBA FELIX",
+    "debit": 0.0,
+    "credit": 200000.00,
+    "balance": 3486354.18
+  },
+  {
+    "date": "17-Nov-2025",
+    "description": "OLAFISOYE/FIP: MB/AJID/FELI 10000162511711418040009:CIB/UTO/Diesel/FirstDARBUT COMPANY",
+    "debit": 0.0,
+    "credit": 150000.00,
+    "balance": 3636354.18
+  },
+  {
+    "date": "17-Nov-2025",
+    "description": "0000042511171161242003:CIB/UTO/Diesel Balance/First DARBUTCOMPANY",
+    "debit": 76053.75,
+    "credit": 0.0,
+    "balance": 3560300.43
+  },
+  {
+    "date": "17-Nov-2025",
+    "description": "00000425111711851362003:REV/CIB/UTO/ Diesel Balance/First DARBUT COMPANY",
+    "debit": 20626.88,
+    "credit": 0.0,
+    "balance": 3539673.55
+  },
+  {
+    "date": "17-Nov-2025",
+    "description": "00000425111711831362003:CIB/UTO/Diesel Balance/First DARBUTCOMPANY",
+    "debit": 20626.88,
+    "credit": 0.0,
+    "balance": 3560300.43
+  },
+  {
+    "date": "18-Nov-2025",
+    "description": "0000042511172046502003:TNF-AFIDAFEBA FELIX/FIP: MB/AJID/FELI 00001625111809586060009:",
+    "debit": 20626.88,
+    "credit": 0.0,
+    "balance": 3539673.55
+  },
+  {
+    "date": "18-Nov-2025",
+    "description": "",
+    "debit": 0.0,
+    "credit": 0.0,
+    "balance": 3639673.55
+  },
+  {
+    "date": "20-Nov-2025",
+    "description": "TNF-FELIX/ Truck 00001525112007112300000:TNF-SECUN BASAL/INDU Sunday/ALAT NIP TRANSFER TO ENSHETHEIG 0000172511201038423026:",
+    "debit": 100000.00,
+    "credit": 0.0,
+    "balance": 3889673.55
+  },
+  {
+    "date": "20-Nov-2025",
+    "description": "CIB/UTO/Diesel/FirstDARBUT COMPANY 0000042511201051562003:CIB/UTO/Refund/Cancelled/SECUN",
+    "debit": 250000.00,
+    "credit": 0.0,
+    "balance": 4254673.55
+  },
+  {
+    "date": "21-Nov-2025",
+    "description": "BASAL/INDU IBAN: 0000042511211022042003:",
+    "debit": 97053.75,
+    "credit": 0.0,
+    "balance": 4157619.80
+  },
+  {
+    "date": "23-Nov-2025",
+    "description": "",
+    "debit": 365053.75,
+    "credit": 0.0,
+    "balance": 3792566.05
+  },
+  {
+    "date": "23-Nov-2025",
+    "description": "FGN STAMPDUTY FOR: 1TRANSACTIONS ON 17-NOV-25",
+    "debit": 50.00,
+    "credit": 0.0,
+    "balance": 3792516.05
+  },
+  {
+    "date": "23-Nov-2025",
+    "description": "FGN STAMPDUTY FOR: 1TRANSACTIONS ON 18-NOV-25",
+    "debit": 50.00,
+    "credit": 0.0,
+    "balance": 3792466.05
+  },
+  {
+    "date": "23-Nov-2025",
+    "description": "FGN STAMPDUTY FOR: 2TRANSACTIONS ON 20-NOV-25",
+    "debit": 100.00,
+    "credit": 0.0,
+    "balance": 3792366.05
+  },
+  {
+    "date": "23-Nov-2025",
+    "description": "FGN STAMPDUTY FOR: 1TRANSACTIONS ON 16-NOV-25",
+    "debit": 50.00,
+    "credit": 0.0,
+    "balance": 3792316.05
+  },
+  {
+    "date": "23-Nov-2025",
+    "description": "SMS/SMS CHARGES NOV 12TH 2025 - NOV18TH 2025:1911250210290010634012:TNF-OLUWATOBASunday/FEMI/OLUWAI SUNDAY/ENSH 0000162511221211110010:CIB/UTO/Refund/MUSTAPHAMUHAMMAD DAN",
+    "debit": 90.00,
+    "credit": 0.0,
+    "balance": 3792226.05
+  },
+  {
+    "date": "22-Nov-2025",
+    "description": "",
+    "debit": 0.0,
+    "credit": 0.0,
+    "balance": 4092226.05
+  },
+  {
+    "date": "23-Nov-2025",
+    "description": "0000042511230323003:SMS/SMS CHARGES NOV 19TH 2025 - NOV25TH 2025:2211250319490010690652:TNF-MR PAO VENTURES",
+    "debit": 300053.75,
+    "credit": 0.0,
+    "balance": 3792172.30
+  },
+  {
+    "date": "25-Nov-2025",
+    "description": "",
+    "debit": 42.00,
+    "credit": 0.0,
+    "balance": 3792130.30
+  },
+  {
+    "date": "25-Nov-2025",
+    "description": "MR PAO VENTURES/MR PAOVENT 00000525112515565531332TNF-MR & MRS AJIDAGBE/Multi To United Bank for Afri",
+    "debit": 0.0,
+    "credit": 216000.00,
+    "balance": 4008130.30
+  },
+  {
+    "date": "25-Nov-2025",
+    "description": "",
+    "debit": 0.0,
+    "credit": 0.0,
+    "balance": 4158130.30
+  },
+  {
+    "date": "26-Nov-2025",
+    "description": "0000232511251947230041:SMS/SMS CHARGES NOV 22ND 2025 - NOV24TH 2025:2411250820540010744494:TNF-AJIDAGBA FELIX",
+    "debit": 12.00,
+    "credit": 0.0,
+    "balance": 4158118.30
+  },
+  {
+    "date": "27-Nov-2025",
+    "description": "OLAFISOYE/FIP: MB/AJID/FELI 0000162511271002550010:Transfer Mustapha JAMIL LAWAL",
+    "debit": 0.0,
+    "credit": 110000.00,
+    "balance": 4268118.30
+  },
+  {
+    "date": "27-Nov-2025",
+    "description": "1000042511271256471462:Transfer Mustapha JAMIL LAWAL 1000042511271257581462:",
+    "debit": 0.0,
+    "credit": 5400.00,
+    "balance": 4273518.30
+  },
+  {
+    "date": "27-Nov-2025",
+    "description": "",
+    "debit": 0.0,
+    "credit": 0.0,
+    "balance": 4322118.30
+  },
+  {
+    "date": "28-Nov-2025",
+    "description": "ACCT MAINT CHARGES BETWEEN 31-10-2025 AND 27-11-20",
+    "debit": 1428.15,
+    "credit": 0.0,
+    "balance": 4320690.15
+  },
+  {
+    "date": "28-Nov-2025",
+    "description": "VAT ACCT MAINT",
+    "debit": 107.12,
+    "credit": 0.0,
+    "balance": 4320583.03
+  },
+  {
+    "date": "28-Nov-2025",
+    "description": "TNF-JOHNSON SHINIA ONOMI/ALAT NIP TRANSFER TO ENS 000017281128154174477:FGN STAMPDUTY FOR: 2TRANSACTIONS ON 27-NOV-25",
+    "debit": 0.0,
+    "credit": 300000.00,
+    "balance": 4620583.03
+  },
+  {
+    "date": "30-Nov-2025",
+    "description": "",
+    "debit": 100.00,
+    "credit": 0.0,
+    "balance": 4620483.03
+  },
+  {
+    "date": "30-Nov-2025",
+    "description": "FGN STAMPDUTY FOR: 1TRANSACTIONS ON 28-NOV-25",
+    "debit": 50.00,
+    "credit": 0.0,
+    "balance": 4620433.03
+  },
+  {
+    "date": "30-Nov-2025",
+    "description": "FGN STAMPDUTY FOR: 1TRANSACTIONS ON 23-NOV-25",
+    "debit": 50.00,
+    "credit": 0.0,
+    "balance": 4620383.03
+  },
+  {
+    "date": "29-Nov-2025",
+    "description": "Transfer from Mustapha JAMIL LAWAL 10000429611300613131463 TNF-JOHNSON SHINIA ONOMI/ALAT NIP TRANSFER TO ENS",
+    "debit": 0.0,
+    "credit": 150000.00,
+    "balance": 4770383.03
+  },
+  {
+    "date": "02-Dec-2025",
+    "description": "",
+    "debit": 0.0,
+    "credit": 0.0,
+    "balance": 5020383.03
+  },
+  {
+    "date": "04-Dec-2025",
+    "description": "0000172512020939033552:MOBILE TRF TO UBA ENSHET HEIGHTSGLOBAL LTD 0000142512042001462444:FGN STAMPDUTY FOR: 1TRANSACTIONS ON 02-DEC-25",
+    "debit": 0.0,
+    "credit": 250000.00,
+    "balance": 15020383.03
+  },
+  {
+    "date": "07-Dec-2025",
+    "description": "",
+    "debit": 0.0,
+    "credit": 0.0,
+    "balance": 15020033.03
+  },
+  {
+    "date": "07-Dec-2025",
+    "description": "FGN STAMPDUTY FOR: 1TRANSACTIONS ON 04-DEC-25",
+    "debit": 50.00,
+    "credit": 0.0,
+    "balance": 15020333.03
+  },
+  {
+    "date": "07-Dec-2025",
+    "description": "FGN STAMPDUTY FOR: 1TRANSACTIONS ON 30-NOV-25",
+    "debit": 50.00,
+    "credit": 0.0,
+    "balance": 15020283.03
+  },
+  {
+    "date": "07-Dec-2025",
+    "description": "SMS/SMS CHARGES NOV 25TH 2025 - DEC1ST 2025:0412250724430010883016:CIB/ITU/Cocoa",
+    "debit": 50.00,
+    "credit": 0.0,
+    "balance": 15020233.03
+  },
+  {
+    "date": "07-Dec-2025",
+    "description": "",
+    "debit": 72.00,
+    "credit": 0.0,
+    "balance": 15020161.03
+  },
+  {
+    "date": "09-Dec-2025",
+    "description": "CHIBUIKE ADEBOYOSUNDAY ISAAC CIB/ITO/Facilitation Fee/Nwolabi DAMILOLA POS 0000042512091013072003:",
+    "debit": 12500000.00,
+    "credit": 0.0,
+    "balance": 2520161.03
+  },
+  {
+    "date": "09-Dec-2025",
+    "description": "",
+    "debit": 2500053.75,
+    "credit": 0.0,
+    "balance": 20107.28
+  },
+  {
+    "date": "13-Dec-2025",
+    "description": "SMS/SMS CHARGES DEC 2ND 2025 - DEC 9TH2025:1112250802180010963806TNF-OSANYILUSUNDAYEMMANUEL/OSANYILUSI S trf to 09010525121316344232910 TNF-AYODELEOLAIDE LAWRENCE/App:sales of gari. To",
+    "debit": 42.00,
+    "credit": 0.0,
+    "balance": 20065.28
+  },
+  {
+    "date": "13-Dec-2025",
+    "description": "",
+    "debit": 0.0,
+    "credit": 0.0,
+    "balance": 170065.28
+  },
+  {
+    "date": "18-Dec-2025",
+    "description": "",
+    "debit": 150000.00,
+    "credit": 0.0,
+    "balance": 197565.28
+  },
+  {
+    "date": "18-Dec-2025",
+    "description": "000003251218131328771:SMS/SMS CHARGES DEC 10TH 2025 - DEC16TH 2025:1112252053590011038551:FGN STAMPDUTY FOR: 1TRANSACTIONS ON 14-DEC-25",
+    "debit": 0.0,
+    "credit": 27500.00,
+    "balance": 197559.28
+  },
+  {
+    "date": "19-Dec-2025",
+    "description":
