@@ -91,7 +91,7 @@ def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic") -
             "2. WATERMARK AWARE: Ignore semi-transparent background logos (e.g. 'SAMSUNG' or bank logos).\n"
             "3. NUMERIC PRECISION: Transcribe all digits and separators exactly. Watch for 1000s commas vs decimals.\n"
             "4. ALIGNMENT: Keep DEBITS, CREDITS, and BALANCE strictly separate. Reconstruct the grid row by row.\n"
-            "5. Headers: Use exactly: DATE, DESCRIPTION, DEBIT, CREDIT, BALANCE.\n"
+            "5. Headers: Use exactly: DATE, VALUE_DATE, DESCRIPTION, DEBIT, CREDIT, BALANCE. If the statement has no value date, leave it blank.\n"
             "Output Format: Return ONLY raw CSV code in a single markdown block."
         )
 
@@ -121,10 +121,10 @@ def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic") -
             "Task: Clean, validate, and structure the raw CSV data into a pristine Pipe-Separated Values (PSV) format.\n"
             "Directives:\n"
             "1. Numeric Cleaning: Remove currency symbols and formatting. Convert to raw floats (e.g. 100.50). Handle empty values as 0.00.\n"
-            "2. Validation (CRITICAL): Cross-reference the BALANCE column. For each row: (Previous Balance - Debit + Credit) should match (Current Balance). If the OCR misread a number but the balance progression is clear, use the balance math to correct the amount.\n"
+            "2. Validation (CRITICAL): Cross-reference the BALANCE column. For each row: (Previous Balance - Debit + Credit) should match (Current Balance). If the OCR misread a number but the balance progression is clear, use the balance math to correct the amount. Keep DEBIT and CREDIT strictly separate based on the math.\n"
             "3. Multiline Descriptions: Merge multi-line descriptions into a single string.\n"
             "4. Account Splits: If you see a 'BALANCE BROUGHT FORWARD' or a currency change mid-stream, keep it as a separator row.\n"
-            "Format: Return ONLY raw PSV text (no headers, no markdown): DATE|DESCRIPTION|DEBIT|CREDIT|BALANCE"
+            "Format: Return ONLY raw PSV text (no headers, no markdown): DATE|VALUE_DATE|DESCRIPTION|DEBIT|CREDIT|BALANCE"
         )
         
         print("DEBUG: Gemini Vision - Executing Phase 2 (Data Engineer)...")
@@ -161,19 +161,41 @@ def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic") -
         for line in raw_psv_text.split('\n'):
             if not line.strip(): continue
             parts = line.split('|')
-            if len(parts) >= 5:
-                # Skip headers
-                if 'DATE' in parts[0].upper() or 'DESCRIPTION' in parts[1].upper(): continue
-                standard_txns.append({
-                    'date': str(parts[0]).strip(),
-                    'description': str(parts[1]).strip(),
-                    'debit': safe_float(parts[2]),
-                    'credit': safe_float(parts[3]),
-                    'balance': safe_float(parts[4]),
-                    'reference': '',
-                    'remarks': str(parts[1]).strip(),
-                    'category': 'Uncategorized'
-                })
+            
+            # Parse based on number of columns returned
+            if len(parts) >= 6:
+                # DATE|VALUE_DATE|DESCRIPTION|DEBIT|CREDIT|BALANCE
+                date_val = str(parts[0]).strip()
+                val_date = str(parts[1]).strip()
+                desc_val = str(parts[2]).strip()
+                deb_val = safe_float(parts[3])
+                cred_val = safe_float(parts[4])
+                bal_val = safe_float(parts[5])
+            elif len(parts) == 5:
+                # DATE|DESCRIPTION|DEBIT|CREDIT|BALANCE
+                date_val = str(parts[0]).strip()
+                val_date = ""
+                desc_val = str(parts[1]).strip()
+                deb_val = safe_float(parts[2])
+                cred_val = safe_float(parts[3])
+                bal_val = safe_float(parts[4])
+            else:
+                continue
+                
+            # Skip headers
+            if 'DATE' in date_val.upper() or 'DESCRIPTION' in desc_val.upper(): continue
+                
+            standard_txns.append({
+                'date': date_val,
+                'value_date': val_date,
+                'description': desc_val,
+                'debit': deb_val,
+                'credit': cred_val,
+                'balance': bal_val,
+                'reference': '',
+                'remarks': desc_val,
+                'category': 'Uncategorized'
+            })
         
         print(f"DEBUG: Successfully parsed {len(standard_txns)} transactions.")
         return standard_txns
