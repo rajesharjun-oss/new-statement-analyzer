@@ -61,7 +61,8 @@ def detect_zenith_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float,
     
     headers = sorted(headers, key=lambda x: x[1])
     
-    # Calculate cuts at the midpoint of GAPS
+    # Calculate cuts — give description column extra width since Zenith
+    # descriptions often start well to the left of the DESCRIPTION header
     cuts = {}
     for i in range(len(headers)):
         name, x0, x1 = headers[i]
@@ -69,8 +70,16 @@ def detect_zenith_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float,
         
         if i < len(headers) - 1:
             next_name, next_x0, next_x1 = headers[i+1]
-            # Use the midpoint between current right edge and next left edge
-            end = (x1 + next_x0) / 2
+            
+            if next_name == "description":
+                # Give description maximum room — cut right after value_date's right edge
+                end = x1 + 5
+            elif name == "description":
+                # Description's right edge: cut close to the debit header's left edge
+                end = next_x0 - 10
+            else:
+                # Use the midpoint between current right edge and next left edge
+                end = (x1 + next_x0) / 2
         else:
             end = math.inf
             
@@ -100,6 +109,8 @@ def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> 
              col_list.append((name, bounds[0], bounds[1]))
              
         pending_description = ""
+        last_date_y = -999  # Y position of the last date/money row
+        
         for pg_num, page in enumerate(pdf.pages):
             words = page.extract_words()
             
@@ -117,9 +128,7 @@ def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> 
                 # Assign words to columns
                 row_dict = {name: [] for name in cuts.keys()}
                 for w in sorted(row_words, key=lambda w: w['x0']):
-                    # Manual assignment based on cuts
                     for name, (min_x, max_x) in cuts.items():
-                        # Use x1 for numeric, x0 for text
                         val = w['x1'] if name in ["debit", "credit", "balance"] else w['x0']
                         if min_x <= val < max_x:
                             row_dict[name].append(w['text'])
@@ -135,17 +144,31 @@ def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> 
                 parsed_date = parse_date_smart(date_str)
                 desc = row_dict.get("description", "").strip()
                 
-                # Zenith often puts description on a line ABOVE the money/date.
-                # If we have only description, buffer it.
-                is_pure_desc = desc and not parsed_date and not any([row_dict.get("debit"), row_dict.get("credit"), row_dict.get("balance")])
+                has_money = any([row_dict.get("debit"), row_dict.get("credit"), row_dict.get("balance")])
+                
+                # Description-only row (no date, no money)
+                is_pure_desc = desc and not parsed_date and not has_money
                 
                 if is_pure_desc:
-                    if pending_description: pending_description += " "
-                    pending_description += desc
+                    # Decide: is this a CONTINUATION of the last txn (close Y)
+                    # or a LEAD-IN for the next txn (far Y)?
+                    y_gap = y - last_date_y
+                    
+                    if txns and y_gap <= 6:
+                        # Close to last date row = continuation of previous transaction
+                        txns[-1]["description"] = (txns[-1]["description"] + " " + desc).strip()
+                        txns[-1]["remarks"] = txns[-1]["description"]
+                    else:
+                        # Far from last date row = lead-in for next transaction
+                        if pending_description:
+                            pending_description += " "
+                        pending_description += desc
                     continue
 
                 if parsed_date and len(date_str) > 6:
-                    # New transaction if Date is valid
+                    last_date_y = y
+                    
+                    # New transaction
                     debit_str = first_money(row_dict.get("debit", ""))
                     credit_str = first_money(row_dict.get("credit", ""))
                     bal_str = first_money(row_dict.get("balance", ""))
@@ -174,10 +197,10 @@ def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> 
                     
                     if not is_noise_row(txn):
                         txns.append(txn)
-                        
-                elif txns and desc:
-                    # Trailing multi-line description
-                    txns[-1]["description"] = (txns[-1]["description"] + " " + desc).strip()
-                    txns[-1]["remarks"] = txns[-1]["description"]
+                else:
+                    if txns and desc:
+                        # Trailing multi-line description
+                        txns[-1]["description"] = (txns[-1]["description"] + " " + desc).strip()
+                        txns[-1]["remarks"] = txns[-1]["description"]
 
     return txns, metadata
