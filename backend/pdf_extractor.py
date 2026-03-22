@@ -911,13 +911,15 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
                 new_acc = pg_meta.get("account_no")
                 
                 # Detect new statement boundary:
-                # 1. Explicit header found ("CUSTOMER STATEMENT" or "Statement Period")
-                # 2. Or Account Number changed
+                # Only split when the Account Number actually changes.
+                # "CUSTOMER STATEMENT" appearing on every page (common in GTCO)
+                # does NOT mean a new statement — it's just a page header.
                 is_new_header = "CUSTOMER STATEMENT" in pg_text or "Statement Period" in pg_text
+                account_changed = new_acc and current_account_no and new_acc != current_account_no
                 
-                if (is_new_header and page_num > 1) or (new_acc and current_account_no and new_acc != current_account_no):
+                if account_changed:
                     current_stmt_id += 1
-                    print(f"DEBUG: New statement group {current_stmt_id} detected on page {page_num} (Acc: {new_acc})")
+                    print(f"DEBUG: New statement group {current_stmt_id} detected on page {page_num} (Acc: {new_acc} != {current_account_no})")
 
                 # Update tracking for later split
                 page_meta_map[page_num] = pg_meta
@@ -937,6 +939,11 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
             
             if not words:
                 continue
+
+            # Filter out words drawn outside the printable page area.
+            # GTCO PDFs contain all pages' text superimposed with shifted Y-coordinates.
+            page_height = page.height
+            words = [w for w in words if w["bottom"] >= -5 and w["top"] <= page_height + 5]
 
             tol = 15.0 if bank_identifier in ["gtbank", "gtco"] else 2.5
             row_groups = group_words_to_rows(words, y_tol=tol)
@@ -2268,18 +2275,28 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def parse_money(text: str) -> float:
     """
-    Parse money value, handling brackets as negatives
+    Parse money value, handling brackets as negatives.
+    Rejects reference numbers that look like large unformatted integers.
     """
     if not text:
         return 0.0
+    text_str = str(text).strip()
+    
+    # Reject pure digit strings with no decimal point or comma formatting.
+    # Real amounts always have '.XX' (e.g., '20,000.00' or '200.00').
+    # Reference numbers are unformatted digit strings like '2027676474'.
+    stripped = text_str.replace(' ', '')
+    if re.match(r'^-?\d{6,}$', stripped):
+        # 6+ digits with no decimal/comma = almost certainly a reference number
+        return 0.0
+    
     # User Request: Robust cleaning: keep only digits and decimals
-    # This strips currency symbols, commas, etc.
-    cleaned = re.sub(r'[^\d.]', '', str(text))
+    cleaned = re.sub(r'[^\d.]', '', text_str)
     if not cleaned:
         return 0.0
     try:
         val = float(cleaned)
-        if "(" in text or "-" in text:
+        if "(" in text_str or "-" in text_str:
              return -val
         return val
     except:
