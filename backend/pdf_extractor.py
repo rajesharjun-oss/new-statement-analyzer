@@ -768,7 +768,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
              pass
          else:
              print("DEBUG: UBA PDF is scanned - routing to Gemini Vision OCR...")
-             txns = extract_transactions_via_ai(str(pdf_path), max_pages=15, bank_identifier='uba')
+             txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='uba')
              if txns: return [{"transactions": normalize_remarks(txns), "metadata": {"method": "gemini_vision"}}]
              print("DEBUG: UBA Gemini Vision returned 0 txns.")
              return [{"transactions": [], "metadata": {"error": "UBA Gemini Vision returned 0 txns"}}]
@@ -787,7 +787,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
          # AI fallback for Access Bank
          if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
              try:
-                 ai_txns = extract_transactions_via_ai(str(pdf_path), max_pages=15, bank_identifier='access')
+                 ai_txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='access')
                  if ai_txns:
                      print(f"DEBUG: Access AI fallback returned {len(ai_txns)} transactions")
                      return [{"transactions": normalize_remarks(ai_txns), "metadata": metadata}]

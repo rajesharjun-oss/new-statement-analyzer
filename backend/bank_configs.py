@@ -125,6 +125,46 @@ BANK_CONFIGS = {
             "opening_balance": r"Opening\s+Balance[:\s]*([\d,]+\.\d{2})",
             "closing_balance": r"Closing\s+Balance[:\s]*([\d,]+\.\d{2})"
         }
+    },
+    "fcmb": {
+        "name": "FCMB",
+        "header_patterns": {
+            "trans_date": r"Tran\.?\s*Date",
+            "value_date": r"Value\.?\s*Date",
+            "reference": r"Ref",
+            "debit": r"Debit",
+            "credit": r"Credit",
+            "balance": r"Balance",
+            "remarks": r"Details"
+        },
+        "metadata_patterns": {
+            "account_name": r"Account Name[:\s]+([A-Z\s&]+)",
+            "statement_period": r"Statement Period[:\s]+(.+)",
+            "total_debit": r"Total Debit[:\s]+([\d,]+\.\d{2})",
+            "total_credit": r"Total Credit[:\s]+([\d,]+\.\d{2})",
+            "opening_balance": r"Opening Balance[:\s]+([\d,]+\.\d{2})",
+            "closing_balance": r"Closing Balance[:\s]+([\d,]+\.\d{2})"
+        }
+    },
+    "sterling": {
+        "name": "Sterling Bank",
+        "header_patterns": {
+            "trans_date": r"Trans\.?\s*Date",
+            "value_date": r"Value\.?\s*Date",
+            "reference": r"Reference",
+            "debit": r"Money\s*Out",
+            "credit": r"Money\s*In",
+            "balance": r"Balance",
+            "remarks": r"Narration"
+        },
+        "metadata_patterns": {
+            "account_name": r"Account Name[:\s]+([A-Z\s&]+)",
+            "statement_period": r"Statement Period[:\s]+(.+)",
+            "total_debit": r"Total Debit[:\s]+([\d,]+\.\d{2})",
+            "total_credit": r"Total Credit[:\s]+([\d,]+\.\d{2})",
+            "opening_balance": r"Opening Balance[:\s]+([\d,]+\.\d{2})",
+            "closing_balance": r"Closing Balance[:\s]+([\d,]+\.\d{2})"
+        }
     }
 }
 
