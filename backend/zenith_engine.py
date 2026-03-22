@@ -3,6 +3,7 @@ Zenith Bank Dedicated Coordinate Extractor
 """
 import pdfplumber
 import math
+import re
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
 
@@ -128,8 +129,18 @@ def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> 
                 # Assign words to columns
                 row_dict = {name: [] for name in cuts.keys()}
                 for w in sorted(row_words, key=lambda w: w['x0']):
+                    # For numeric words (amounts), ALWAYS use x1 (right-aligned)
+                    # This prevents amounts near column boundaries from being
+                    # swallowed by the description column
+                    text = w['text'].replace(',', '')
+                    is_numeric = bool(re.match(r'^[\d,]+\.\d{2}$', w['text'])) or \
+                                 bool(re.match(r'^[\d.]+$', text) and len(text) > 2)
+                    
                     for name, (min_x, max_x) in cuts.items():
-                        val = w['x1'] if name in ["debit", "credit", "balance"] else w['x0']
+                        if is_numeric:
+                            val = w['x1']  # Right-align all amounts
+                        else:
+                            val = w['x1'] if name in ["debit", "credit", "balance"] else w['x0']
                         if min_x <= val < max_x:
                             row_dict[name].append(w['text'])
                             break
