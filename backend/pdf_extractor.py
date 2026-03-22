@@ -2282,18 +2282,18 @@ def parse_money(text: str) -> float:
         return 0.0
     text_str = str(text).strip()
     
-    # Reject pure digit strings with no decimal point or comma formatting.
-    # Real amounts always have '.XX' (e.g., '20,000.00' or '200.00').
-    # Reference numbers are unformatted digit strings like '2027676474'.
-    stripped = text_str.replace(' ', '')
-    if re.match(r'^-?\d{6,}$', stripped):
-        # 6+ digits with no decimal/comma = almost certainly a reference number
-        return 0.0
-    
     # User Request: Robust cleaning: keep only digits and decimals
     cleaned = re.sub(r'[^\d.]', '', text_str)
     if not cleaned:
         return 0.0
+        
+    # Reject pure digit strings with no decimal point or comma formatting.
+    # Real amounts always have '.XX' (e.g., '20,000.00' or '200.00').
+    # Reference numbers (even those prefixed with REF:) become unformatted digit strings like '2027676474'.
+    if '.' not in cleaned and len(cleaned) >= 6:
+        # 6+ digits with no decimal = almost certainly a reference number
+        return 0.0
+        
     try:
         val = float(cleaned)
         if "(" in text_str or "-" in text_str:
