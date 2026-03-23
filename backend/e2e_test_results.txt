@@ -1,0 +1,80 @@
+
+============================================================
+BANK: ACCESS | FILE: Access bank test.pdf
+============================================================
+  HTTP Status: 200
+  Transaction Count: 129
+  Total Debit:  40,163,400.78
+  Total Credit: 74,931,500.00
+  Account Name: 
+  Period: N/A
+  Validation: Statement totals missing (cannot fully validate). Extraction totals computed.
+  Download URL: http://localhost:8000/download/72e4f8c4-39bc-4316-9c80-3b823565a8c5
+
+  First 3 transactions:
+    [1] Date=02-Oct-2025 | Desc=PP_ABSIE/CEO Office Exp - October 2025/ACB /MORIES | Dr=513000.0 Cr=0.0 | Cat=Administrative Expenses
+    [2] Date=07-Oct-2025 | Desc=PP_Nametags for Africa HealthTech Summit, Kigali/G | Dr=90000.0 Cr=0.0 | Cat=Event & Conference Expenses
+    [3] Date=07-Oct-2025 | Desc=PP_CEO Vehicle Papers (Tint Registration, and Road | Dr=104000.0 Cr=0.0 | Cat=Transport & Logistics
+
+  Quality Metrics:
+    Empty descriptions: 1/129
+    Missing dates: 0/129
+    Uncategorized: 0/129
+
+  Excel Download: HTTP 200, Size=15072 bytes
+
+============================================================
+BANK: FCMB | FILE: FCMB test.pdf
+============================================================
+  HTTP Status: 200
+  Transaction Count: 291
+  Total Debit:  65,898,085,575.49
+  Total Credit: 66,040,963,346.89
+  Account Name: Detected Organization
+  Period: N/A
+  Validation: Statement totals missing (cannot fully validate). Extraction totals computed.
+  Download URL: http://localhost:8000/download/26b22f87-152d-4720-8797-7c44cbcf0f7b
+
+  First 3 transactions:
+    [1] Date=07-Feb-2024 | Desc=trf b/o coleman technical industrial l | Dr=0.0 Cr=2000000000.0 | Cat=Uncategorized Income
+    [2] Date=09-Feb-2024 | Desc=sunbeth global concept | Dr=590000000.0 Cr=0.0 | Cat=Technical & Operations
+    [3] Date=09-Feb-2024 | Desc=neft transfer charges | Dr=161.25 Cr=0.0 | Cat=Inter-Account / Treasury Transfer
+
+  Quality Metrics:
+    Empty descriptions: 0/291
+    Missing dates: 0/291
+    Uncategorized: 0/291
+
+  Excel Download: HTTP 200, Size=17087 bytes
+
+============================================================
+BANK: UBA | FILE: UBA test.pdf
+============================================================
+  HTTP Status: 200
+  Transaction Count: 86
+  Total Debit:  28,964,948.85
+  Total Credit: 3,596,626.88
+  Account Name: Detected Organization
+  Period: N/A
+  Validation: Statement totals missing (cannot fully validate). Extraction totals computed.
+  Download URL: http://localhost:8000/download/6a7f8b98-c749-4d5a-a790-f6a48532e389
+
+  First 3 transactions:
+    [1] Date=2025-10-01 | Desc=01-Oct-2025 Opening Balance | Dr=0.0 Cr=0.0 | Cat=Opening Balance
+    [2] Date=2025-10-17 | Desc=17-Oct-2025 SMS/SMS CHARGES SEP 27TH 2025 - OCT 3R | Dr=6.0 Cr=0.0 | Cat=Bank Charges
+    [3] Date=2025-10-17 | Desc=17-Oct-2025 OLUBAYODE OLUBUNMI/App To United Bank  | Dr=0.0 Cr=1000000.0 | Cat=Inter-Account / Treasury Transfer
+
+  Quality Metrics:
+    Empty descriptions: 0/86
+    Missing dates: 0/86
+    Uncategorized: 0/86
+
+  Excel Download: HTTP 200, Size=10623 bytes
+
+
+============================================================
+SUMMARY
+============================================================
+  ACCESS: PASS
+  FCMB: PASS
+  UBA: PASS
