@@ -86,17 +86,17 @@ def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic") -
             
         prompt_extractor = (
             "Role: You are a high-precision Financial OCR Engine.\n"
-            "Task: Literal transcription of the bank statement grid into raw CSV format.\n"
+            "Task: Literal transcription of the bank statement grid into a pristine Pipe-Separated Values (PSV) format.\n"
             "Directives:\n"
-            "1. NO ANALYSIS: Extract exactly what is printed. Do not calculate totals.\n"
-            "2. WATERMARK AWARE: Ignore semi-transparent background logos (e.g. 'SAMSUNG' or bank logos).\n"
-            "3. NUMERIC PRECISION: Transcribe all digits and separators exactly. Watch for 1000s commas vs decimals.\n"
-            "4. ALIGNMENT: Keep DEBITS, CREDITS, and BALANCE strictly separate. Reconstruct the grid row by row.\n"
-            "5. Headers: Use exactly: DATE, VALUE_DATE, DESCRIPTION, DEBIT, CREDIT, BALANCE. If the statement has no value date, leave it blank.\n"
-            "Output Format: Return ONLY raw CSV code in a single markdown block."
+            "1. NO ANALYSIS: Extract exactly what is printed. Do not attempt mathematical validation.\n"
+            "2. WATERMARK AWARE: Ignore semi-transparent background logos.\n"
+            "3. Numeric Format: Remove currency symbols and comma formatting. Convert to raw floats (e.g. 100.50). Handle empty values as 0.00.\n"
+            "4. Descriptions: Merge multi-line descriptions into a single clean string. Do NOT drop the entire row if it wraps.\n"
+            "5. Account Splits: If you see 'BALANCE BROUGHT FORWARD' or currency change, keep it as a separator row.\n"
+            "Format: Return ONLY raw PSV text (no headers, no markdown). You MUST return exactly 6 columns separated by 5 pipes: DATE|VALUE_DATE|DESCRIPTION|DEBIT|CREDIT|BALANCE. If VALUE_DATE is empty or missing, keep the pipe separators blank."
         )
 
-        print(f"DEBUG: Gemini Vision - Executing Phase 1 (Extractor) on {len(images)} pages...")
+        print(f"DEBUG: Gemini Vision - Executing OCR on {len(images)} pages...")
         payload_phase1 = [prompt_extractor] + images
         response_phase1 = model.generate_content(
             payload_phase1,
@@ -107,43 +107,12 @@ def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic") -
             print("DEBUG: Gemini Vision - Phase 1 Received empty response")
             return []
 
-        raw_csv_phase1 = response_phase1.text.strip()
-        raw_csv_phase1 = re.sub(r'^```(csv|text)?\s*', '', raw_csv_phase1, flags=re.I)
-        raw_csv_phase1 = re.sub(r'```$', '', raw_csv_phase1, flags=re.I)
-        
-        # Log Phase 1 for debugging
-        debug_csv_path = Path(pdf_path).with_suffix('.phase1.raw.csv')
-        with open(debug_csv_path, 'w', encoding='utf-8') as f:
-            f.write(raw_csv_phase1)
-
-        # PHASE 2: The Data Engineer (Text -> Cleaned PSV)
-        prompt_engineer = (
-            "Role: You are a structural data engineer processing raw OCR output.\n"
-            "Task: Clean and structure the raw CSV data into a pristine Pipe-Separated Values (PSV) format.\n"
-            "Directives:\n"
-            "1. Numeric Cleaning: Remove currency symbols and comma formatting. Convert to raw floats (e.g. 100.50). Handle empty values as 0.00.\n"
-            "2. Alignment: Do NOT attempt any mathematical calculations. Just transcribe the DEBIT, CREDIT, and BALANCE columns exactly as they appear in the Phase 1 output.\n"
-            "3. Multiline Descriptions: Merge multi-line descriptions into a single string.\n"
-            "4. Account Splits: If you see a 'BALANCE BROUGHT FORWARD' or a currency change mid-stream, keep it as a separator row.\n"
-            "Format: Return ONLY raw PSV text (no headers, no markdown). You MUST return exactly 6 columns separated by 5 pipes: DATE|VALUE_DATE|DESCRIPTION|DEBIT|CREDIT|BALANCE. If VALUE_DATE is empty or missing, keep the pipe separators blank."
-        )
-        
-        print("DEBUG: Gemini Vision - Executing Phase 2 (Data Engineer)...")
-        payload_phase2 = f"{prompt_engineer}\n\nRAW OCR DATA:\n{raw_csv_phase1}"
-        response_phase2 = model.generate_content(
-            payload_phase2,
-            generation_config=genai.types.GenerationConfig(max_output_tokens=8192)
-        )
-        
-        if not response_phase2 or not response_phase2.text:
-            return []
-
-        raw_psv_text = response_phase2.text.strip()
+        raw_psv_text = response_phase1.text.strip()
         raw_psv_text = re.sub(r'^```(csv|psv|text)?\s*', '', raw_psv_text, flags=re.I)
         raw_psv_text = re.sub(r'```$', '', raw_psv_text, flags=re.I)
         
-        # Log Phase 2 for debugging
-        debug_psv_path = Path(pdf_path).with_suffix('.phase2.raw.psv')
+        # Log for debugging
+        debug_psv_path = Path(pdf_path).with_suffix('.phase1.raw.psv')
         with open(debug_psv_path, 'w', encoding='utf-8') as f:
             f.write(raw_psv_text)
 
