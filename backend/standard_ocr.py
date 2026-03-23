@@ -197,6 +197,61 @@ def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic") -
                 'remarks': desc_val,
                 'category': 'Uncategorized'
             })
+        # --- Mathematical Column Auto-Correction ---
+        def auto_correct_columns(txns):
+            # 1. Find blocks of transactions between valid anchor balances
+            valid_anchors = []
+            for i, t in enumerate(txns):
+                if t['balance'] != 0.0:
+                    valid_anchors.append(i)
+                    
+            if len(valid_anchors) < 2:
+                return txns # Not enough anchors to fix anything
+                
+            for anchor_idx in range(len(valid_anchors) - 1):
+                start = valid_anchors[anchor_idx]
+                end = valid_anchors[anchor_idx + 1]
+                
+                # Check the block (inclusive of 'end' because 'end' txn contributed to its own balance!)
+                # Wait, 'end' balance is the result AFTER 'end' debit/credit is applied.
+                # So the block of transactions that caused the delta from start_balance to end_balance
+                # is from (start + 1) to (end) inclusive!
+                
+                start_bal = txns[start]['balance']
+                end_bal = txns[end]['balance']
+                expected_diff = round(end_bal - start_bal, 2)
+                
+                actual_diff = 0.0
+                for i in range(start + 1, end + 1):
+                    actual_diff += txns[i]['credit'] - txns[i]['debit']
+                actual_diff = round(actual_diff, 2)
+                
+                if expected_diff != actual_diff:
+                    deficit = round(expected_diff - actual_diff, 2)
+                    
+                    # If deficit is perfectly 2 * X, then a transaction of value X was swapped!
+                    # For example, expected = +10M, actual = -10M. Deficit = +20M. Value X = +10M.
+                    # This means a 10M transaction was logged as Debit (-10M) but should be Credit (+10M).
+                    
+                    for i in range(start + 1, end + 1):
+                        t = txns[i]
+                        # Check if flipping this transaction specifically fixes the deficit exactly
+                        # If it's a Debit, flipping it to Credit adds + 2 * Debit to the actual_diff
+                        if t['debit'] > 0 and round(t['debit'] * 2, 2) == deficit:
+                            t['credit'] = t['debit']
+                            t['debit'] = 0.0
+                            print(f"DEBUG: Auto-corrected hallucinated DEBIT -> CREDIT for {t['credit']}")
+                            break
+                        # If it's a Credit, flipping it to Debit subtracts 2 * Credit (adds - 2 * Credit)
+                        elif t['credit'] > 0 and round(t['credit'] * -2, 2) == deficit:
+                            t['debit'] = t['credit']
+                            t['credit'] = 0.0
+                            print(f"DEBUG: Auto-corrected hallucinated CREDIT -> DEBIT for {t['debit']}")
+                            break
+            
+            return txns
+
+        standard_txns = auto_correct_columns(standard_txns)
         
         print(f"DEBUG: Successfully parsed {len(standard_txns)} transactions.")
         return standard_txns
