@@ -71,7 +71,8 @@ def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic") -
     
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.0-flash')
+        # Using gemini-1.5-pro for much higher tabular/spatial accuracy to stop column hallucinations
+        model = genai.GenerativeModel('gemini-1.5-pro')
         
         # Phase 1: Convert PDF to high-quality images (300 DPI for watermark-heavy PDFs)
         images = pdf_to_images(pdf_path, dpi=300)
@@ -124,7 +125,7 @@ def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic") -
             "2. Validation (CRITICAL): Cross-reference the BALANCE column. For each row: (Previous Balance - Debit + Credit) should match (Current Balance). If the OCR misread a number but the balance progression is clear, use the balance math to correct the amount. Keep DEBIT and CREDIT strictly separate based on the math.\n"
             "3. Multiline Descriptions: Merge multi-line descriptions into a single string.\n"
             "4. Account Splits: If you see a 'BALANCE BROUGHT FORWARD' or a currency change mid-stream, keep it as a separator row.\n"
-            "Format: Return ONLY raw PSV text (no headers, no markdown): DATE|VALUE_DATE|DESCRIPTION|DEBIT|CREDIT|BALANCE"
+            "Format: Return ONLY raw PSV text (no headers, no markdown). You MUST return exactly 6 columns separated by 5 pipes: DATE|VALUE_DATE|DESCRIPTION|DEBIT|CREDIT|BALANCE. If VALUE_DATE is empty or missing, keep the pipe separators blank."
         )
         
         print("DEBUG: Gemini Vision - Executing Phase 2 (Data Engineer)...")
