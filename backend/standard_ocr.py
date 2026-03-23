@@ -118,11 +118,11 @@ def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic") -
 
         # PHASE 2: The Data Engineer (Text -> Cleaned PSV)
         prompt_engineer = (
-            "Role: You are a financial data engineer processing messy OCR output.\n"
-            "Task: Clean, validate, and structure the raw CSV data into a pristine Pipe-Separated Values (PSV) format.\n"
+            "Role: You are a structural data engineer processing raw OCR output.\n"
+            "Task: Clean and structure the raw CSV data into a pristine Pipe-Separated Values (PSV) format.\n"
             "Directives:\n"
-            "1. Numeric Cleaning: Remove currency symbols and formatting. Convert to raw floats (e.g. 100.50). Handle empty values as 0.00.\n"
-            "2. Validation (CRITICAL): Cross-reference the BALANCE column. For each row: (Previous Balance - Debit + Credit) should match (Current Balance). If the OCR misread a number but the balance progression is clear, use the balance math to correct the amount. Keep DEBIT and CREDIT strictly separate based on the math.\n"
+            "1. Numeric Cleaning: Remove currency symbols and comma formatting. Convert to raw floats (e.g. 100.50). Handle empty values as 0.00.\n"
+            "2. Alignment: Do NOT attempt any mathematical calculations. Just transcribe the DEBIT, CREDIT, and BALANCE columns exactly as they appear in the Phase 1 output.\n"
             "3. Multiline Descriptions: Merge multi-line descriptions into a single string.\n"
             "4. Account Splits: If you see a 'BALANCE BROUGHT FORWARD' or a currency change mid-stream, keep it as a separator row.\n"
             "Format: Return ONLY raw PSV text (no headers, no markdown). You MUST return exactly 6 columns separated by 5 pipes: DATE|VALUE_DATE|DESCRIPTION|DEBIT|CREDIT|BALANCE. If VALUE_DATE is empty or missing, keep the pipe separators blank."
