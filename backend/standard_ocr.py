@@ -71,8 +71,8 @@ def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic") -
     
     try:
         genai.configure(api_key=api_key)
-        # Using gemini-1.5-pro for much higher tabular/spatial accuracy to stop column hallucinations
-        model = genai.GenerativeModel('gemini-1.5-pro')
+        # Using gemini-2.0-flash for speed/quota, heavily relying on Phase 2 strict 6-pipe PSV prompting
+        model = genai.GenerativeModel('gemini-2.0-flash')
         
         # Phase 1: Convert PDF to high-quality images (300 DPI for watermark-heavy PDFs)
         images = pdf_to_images(pdf_path, dpi=300)
