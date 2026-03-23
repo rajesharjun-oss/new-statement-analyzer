@@ -1,0 +1,37 @@
+
+============================================================
+BANK: ACCESS | FILE: temp_uploads/Access bank test.pdf
+============================================================
+  Transactions: 129
+  Total Debit:  40,163,400.78
+  Total Credit: 74,931,500.00
+  Bank (meta):  access
+  Empty desc: 1/129
+  No date: 0/129
+  First 3:
+    [1] 02-Oct-2025 | PP_ABSIE/CEO Office Exp - October 2025/ACB /MORIES | Dr=513000.0 Cr=0.0 Bal=26620148.42
+    [2] 07-Oct-2025 | PP_Nametags for Africa HealthTech Summit, Kigali/G | Dr=90000.0 Cr=0.0 Bal=26530148.42
+    [3] 07-Oct-2025 | PP_CEO Vehicle Papers (Tint Registration, and Road | Dr=104000.0 Cr=0.0 Bal=26426148.42
+
+============================================================
+BANK: UBA | FILE: temp_uploads/UBA test.pdf
+============================================================
+  Transactions: 0
+  Total Debit:  0.00
+  Total Credit: 0.00
+  Bank (meta):  N/A
+  NO TRANSACTIONS
+
+============================================================
+BANK: FCMB | FILE: temp_uploads/FCMB test.pdf
+============================================================
+  Transactions: 291
+  Total Debit:  65,898,085,575.49
+  Total Credit: 66,040,963,346.89
+  Bank (meta):  N/A
+  Empty desc: 0/291
+  No date: 0/291
+  First 3:
+    [1] 07-Feb-2024 | trf b/o coleman technical industrial l | Dr=0.0 Cr=2000000000.0 Bal=2000000000.0
+    [2] 09-Feb-2024 | sunbeth global concept | Dr=590000000.0 Cr=0.0 Bal=1410000000.0
+    [3] 09-Feb-2024 | neft transfer charges | Dr=161.25 Cr=0.0 Bal=1409999838.75
