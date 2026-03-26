@@ -284,8 +284,8 @@ def extract_sterling_via_coordinates(pdf_path: Path, metadata: dict, pdf: pdfplu
                     '_page': pg_num + 1
                 })
 
-    # Post-process: remove transactions with no date AND no money (orphan continuation lines)
-    transactions = [t for t in transactions if t['date'] or t['debit'] or t['credit']]
+        # Post-process: remove transactions with no date AND no money (orphan continuation lines)
+        transactions = [t for t in transactions if t['date'] or t['debit'] or t['credit']]
     
     finally:
         if _auto_close:
