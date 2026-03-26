@@ -288,27 +288,22 @@ def detect_column_cuts_from_header(words: List[Dict[str, Any]], bank_identifier:
     
     print(f"DEBUG: Starting Smart Template Detection for bank hint: {bank_identifier}")
     
-    # Priority: if bank_identifier matches a specific detector, try that FIRST with a bonus score
-    # But still try others if it fails.
+    # Prioritize the hinted bank by moving it to the top of the detector list
+    if bank_identifier and bank_identifier != "auto":
+        detectors = sorted(detectors, key=lambda x: 1 if x[0].lower() in bank_identifier.lower() else 2)
     
+    print(f"DEBUG: Prioritized detectors: {[d[0] for d in detectors]}")
+
     for name, detector_func in detectors:
         try:
             # Propagate the outer bank_identifier (hint) to detectors
             print(f"DEBUG: Trying detector {name} with bank_identifier={bank_identifier}...")
-            if name == "UBA":
+            
+            # Use a generic call signature check to pass appropriate args
+            import inspect
+            sig = inspect.signature(detector_func)
+            if 'bank_identifier' in sig.parameters:
                 cuts = detector_func(words, bank_identifier)
-            elif name == "Access":
-                cuts = detector_func(words, bank_identifier)
-            elif name == "Fidelity":
-                cuts = detector_func(words, bank_identifier)
-            elif name == "AptSecurities":
-                cuts = detector_func(words, bank_identifier)
-            elif name == "FirstBank":
-                cuts = detector_func(words)
-            elif name == "Wema":
-                cuts = detector_func(words)
-            elif name == "FCMB":
-                cuts = detector_func(words)
             else:
                 cuts = detector_func(words)
             
@@ -317,13 +312,13 @@ def detect_column_cuts_from_header(words: List[Dict[str, Any]], bank_identifier:
                 score = len(cuts)
                 
                 # Bonus for mandatory columns (Date, Debit, Credit)
-                # Note: GTBank uses 'date', 'debit', 'credit' but others might use 'TransDate'
                 mandatory = ["date", "debit", "credit"]
                 if all(col in cuts for col in mandatory):
                     score += 2
                     
                 # Bonus if this matches the user/auto-detected bank
-                if bank_identifier and name.lower() in bank_identifier.lower():
+                is_hint_match = bank_identifier and name.lower() in bank_identifier.lower()
+                if is_hint_match:
                      score += 50  # Huge bonus to force priority for the correct bank
                 
                 print(f"DEBUG: Detector {name} found {len(cuts)} columns. Score: {score}")
@@ -332,12 +327,15 @@ def detect_column_cuts_from_header(words: List[Dict[str, Any]], bank_identifier:
                     best_score = score
                     best_cuts = cuts
                     best_name = name
+                
+                # OPTIMIZATION: Early Exit if we found a high-confidence match for the hinted bank
+                if is_hint_match and score >= 50:
+                    print(f"DEBUG: Early exit triggered for high-confidence match: {name}")
+                    return cuts
             else:
                 print(f"DEBUG: Detector {name} returned NO cuts.")
         except Exception as e:
             print(f"DEBUG: Detector {name} crashed: {e}")
-            import traceback
-            traceback.print_exc()
             continue
 
     if best_cuts:
@@ -534,7 +532,7 @@ def detect_template(first_page_text: str) -> str:
         return "zenith"
     if "access bank" in header_text or "access diamond" in header_text:
         return "access"
-    if "united bank for africa" in header_text or " uba " in header_text:
+    if "united bank for africa" in header_text or " uba " in header_text or ("withdrawal" in header_text and "deposit" in header_text):
         return "uba"
     if "first bank" in header_text or "firstbank" in header_text:
         return "firstbank"
@@ -669,33 +667,41 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
     }
     page_meta_map = {} # To track metadata per page
 
-    # --- 1) Parse metadata beforehand so specific routes get it ---
+    # --- 1) Consolidate PDF I/O and Initial Checks ---
     try:
         with pdfplumber.open(pdf_path) as pdf:
-            first_text = pdf.pages[0].extract_text() or ""
+            pdf_pages = pdf.pages
+            if not pdf_pages:
+                return [{"transactions": [], "metadata": {"error": "PDF has no pages"}}]
+
+            # A) Metadata Extraction (Consolidated)
+            first_page = pdf_pages[0]
+            first_text = first_page.extract_text() or ""
             metadata.update(parse_statement_metadata(first_text))
             
-            if len(pdf.pages) > 1:
-                last_text = pdf.pages[-1].extract_text() or ""
+            if len(pdf_pages) > 1:
+                last_text = pdf_pages[-1].extract_text() or ""
                 last_meta = parse_statement_metadata(last_text)
                 for key in ["statement_total_debit", "statement_total_credit", "closing_balance", "opening_balance"]:
                     if last_meta.get(key) is not None:
                         metadata[key] = last_meta[key]
-    except Exception as e:
-        print(f"DEBUG: Initial metadata extraction failed: {e}")
 
-    # --- AUTO-DETECT BANK BEFORE ROUTING ---
-    if bank_identifier == "auto":
-        with pdfplumber.open(pdf_path) as pdf:
-            combined_text = ""
-            for p_idx in range(min(3, len(pdf.pages))):
-                pg_text = pdf.pages[p_idx].extract_text() or ""
-                if pg_text.strip():
-                    combined_text += "\n" + pg_text
-                    if len(combined_text) > 2000:
-                        break
+            # B) Searchable Density Check (Skip OCR if possible)
+            is_searchable = False
+            words_sample = first_page.extract_words(x_tolerance=2, y_tolerance=2)
+            if len(words_sample) > 50:
+                is_searchable = True
+                print(f"DEBUG: PDF identified as SEARCHABLE (word count={len(words_sample)}). Prioritizing local extraction.")
 
-            bank_identifier = detect_template(combined_text)
+            # C) Auto-Detect Bank (if needed)
+            if bank_identifier == "auto":
+                combined_text = first_text
+                if not combined_text.strip() and is_searchable:
+                    # Rare case: first page is blank but searchable exists deeper
+                    for p in pdf_pages[1:3]:
+                        combined_text += "\n" + (p.extract_text() or "")
+                
+                bank_identifier = detect_template(combined_text)
 
             # HARD GUARD: GTBank only allowed if positively detected (with 2+ signals OR explicit header name)
             if STRICT_TEMPLATE_MODE and bank_identifier == "gtbank":
@@ -723,319 +729,292 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
 
             metadata["bank"] = bank_identifier
             print(f"DEBUG: Detected Template (Pre-Routing): {bank_identifier}")
+            # --- TOP-LEVEL ROUTING: Skip auto-detection if bank is known ---
+            if bank_identifier == "providus":
+                 prov_txns, prov_meta = extract_providus_via_tables(Path(pdf_path), metadata)
+                 if prov_txns: return [{"transactions": normalize_remarks(prov_txns), "metadata": prov_meta}]
 
-    # --- TOP-LEVEL ROUTING: Skip auto-detection if bank is known ---
-    if bank_identifier == "providus":
-         prov_txns, prov_meta = extract_providus_via_tables(Path(pdf_path), metadata)
-         if prov_txns: return [{"transactions": normalize_remarks(prov_txns), "metadata": prov_meta}]
+            if bank_identifier == "zenith":
+                 from zenith_engine import extract_zenith_via_coordinates
+                 zn_txns, zn_meta = extract_zenith_via_coordinates(Path(pdf_path), metadata)
+                 if zn_txns: return [{"transactions": normalize_remarks(zn_txns), "metadata": zn_meta}]
 
-    if bank_identifier == "zenith":
-         from zenith_engine import extract_zenith_via_coordinates
-         zn_txns, zn_meta = extract_zenith_via_coordinates(Path(pdf_path), metadata)
-         if zn_txns: return [{"transactions": normalize_remarks(zn_txns), "metadata": zn_meta}]
+            if bank_identifier == "wema":
+                 from wema_engine import extract_wema_via_coordinates
+                 wm_txns, wm_meta = extract_wema_via_coordinates(Path(pdf_path), metadata)
+                 if wm_txns: return [{"transactions": normalize_remarks(wm_txns), "metadata": wm_meta}]
 
-    if bank_identifier == "wema":
-         from wema_engine import extract_wema_via_coordinates
-         wm_txns, wm_meta = extract_wema_via_coordinates(Path(pdf_path), metadata)
-         if wm_txns: return [{"transactions": normalize_remarks(wm_txns), "metadata": wm_meta}]
+            if bank_identifier == "sterling":
+                 from sterling_engine import extract_sterling_via_coordinates
+                 st_txns, st_meta = extract_sterling_via_coordinates(Path(pdf_path), metadata)
+                 if st_txns: return [{"transactions": normalize_remarks(st_txns), "metadata": st_meta}]
 
-    if bank_identifier == "sterling":
-         from sterling_engine import extract_sterling_via_coordinates
-         st_txns, st_meta = extract_sterling_via_coordinates(Path(pdf_path), metadata)
-         if st_txns: return [{"transactions": normalize_remarks(st_txns), "metadata": st_meta}]
+            if bank_identifier == "fcmb":
+                 from fcmb_engine import extract_fcmb_via_coordinates
+                 fc_txns, fc_meta = extract_fcmb_via_coordinates(Path(pdf_path), metadata)
+                 if fc_txns: return [{"transactions": normalize_remarks(fc_txns), "metadata": fc_meta}]
 
-    if bank_identifier == "fcmb":
-         from fcmb_engine import extract_fcmb_via_coordinates
-         fc_txns, fc_meta = extract_fcmb_via_coordinates(Path(pdf_path), metadata)
-         if fc_txns: return [{"transactions": normalize_remarks(fc_txns), "metadata": fc_meta}]
+            elif bank_identifier == "uba":
+                 if is_searchable:
+                     print("DEBUG: UBA PDF is searchable - routing to word-bucketing engine")
+                     pass # Fall through to generic loop
+                 else:
+                     print("DEBUG: UBA PDF is scanned - routing to Gemini Vision OCR...")
+                     txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='uba')
+                     if txns: return [{"transactions": normalize_remarks(txns), "metadata": {"method": "gemini_vision"}}]
+                     return [{"transactions": [], "metadata": {"error": "UBA Gemini Vision returned 0 txns"}}]
 
-    if bank_identifier == "uba":
-         # Smart routing: check if PDF has extractable text
-         uba_has_text = False
-         try:
-             with pdfplumber.open(pdf_path) as test_pdf:
-                 for pg in test_pdf.pages[:3]:
-                     wds = pg.extract_words(x_tolerance=2, y_tolerance=2)
-                     if len(wds) > 50:
-                         uba_has_text = True
-                         break
-         except Exception:
-             pass
+            elif bank_identifier == "access":
+                 from access_engine import extract_access_via_coordinates
+                 try:
+                     acc_txns, acc_meta = extract_access_via_coordinates(Path(pdf_path), metadata)
+                     if acc_txns:
+                         print(f"DEBUG: Access engine returned {len(acc_txns)} transactions")
+                         return [{"transactions": normalize_remarks(acc_txns), "metadata": acc_meta}]
+                 except Exception as e:
+                     print(f"WARN: Access engine crashed: {e}. Trying AI fallback...")
          
-         if uba_has_text:
-             print("DEBUG: UBA PDF has searchable text - using word-bucketing engine")
-             # Fall through to the generic word-bucketing engine below
-             pass
-         else:
-             print("DEBUG: UBA PDF is scanned - routing to Gemini Vision OCR...")
-             txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='uba')
-             if txns: return [{"transactions": normalize_remarks(txns), "metadata": {"method": "gemini_vision"}}]
-             print("DEBUG: UBA Gemini Vision returned 0 txns.")
-             return [{"transactions": [], "metadata": {"error": "UBA Gemini Vision returned 0 txns"}}]
-
-    if bank_identifier == "access":
-         from access_engine import extract_access_via_coordinates
-         try:
-             acc_txns, acc_meta = extract_access_via_coordinates(Path(pdf_path), metadata)
-             if acc_txns:
-                 print(f"DEBUG: Access engine returned {len(acc_txns)} transactions")
-                 return [{"transactions": normalize_remarks(acc_txns), "metadata": acc_meta}]
-             print(f"WARN: Access engine returned 0 transactions. Trying AI fallback...")
-         except Exception as e:
-             print(f"WARN: Access engine crashed: {e}. Trying AI fallback...")
-         
-         # AI fallback for Access Bank
-         if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
-             try:
-                 ai_txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='access')
-                 if ai_txns:
-                     print(f"DEBUG: Access AI fallback returned {len(ai_txns)} transactions")
-                     return [{"transactions": normalize_remarks(ai_txns), "metadata": metadata}]
-             except Exception as e:
-                 print(f"WARN: Access AI fallback also failed: {e}")
-         print(f"WARN: All Access extraction methods failed. Falling through to generic...")
-    
-    column_debug = {}  # Define in outer scope for metadata access
-    
-    # --- 0c) Special Case: Ecobank Dedicated Extractor
-    # --- 0c) Special Case: Ecobank Dedicated Extractor
-    # Also attempt for 'generic'/'unknown' banks — tables with (Transaction Date,
-    # Description, Value Date, Debit, Credit, Balance) are characteristic of Ecobank
-    if bank_identifier in ("ecobank", "generic", "unknown"):
-        try:
-             eco_txns, eco_meta = extract_ecobank_via_tables(Path(pdf_path), metadata)
-             if eco_txns:
-                 return [{"transactions": normalize_remarks(eco_txns), "metadata": eco_meta}]
-        except Exception as e:
-             print(f"DEBUG: Ecobank table strategy failed: {e}. Trying Hybrid AI Fallback...")
+                 # AI fallback for Access Bank ONLY
+                 if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+                     try:
+                         ai_txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='access')
+                         if ai_txns:
+                             print(f"DEBUG: Access AI fallback returned {len(ai_txns)} transactions")
+                             return [{"transactions": normalize_remarks(ai_txns), "metadata": metadata}]
+                     except Exception as e:
+                         print(f"WARN: Access AI fallback also failed: {e}")
+                 print(f"WARN: All Access extraction methods failed. Falling through to generic...")
         
-        # Hardened Fallback: If 0 transactions found, trigger AI
-        if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
-            print(f"DEBUG: Ecobank table engine returned 0 txns. Triggering Hybrid AI Fallback...")
-            txns = extract_transactions_via_ai(str(pdf_path))
-            if txns: return [{"transactions": normalize_remarks(txns), "metadata": metadata}]
-
-
-
-
-
-    # --- 0e) Special Case: Fidelity Table Strategy
-    if bank_identifier == "fidelity":
-        try:
-             fidelity_txns = extract_fidelity_via_tables(Path(pdf_path), metadata)
-             if fidelity_txns:
-                 return [{"transactions": normalize_remarks(fidelity_txns), "metadata": metadata}]
-        except Exception as e:
-             print(f"DEBUG: Fidelity table strategy failed: {e}. Falling back to standard/pypdf...")
-             # Let it fall through
-
-    # Reset metadata["_debug"] if fallback is used
-    column_debug = {}
-    
-    with pdfplumber.open(pdf_path) as pdf:
-        # --- 1) Scan all pages to detect header and column positions ---
-        base_cuts = None
-        for i, p in enumerate(pdf.pages):
-            words = []
-            try:
-                words = p.extract_words(x_tolerance=2, y_tolerance=2)
-                print(f"DEBUG: Page {i} words count: {len(words)}")
-            except Exception as e:
-                print(f"DEBUG: Page {i} pdfplumber extraction crashed ({type(e).__name__}: {e}), trying pypdf fallback...")
-                words = extract_words_from_pypdf(pdf_path, i)
-                print(f"DEBUG: Page {i} pypdf fallback words count: {len(words)}")
+            column_debug = {}  # Define in outer scope for metadata access
             
-            if not words:
-                print(f"DEBUG: Page {i} has no words, skipping...")
-                continue
-            
-            base_cuts = detect_column_cuts_from_header(words, bank_identifier)
-            print(f"DEBUG: Generic detect result: {base_cuts}")
-            
-            # Specific bank detectors are now handled by detect_column_cuts_from_header (Smart Template Detection)
-
-            if base_cuts:
-                print(f"DEBUG: Header detected on page {i+1}")
-                print(f"DEBUG: FOUND CUTS: {base_cuts}")
-                break
-                
-        # --- OCR Fallback: Try if standard detection completely failed ---
-        if not base_cuts:
-            print(f"DEBUG: Standard detection failed on all pages. Trying Gemini Multimodal fallback...")
-            
-            if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+            # --- 0c) Special Case: Ecobank Dedicated Extractor
+            # Also attempt for 'generic'/'unknown' banks — tables with (Transaction Date,
+            # Description, Value Date, Debit, Credit, Balance) are characteristic of Ecobank
+            if bank_identifier in ("ecobank", "generic", "unknown"):
                 try:
-                    transactions = extract_transactions_via_ai(str(pdf_path))
-                    if transactions:
-                         print(f"DEBUG: Gemini Multimodal extracted {len(transactions)} txns")
-                         return [{"transactions": transactions, "metadata": {}}]
+                     eco_txns, eco_meta = extract_ecobank_via_tables(Path(pdf_path), metadata)
+                     if eco_txns:
+                         return [{"transactions": normalize_remarks(eco_txns), "metadata": eco_meta}]
                 except Exception as e:
-                    print(f"DEBUG: Gemini Multimodal fallback failed: {e}")
-
-            # Legacy OCR fallback as last resort
-            print(f"DEBUG: Falling back to legacy OCR engine (Engine: {os.getenv('OCR_ENGINE', 'openai')})...")
-            if not OCR_MODULE_AVAILABLE:
-                 raise ValueError("Could not detect column header and Gemini Multimodal is not available.")
-
-            try:
-                ocr_text = ""
-                # Try first 2 pages
-                for i in range(min(2, len(pdf.pages))):
-                    print(f"DEBUG: Attempting OCR on page {i}...")
-                    ocr_text += "\n" + extract_text_with_ocr(str(pdf_path), i)
+                     print(f"DEBUG: Ecobank table strategy failed: {e}. Trying Hybrid AI Fallback...")
                 
-                raise ValueError(
-                    f"Header not detected by pdfplumber. Legacy OCR ({os.getenv('OCR_ENGINE', 'openai')}) used as fail-safe, "
-                    "but parsing failed. Please use text-based PDFs or check Gemini API connectivity."
-                )
-            except Exception as e:
-                print(f"DEBUG: OCR fallback failed or exhausted: {e}")
-                metadata["error"] = str(e)
-                metadata["status"] = "Extraction failed (Header not found & Fallbacks failed)"
-                return [{"transactions": [], "metadata": metadata}]
-        
-        column_debug = {col: f"{bounds[0]:.1f} to {bounds[1]:.1f}" for col, bounds in base_cuts.items()}
-        print(f"DEBUG: Detected columns: {column_debug}")
+                # Hardened Fallback: If 0 transactions found, trigger AI
+                if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+                    print(f"DEBUG: Ecobank table engine returned 0 txns. Triggering Hybrid AI Fallback...")
+                    txns = extract_transactions_via_ai(str(pdf_path))
+                    if txns: return [{"transactions": normalize_remarks(txns), "metadata": metadata}]
 
-        # --- 3) Extract all pages ---
-        # We now support multiple statements in one PDF.
-        # Each statement has its own metadata and transactions.
-        current_account_no = metadata.get("account_no")
-        current_stmt_id = 0
+            # --- 0e) Special Case: Fidelity Table Strategy
+            if bank_identifier == "fidelity":
+                try:
+                     fidelity_txns = extract_fidelity_via_tables(Path(pdf_path), metadata)
+                     if fidelity_txns:
+                         return [{"transactions": normalize_remarks(fidelity_txns), "metadata": metadata}]
+                except Exception as e:
+                     print(f"DEBUG: Fidelity table strategy failed: {e}. Falling back to standard/pypdf...")
+                     # Let it fall through
 
-        for page_num, page in enumerate(pdf.pages, start=1):
-            # Scan for metadata on every page to detect split/merged statements
-            try:
-                pg_text = page.extract_text() or ""
-                pg_meta = parse_statement_metadata(pg_text)
-                new_acc = pg_meta.get("account_no")
+            # --- 1) Scan all pages to detect header and column positions ---
+            base_cuts = None
+            for i, p in enumerate(pdf_pages):
+                words = []
+                try:
+                    words = p.extract_words(x_tolerance=2, y_tolerance=2)
+                    print(f"DEBUG: Page {i} words count: {len(words)}")
+                except Exception as e:
+                    print(f"DEBUG: Page {i} pdfplumber extraction crashed ({type(e).__name__}: {e}), trying pypdf fallback...")
+                    words = extract_words_from_pypdf(pdf_path, i)
+                    print(f"DEBUG: Page {i} pypdf fallback words count: {len(words)}")
                 
-                # Detect new statement boundary:
-                # Only split when the Account Number actually changes.
-                # "CUSTOMER STATEMENT" appearing on every page (common in GTCO)
-                # does NOT mean a new statement — it's just a page header.
-                is_new_header = "CUSTOMER STATEMENT" in pg_text or "Statement Period" in pg_text
-                account_changed = new_acc and current_account_no and new_acc != current_account_no
-                
-                if account_changed:
-                    current_stmt_id += 1
-                    print(f"DEBUG: New statement group {current_stmt_id} detected on page {page_num} (Acc: {new_acc} != {current_account_no})")
-
-                # Update tracking for later split
-                page_meta_map[page_num] = pg_meta
-                # Also store which statement ID this page started/contributed to
-                pg_meta["_stmt_id"] = current_stmt_id
-
-                if new_acc:
-                    current_account_no = new_acc
-            except Exception as e:
-                print(f"DEBUG: Metadata scan failed on page {page_num}: {e}")
-
-            # Extract words for rows
-            try:
-                words = page.extract_words(x_tolerance=2, y_tolerance=2)
-            except Exception as e:
-                words = extract_words_from_pypdf(pdf_path, page_num - 1)
-            
-            if not words:
-                continue
-
-            # Filter out words drawn outside the printable page area.
-            # GTCO PDFs contain all pages' text superimposed with shifted Y-coordinates.
-            page_height = page.height
-            words = [w for w in words if w["bottom"] >= -5 and w["top"] <= page_height + 5]
-
-            tol = 15.0 if bank_identifier in ["gtbank", "gtco"] else 2.5
-            row_groups = group_words_to_rows(words, y_tol=tol)
-
-            for rg in row_groups:
-                row = assign_row_to_cols(rg["words"], base_cuts)
-                if is_noise_row(row):
+                if not words:
+                    print(f"DEBUG: Page {i} has no words, skipping...")
                     continue
                 
-                row["_page"] = page_num
-                row["_acc"] = current_account_no
-                row["_stmt_id"] = current_stmt_id
-                all_rows.append(row)
+                base_cuts = detect_column_cuts_from_header(words, bank_identifier)
+                print(f"DEBUG: Generic detect result: {base_cuts}")
+                
+                # Specific bank detectors are now handled by detect_column_cuts_from_header (Smart Template Detection)
 
-    # --- 4) Split all_rows by Statement ID and merge ---
-    statement_groups = []
-    if all_rows:
-        curr_g = [all_rows[0]]
-        for i in range(1, len(all_rows)):
-            if all_rows[i]["_stmt_id"] != all_rows[i-1]["_stmt_id"]:
+                if base_cuts:
+                    print(f"DEBUG: Header detected on page {i+1}")
+                    print(f"DEBUG: FOUND CUTS: {base_cuts}")
+                    break
+                    
+            # --- OCR Fallback: Try if standard detection completely failed ---
+            if not base_cuts:
+                print(f"DEBUG: Standard detection failed on all pages. Trying Gemini Multimodal fallback...")
+                
+                if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+                    try:
+                        transactions = extract_transactions_via_ai(str(pdf_path))
+                        if transactions:
+                             print(f"DEBUG: Gemini Multimodal extracted {len(transactions)} txns")
+                             return [{"transactions": transactions, "metadata": {}}]
+                    except Exception as e:
+                        print(f"DEBUG: Gemini Multimodal fallback failed: {e}")
+
+                # Legacy OCR fallback as last resort
+                print(f"DEBUG: Falling back to legacy OCR engine (Engine: {os.getenv('OCR_ENGINE', 'openai')})...")
+                if not OCR_MODULE_AVAILABLE:
+                     raise ValueError("Could not detect column header and Gemini Multimodal is not available.")
+
+                try:
+                    ocr_text = ""
+                    # Try first 2 pages
+                    for i in range(min(2, len(pdf_pages))):
+                        print(f"DEBUG: Attempting OCR on page {i}...")
+                        ocr_text += "\n" + extract_text_with_ocr(str(pdf_path), i)
+                    
+                    raise ValueError(
+                        f"Header not detected by pdfplumber. Legacy OCR ({os.getenv('OCR_ENGINE', 'openai')}) used as fail-safe, "
+                        "but parsing failed. Please use text-based PDFs or check Gemini API connectivity."
+                    )
+                except Exception as e:
+                    print(f"DEBUG: OCR fallback failed or exhausted: {e}")
+                    metadata["error"] = str(e)
+                    metadata["status"] = "Extraction failed (Header not found & Fallbacks failed)"
+                    return [{"transactions": [], "metadata": metadata}]
+            
+            column_debug = {col: f"{bounds[0]:.1f} to {bounds[1]:.1f}" for col, bounds in base_cuts.items()}
+            print(f"DEBUG: Detected columns: {column_debug}")
+
+            # --- 3) Extract all pages ---
+            # We now support multiple statements in one PDF.
+            # Each statement has its own metadata and transactions.
+            current_account_no = metadata.get("account_no")
+            current_stmt_id = 0
+
+            for page_num, page in enumerate(pdf_pages, start=1):
+                # Scan for metadata on every page to detect split/merged statements
+                try:
+                    pg_text = page.extract_text() or ""
+                    pg_meta = parse_statement_metadata(pg_text)
+                    new_acc = pg_meta.get("account_no")
+                    
+                    # Detect new statement boundary:
+                    is_new_header = "CUSTOMER STATEMENT" in pg_text or "Statement Period" in pg_text
+                    account_changed = new_acc and current_account_no and new_acc != current_account_no
+                    
+                    if account_changed:
+                        current_stmt_id += 1
+                        print(f"DEBUG: New statement group {current_stmt_id} detected on page {page_num} (Acc: {new_acc} != {current_account_no})")
+
+                    # Update tracking for later split
+                    page_meta_map[page_num] = pg_meta
+                    # Also store which statement ID this page started/contributed to
+                    pg_meta["_stmt_id"] = current_stmt_id
+
+                    if new_acc:
+                        current_account_no = new_acc
+                except Exception as e:
+                    print(f"DEBUG: Metadata scan failed on page {page_num}: {e}")
+
+                # Extract words for rows
+                try:
+                    words = page.extract_words(x_tolerance=2, y_tolerance=2)
+                except Exception as e:
+                    words = extract_words_from_pypdf(pdf_path, page_num - 1)
+                
+                if not words:
+                    continue
+
+                # Filter out words drawn outside the printable page area.
+                page_height = page.height
+                words = [w for w in words if w["bottom"] >= -5 and w["top"] <= page_height + 5]
+
+                tol = 15.0 if bank_identifier in ["gtbank", "gtco"] else 2.5
+                row_groups = group_words_to_rows(words, y_tol=tol)
+
+                for rg in row_groups:
+                    row = assign_row_to_cols(rg["words"], base_cuts)
+                    if is_noise_row(row):
+                        continue
+                    
+                    row["_page"] = page_num
+                    row["_acc"] = current_account_no
+                    row["_stmt_id"] = current_stmt_id
+                    all_rows.append(row)
+
+            # --- 4) Split all_rows by Statement ID and merge ---
+            statement_groups = []
+            if all_rows:
+                curr_g = [all_rows[0]]
+                for i in range(1, len(all_rows)):
+                    if all_rows[i]["_stmt_id"] != all_rows[i-1]["_stmt_id"]:
+                        statement_groups.append(curr_g)
+                        curr_g = [all_rows[i]]
+                    else:
+                        curr_g.append(all_rows[i])
                 statement_groups.append(curr_g)
-                curr_g = [all_rows[i]]
-            else:
-                curr_g.append(all_rows[i])
-        statement_groups.append(curr_g)
 
-    final_results = []
-    for group in statement_groups:
-        acc = group[0]["_acc"]
-        # Find best metadata for this account
-        best_meta = metadata.copy()
-        for p_num, p_meta in page_meta_map.items():
-            if p_meta.get("account_no") == acc:
-                best_meta.update(p_meta)
-        
-        # Merge multiline rows
-        raw_txns = merge_multiline_rows(group)
-        if bank_identifier in ["gtbank", "gtco"]:
-            raw_txns = repair_fields_batch(raw_txns)
-        
-        # Normalize and build final txns
-        normalized = []
-        for txn in raw_txns:
-            # Build remarks
-            desc_parts = []
-            ref_val = (txn.get("reference") or "").strip()
-            branch_val = (txn.get("branch") or "").strip()
-            narration_val = (txn.get("description") or "").strip()
+            final_results = []
+            for group in statement_groups:
+                acc = group[0]["_acc"]
+                # Find best metadata for this account
+                best_meta = metadata.copy()
+                for p_num, p_meta in page_meta_map.items():
+                    if p_meta.get("account_no") == acc:
+                        best_meta.update(p_meta)
+                
+                # Merge multiline rows
+                raw_txns = merge_multiline_rows(group)
+                if bank_identifier in ["gtbank", "gtco"]:
+                    raw_txns = repair_fields_batch(raw_txns)
+                
+                # Normalize and build final txns
+                normalized = []
+                for txn in raw_txns:
+                    # Build remarks
+                    desc_parts = []
+                    ref_val = (txn.get("reference") or "").strip()
+                    branch_val = (txn.get("branch") or "").strip()
+                    narration_val = (txn.get("description") or "").strip()
 
-            if ref_val and ref_val not in {"'", "GAP", "'GAP"}:
-                desc_parts.append(ref_val)
-            if branch_val:
-                desc_parts.append(branch_val)
-            if narration_val:
-                desc_parts.append(narration_val)
-            remarks = " ".join(desc_parts).replace("\xad", "").strip()
-            remarks = scrub_boilerplate(remarks)
-            remarks = re.sub(r"\s+", " ", remarks)
+                    if ref_val and ref_val not in {"'", "GAP", "'GAP"}:
+                        desc_parts.append(ref_val)
+                    if branch_val:
+                        desc_parts.append(branch_val)
+                    if narration_val:
+                        desc_parts.append(narration_val)
+                    remarks = " ".join(desc_parts).replace("\xad", "").strip()
+                    remarks = scrub_boilerplate(remarks)
+                    remarks = re.sub(r"\s+", " ", remarks)
 
-            deb_val = parse_money(txn.get("debit", ""))
-            cred_val = parse_money(txn.get("credit", ""))
-            if deb_val == 0.0 and cred_val == 0.0:
-                continue
+                    deb_val = parse_money(txn.get("debit", ""))
+                    cred_val = parse_money(txn.get("credit", ""))
+                    if deb_val == 0.0 and cred_val == 0.0:
+                        continue
 
-            normalized.append({
-                "account_no": acc,
-                "date": txn["date"],
-                "value_date": txn.get("value_date", ""),
-                "reference": ref_val,
-                "originating_branch": branch_val,
-                "remarks": remarks,
-                "description": narration_val.replace("\xad", "").strip(),
-                "debit": deb_val,
-                "credit": cred_val,
-                "balance": parse_money(txn.get("balance", "")),
-                "category": "Unallocated",
-                "is_reversal": False,
-                "_page": txn.get("_page"),
-                "_row": txn.get("_row")
-            })
-        
-        final_results.append({
-            "transactions": normalized,
-            "metadata": best_meta
-        })
+                    normalized.append({
+                        "account_no": acc,
+                        "date": txn["date"],
+                        "value_date": txn.get("value_date", ""),
+                        "reference": ref_val,
+                        "originating_branch": branch_val,
+                        "remarks": remarks,
+                        "description": narration_val.replace("\xad", "").strip(),
+                        "debit": deb_val,
+                        "credit": cred_val,
+                        "balance": parse_money(txn.get("balance", "")),
+                        "category": "Unallocated",
+                        "is_reversal": False,
+                        "_page": txn.get("_page"),
+                        "_row": txn.get("_row")
+                    })
+                
+                final_results.append({
+                    "transactions": normalized,
+                    "metadata": best_meta
+                })
 
-    if not final_results and all_rows:
-        # Fallback if splitting logic failed but rows exist
-        # (Shouldn't happen with the logic above, but for safety)
-        pass
+            return final_results
 
-    return final_results
+    except Exception as e:
+        print(f"DEBUG: Extraction failed: {e}")
+        import traceback
+        traceback.print_exc()
+        metadata["error"] = str(e)
+        return [{"transactions": [], "metadata": metadata}]
 
 
 def build_description(tx: dict) -> str:
