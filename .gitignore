@@ -37,5 +37,6 @@ venv.bak/
 .venv/
 .env
 
-# Temporary Downloads
+# Temporary Storage
 temp_downloads/
+temp_uploads/
