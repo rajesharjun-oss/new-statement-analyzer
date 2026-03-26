@@ -464,7 +464,7 @@ export default function App() {
                                           <option value="gtbank">GTBank</option>
                                           <option value="gtco">GTCO</option>
                                           <option value="ecobank">Ecobank</option>
-                                          <option value="accessbank">Access Bank</option>
+                                          <option value="access">Access Bank</option>
                                           <option value="fidelity">Fidelity Bank</option>
                                           <option value="apt_securities">APT</option>
                                           <option value="uba">UBA</option>
