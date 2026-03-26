@@ -49,4 +49,18 @@ A powerful AI-driven tool for extracting, validating, and categorizing transacti
 3. Open http://localhost:8000
 
 ---
+---
+
+## ☁️ Deploy to Render
+
+The project is optimized for **Render** (Docker or Native Web Service).
+
+1. **Environment Variables**:
+   In the Render Dashboard, add:
+   - `GEMINI_API_KEY`: Your Google AI Studio key.
+   - `PYTHONPATH`: `/app/backend` (if using Docker).
+
+2. **Persistent Storage**:
+   The `temp_uploads/` and `temp_downloads/` directories are ephemeral on Render. For production use with large volumes, consider attaching a **Render Disk**.
+
 *Powered by Gemini 2.0 Flash for high-accuracy financial OCR.*

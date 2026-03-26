@@ -33,10 +33,17 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
 # Mount static files (React build)
-# Only mount if dist exists (production mode)
+# Check multiple potential dist locations for production
 DIST_DIR = Path("/app/dist")
+if not DIST_DIR.exists():
+    # Fallback to relative path if running as a native Web Service on Render or locally
+    DIST_DIR = Path(__file__).parent.parent / "dist"
+
 if DIST_DIR.exists():
-    app.mount("/assets", StaticFiles(directory=DIST_DIR / "assets"), name="assets")
+    # Ensure Assets subdirectory exists before mounting
+    assets_dir = DIST_DIR / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
 def num(x):
     """Safely convert to float, handling strings with commas"""
@@ -211,4 +218,6 @@ async def serve_spa(full_path: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import os
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
