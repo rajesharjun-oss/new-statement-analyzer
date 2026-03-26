@@ -2844,14 +2844,6 @@ def extract_zenith_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
     print(f"DEBUG: Extracted {len(final_txns)} transactions via Zenith Table strategy (Split Merge)")
     return final_txns
 
-
-
-    print(f"DEBUG: Extracted {len(final_txns)} transactions via FCMB Table strategy")
-    return final_txns
-             
-
-
-
 def extract_fidelity_via_tables(pdf_path: Path, metadata: Dict, pdf: pdfplumber.PDF = None) -> List[Dict]:
     """
     Robust word-based extractor for Fidelity Bank.
@@ -2884,8 +2876,8 @@ def extract_fidelity_via_tables(pdf_path: Path, metadata: Dict, pdf: pdfplumber.
 
         print(f"DEBUG: Fidelity Column Cuts: {cuts}")
 
-    for i, page in enumerate(_pdf_handle.pages):
-        page_num = i + 1
+        for i, page in enumerate(_pdf_handle.pages):
+            page_num = i + 1
             p_words = []
             try:
                 try:
@@ -2918,7 +2910,6 @@ def extract_fidelity_via_tables(pdf_path: Path, metadata: Dict, pdf: pdfplumber.
 
                     row_final = {name: " ".join(parts).strip() for name, parts in row_data.items()}
                     
-                    # Store as raw strings for merging
                     all_rows.append({
                         "date": row_final.get("date", ""),
                         "value_date": row_final.get("value_date", ""),
@@ -2935,27 +2926,26 @@ def extract_fidelity_via_tables(pdf_path: Path, metadata: Dict, pdf: pdfplumber.
                 print(f"DEBUG: Error on Page {page_num}: {e}")
                 continue
 
-    print(f"DEBUG: Total Fidelity rows extracted: {len(all_rows)}")
-    if all_rows:
-        print(f"DEBUG: Sample row types: {[type(v) for v in all_rows[0].values()]}")
-    
-    txns = merge_multiline_rows(all_rows)
-    
-    # Post-process merged transactions to parse money and dates
-    final_txns = []
-    for t in txns:
-        date_val = parse_date_smart(t.get("date"))
-        if not date_val: continue
+        print(f"DEBUG: Total Fidelity rows extracted: {len(all_rows)}")
+        txns = merge_multiline_rows(all_rows)
         
-        t["date"] = date_val
-        t["credit"] = parse_money(t.get("credit"))
-        t["debit"] = parse_money(t.get("debit"))
-        t["balance"] = parse_money(t.get("balance"))
-        final_txns.append(t)
+        final_txns = []
+        for t in txns:
+            date_val = parse_date_smart(t.get("date"))
+            if not date_val: continue
+            
+            t["date"] = date_val
+            t["credit"] = parse_money(t.get("credit"))
+            t["debit"] = parse_money(t.get("debit"))
+            t["balance"] = parse_money(t.get("balance"))
+            final_txns.append(t)
 
-    print(f"DEBUG: Total Fidelity transactions after merge & parse: {len(final_txns)}")
-    
-    return final_txns
+        print(f"DEBUG: Total Fidelity transactions after merge & parse: {len(final_txns)}")
+        return final_txns
+
+    finally:
+        if _auto_close:
+            _pdf_handle.close()
 
 def extract_access_via_tables(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict], Dict]:
     """
@@ -3217,10 +3207,6 @@ def extract_access_consensus(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict]
             txn["_row"] = 0
             reconciled_txns.append(txn)
 
-    finally:
-        if _auto_close:
-            _pdf_handle.close()
-
     return reconciled_txns, metadata
 
 
@@ -3352,112 +3338,112 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None, pdf: pdfpl
         _auto_close = False
 
     for page_idx, page in enumerate(_pdf_handle.pages):
-            pg = page_idx + 1
+        pg = page_idx + 1
+        try:
+            tables = page.extract_tables(table_settings=ECO_LINES)
+        except Exception as _e:
+            print(f"DEBUG [Ecobank] pg{pg}: line-table extraction failed ({_e}), trying text strategy")
+            tables = None
+        if not tables:
             try:
-                tables = page.extract_tables(table_settings=ECO_LINES)
+                tables = page.extract_tables(table_settings=ECO_TEXT)
             except Exception as _e:
-                print(f"DEBUG [Ecobank] pg{pg}: line-table extraction failed ({_e}), trying text strategy")
-                tables = None
-            if not tables:
-                try:
-                    tables = page.extract_tables(table_settings=ECO_TEXT)
-                except Exception as _e:
-                    print(f"DEBUG [Ecobank] pg{pg}: text-table extraction also failed ({_e}), skipping page")
-                    continue
-            if not tables:
-                print(f"DEBUG [Ecobank] pg{pg}: no tables found, skipping")
+                print(f"DEBUG [Ecobank] pg{pg}: text-table extraction also failed ({_e}), skipping page")
                 continue
+        if not tables:
+            print(f"DEBUG [Ecobank] pg{pg}: no tables found, skipping")
+            continue
 
-            for t_idx, table in enumerate(tables):
-                if not table:
-                    continue
-                try:
-                    # Locate the header row and start data from the row after it
-                    data_start = 0
-                    col_map = {"date": 0, "desc": 1, "vdate": 2, "debit": 3, "credit": 4, "balance": 5} # Default
-                    
-                    for ri, row in enumerate(table[:6]):
-                        mapping = _find_col_map(row)
-                        if mapping:
-                            col_map = mapping
-                            print(f"DEBUG [Ecobank] pg{pg} col_map: {col_map}")
-                            data_start = ri + 1
-                            break
+        for t_idx, table in enumerate(tables):
+            if not table:
+                continue
+            try:
+                # Locate the header row and start data from the row after it
+                data_start = 0
+                col_map = {"date": 0, "desc": 1, "vdate": 2, "debit": 3, "credit": 4, "balance": 5} # Default
+                
+                for ri, row in enumerate(table[:6]):
+                    mapping = _find_col_map(row)
+                    if mapping:
+                        col_map = mapping
+                        print(f"DEBUG [Ecobank] pg{pg} col_map: {col_map}")
+                        data_start = ri + 1
+                        break
 
-                    for row in table[data_start:]:
-                        if not row or not isinstance(row, (list, tuple)):
-                            continue
-                        if len(row) < 4:
-                            continue
-                        try:
-                            # print(f"DEBUG [Ecobank] pg{pg} processing row: {row}")
-                            raw_date  = _cell(row, col_map["date"])
-                            raw_desc  = _cell(row, col_map["desc"])
-                            raw_vdate = _cell(row, col_map["vdate"])
-                            raw_debit = _cell(row, col_map["debit"], is_amount=True)
-                            raw_cred  = _cell(row, col_map["credit"], is_amount=True)
-                            raw_bal   = _cell(row, col_map["balance"], is_amount=True)
+                for row in table[data_start:]:
+                    if not row or not isinstance(row, (list, tuple)):
+                        continue
+                    if len(row) < 4:
+                        continue
+                    try:
+                        # print(f"DEBUG [Ecobank] pg{pg} processing row: {row}")
+                        raw_date  = _cell(row, col_map["date"])
+                        raw_desc  = _cell(row, col_map["desc"])
+                        raw_vdate = _cell(row, col_map["vdate"])
+                        raw_debit = _cell(row, col_map["debit"], is_amount=True)
+                        raw_cred  = _cell(row, col_map["credit"], is_amount=True)
+                        raw_bal   = _cell(row, col_map["balance"], is_amount=True)
 
-                            # Adaptive description lookup: if mapped index is empty, check neighbors (common for Ecobank shifts)
-                            if not raw_desc and ECO_DATE_RE.match(raw_date):
-                                for offset in [-1, 1, 2, -2]:
-                                    idx = col_map["desc"] + offset
-                                    if 0 <= idx < len(row) and idx not in {col_map["date"], col_map["debit"], col_map["credit"], col_map["balance"]}:
-                                        cand = _cell(row, idx)
-                                        if cand:
-                                            raw_desc = cand
-                                            break
+                        # Adaptive description lookup: if mapped index is empty, check neighbors (common for Ecobank shifts)
+                        if not raw_desc and ECO_DATE_RE.match(raw_date):
+                            for offset in [-1, 1, 2, -2]:
+                                idx = col_map["desc"] + offset
+                                if 0 <= idx < len(row) and idx not in {col_map["date"], col_map["debit"], col_map["credit"], col_map["balance"]}:
+                                    cand = _cell(row, idx)
+                                    if cand:
+                                        raw_desc = cand
+                                        break
 
-                            if ECO_DATE_RE.match(raw_date):
-                                # ── Full transaction row ──────────────────────────
-                                if _is_skip(raw_date, raw_desc):
-                                    continue
+                        if ECO_DATE_RE.match(raw_date):
+                            # ── Full transaction row ──────────────────────────
+                            if _is_skip(raw_date, raw_desc):
+                                continue
 
-                                # Flush any pending cross-page description
-                                if last_txn and pending_desc:
-                                    last_txn["description"] = (
-                                        last_txn["description"] + " " + pending_desc
-                                    ).strip()
-                                    pending_desc = ""
+                            # Flush any pending cross-page description
+                            if last_txn and pending_desc:
+                                last_txn["description"] = (
+                                    last_txn["description"] + " " + pending_desc
+                                ).strip()
+                                pending_desc = ""
 
-                                m = REFNO_RE.search(raw_desc)
-                                ref = m.group(1).strip() if m else ""
-                                cleaned_desc = REFNO_RE.sub("", raw_desc).strip(" ,;") if m else raw_desc
-                                full_desc = " ".join(filter(None, [ref, cleaned_desc])).strip()
+                            m = REFNO_RE.search(raw_desc)
+                            ref = m.group(1).strip() if m else ""
+                            cleaned_desc = REFNO_RE.sub("", raw_desc).strip(" ,;") if m else raw_desc
+                            full_desc = " ".join(filter(None, [ref, cleaned_desc])).strip()
 
-                                txn = {
-                                    "date":              parse_date_smart(raw_date) or raw_date,
-                                    "value_date":        parse_date_smart(raw_vdate) or raw_vdate,
-                                    "reference":         ref,
-                                    "originating_branch": "",
-                                    "description":       full_desc,
-                                    "remarks":           full_desc, # ENSURE Remarks is not empty
-                                    "debit":             parse_money(raw_debit),
-                                    "credit":            parse_money(raw_cred),
-                                    "balance":           parse_money(raw_bal),
-                                    "category":          "Unallocated",
-                                    "is_reversal":       False,
-                                    "_page":             pg,
-                                }
-                                all_txns.append(txn)
-                                last_txn = txn
+                            txn = {
+                                "date":              parse_date_smart(raw_date) or raw_date,
+                                "value_date":        parse_date_smart(raw_vdate) or raw_vdate,
+                                "reference":         ref,
+                                "originating_branch": "",
+                                "description":       full_desc,
+                                "remarks":           full_desc, # ENSURE Remarks is not empty
+                                "debit":             parse_money(raw_debit),
+                                "credit":            parse_money(raw_cred),
+                                "balance":           parse_money(raw_bal),
+                                "category":          "Unallocated",
+                                "is_reversal":       False,
+                                "_page":             pg,
+                            }
+                            all_txns.append(txn)
+                            last_txn = txn
 
-                            elif not raw_date and raw_desc:
-                                # ── Continuation / overflow row ───────────────────
-                                if last_txn:
-                                    merged = (last_txn["description"] + " " + raw_desc).strip()
-                                    last_txn["description"] = merged
-                                    last_txn["remarks"]     = merged
-                                else:
-                                    pending_desc = (pending_desc + " " + raw_desc).strip()
+                        elif not raw_date and raw_desc:
+                            # ── Continuation / overflow row ───────────────────
+                            if last_txn:
+                                merged = (last_txn["description"] + " " + raw_desc).strip()
+                                last_txn["description"] = merged
+                                last_txn["remarks"]     = merged
+                            else:
+                                pending_desc = (pending_desc + " " + raw_desc).strip()
 
-                        except Exception as _row_err:
-                            print(f"DEBUG [Ecobank] pg{pg} t{t_idx} bad row: {_row_err}")
-                            continue
+                    except Exception as _row_err:
+                        print(f"DEBUG [Ecobank] pg{pg} t{t_idx} bad row: {_row_err}")
+                        continue
 
-                except Exception as _tbl_err:
-                    print(f"DEBUG [Ecobank] pg{pg} t{t_idx} table error: {_tbl_err}")
-                    continue
+            except Exception as _tbl_err:
+                print(f"DEBUG [Ecobank] pg{pg} t{t_idx} table error: {_tbl_err}")
+                continue
 
     # Final flush of any leftover pending description
     if last_txn and pending_desc:
