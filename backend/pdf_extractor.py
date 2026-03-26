@@ -2876,55 +2876,59 @@ def extract_fidelity_via_tables(pdf_path: Path, metadata: Dict, pdf: pdfplumber.
 
         print(f"DEBUG: Fidelity Column Cuts: {cuts}")
 
-        for i, page in enumerate(_pdf_handle.pages):
-            page_num = i + 1
-            p_words = []
-            try:
+        try:
+            for i, page in enumerate(_pdf_handle.pages):
+                page_num = i + 1
+                p_words = []
                 try:
-                    p_words = page.extract_words(x_tolerance=2, y_tolerance=2)
-                except Exception as e:
-                    print(f"DEBUG: Page {page_num} pdfplumber crashed: {e}. Trying pypdf...")
-                    p_words = extract_words_from_pypdf(str(pdf_path), i)
+                    try:
+                        p_words = page.extract_words(x_tolerance=2, y_tolerance=2)
+                    except Exception as e:
+                        print(f"DEBUG: Page {page_num} pdfplumber crashed: {e}. Trying pypdf...")
+                        p_words = extract_words_from_pypdf(str(pdf_path), i)
+                    
+                    if not p_words: continue
                 
-                if not p_words: continue
-            
-                rows = group_words_to_rows(p_words, y_tol=3.0)
-                for r_idx, r in enumerate(rows):
-                    if is_noise_row(r): continue
-                    
-                    row_data = {name: [] for name in cuts.keys()}
-                    for w in r["words"]:
-                        x_mid = (w["x0"] + w["x1"]) / 2
-                        assigned = False
-                        for name, (left, right) in cuts.items():
-                            if left <= x_mid <= right:
-                                row_data[name].append(w["text"])
-                                assigned = True
-                                break
+                    rows = group_words_to_rows(p_words, y_tol=3.0)
+                    for r_idx, r in enumerate(rows):
+                        if is_noise_row(r): continue
                         
-                        if not assigned:
+                        row_data = {name: [] for name in cuts.keys()}
+                        for w in r["words"]:
+                            x_mid = (w["x0"] + w["x1"]) / 2
+                            assigned = False
                             for name, (left, right) in cuts.items():
-                                if left - 5 <= x_mid <= right + 5:
+                                if left <= x_mid <= right:
                                     row_data[name].append(w["text"])
+                                    assigned = True
                                     break
+                            
+                            if not assigned:
+                                for name, (left, right) in cuts.items():
+                                    if left - 5 <= x_mid <= right + 5:
+                                        row_data[name].append(w["text"])
+                                        break
 
-                    row_final = {name: " ".join(parts).strip() for name, parts in row_data.items()}
-                    
-                    all_rows.append({
-                        "date": row_final.get("date", ""),
-                        "value_date": row_final.get("value_date", ""),
-                        "channel": row_final.get("channel", ""),
-                        "description": row_final.get("description", ""),
-                        "credit": row_final.get("credit", ""),
-                        "debit": row_final.get("debit", ""),
-                        "balance": row_final.get("balance", ""),
-                        "is_reversal": False,
-                        "_page": page_num,
-                        "_row": r_idx
-                    })
-            except Exception as e:
-                print(f"DEBUG: Error on Page {page_num}: {e}")
-                continue
+                        row_final = {name: " ".join(parts).strip() for name, parts in row_data.items()}
+                        
+                        all_rows.append({
+                            "date": row_final.get("date", ""),
+                            "value_date": row_final.get("value_date", ""),
+                            "channel": row_final.get("channel", ""),
+                            "description": row_final.get("description", ""),
+                            "credit": row_final.get("credit", ""),
+                            "debit": row_final.get("debit", ""),
+                            "balance": row_final.get("balance", ""),
+                            "is_reversal": False,
+                            "_page": page_num,
+                            "_row": r_idx
+                        })
+                except Exception as e:
+                    print(f"DEBUG: Error on Page {page_num}: {e}")
+                    continue
+        except Exception as e:
+            print(f"Error reading PDF pages: {e}")
+            raise
 
         print(f"DEBUG: Total Fidelity rows extracted: {len(all_rows)}")
         txns = merge_multiline_rows(all_rows)
