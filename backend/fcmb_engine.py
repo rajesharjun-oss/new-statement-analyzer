@@ -54,14 +54,23 @@ def detect_fcmb_columns(words):
     
     return cuts
 
-def extract_fcmb_via_coordinates(pdf_path: Path, config: dict):
+def extract_fcmb_via_coordinates(pdf_path: Path, metadata: dict, pdf: pdfplumber.PDF = None):
     from pdf_extractor import parse_date_smart, first_money, is_noise_row
     
     transactions = []
-    with pdfplumber.open(pdf_path) as pdf:
+    
+    # If pdf handle is provided, use it, otherwise open
+    if pdf is None:
+        _pdf_handle = pdfplumber.open(pdf_path)
+        _auto_close = True
+    else:
+        _pdf_handle = pdf
+        _auto_close = False
+        
+    try:
         cuts = None
-        for i in range(min(3, len(pdf.pages))):
-            words = pdf.pages[i].extract_words()
+        for i in range(min(3, len(_pdf_handle.pages))):
+            words = _pdf_handle.pages[i].extract_words()
             print(f"DEBUG: FCMB Scan P{i} words: {len(words)}")
             cuts = detect_fcmb_columns(words)
             if cuts: break
@@ -69,7 +78,7 @@ def extract_fcmb_via_coordinates(pdf_path: Path, config: dict):
         if not cuts: return [], {}
 
         last_date = None
-        for pg_num, page in enumerate(pdf.pages):
+        for pg_num, page in enumerate(_pdf_handle.pages):
             words = page.extract_words()
             new_cuts = detect_fcmb_columns(words)
             if new_cuts: cuts = new_cuts
@@ -136,4 +145,8 @@ def extract_fcmb_via_coordinates(pdf_path: Path, config: dict):
                     'remarks': desc,
                     'category': 'Uncategorized'
                 })
+    finally:
+        if _auto_close:
+            _pdf_handle.close()
+
     return transactions, {}

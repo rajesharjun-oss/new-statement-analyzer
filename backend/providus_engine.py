@@ -91,13 +91,21 @@ def detect_providus_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[floa
         
     return cuts
 
-def extract_providus_via_tables(pdf_path: Path, metadata: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def extract_providus_via_tables(pdf_path: Path, metadata: Dict[str, Any], pdf: pdfplumber.PDF = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     from pdf_extractor import parse_date_smart, first_money, is_noise_row
     txns = []
     
-    with pdfplumber.open(pdf_path) as pdf:
+    # If pdf handle is provided, use it, otherwise open
+    if pdf is None:
+        _pdf_handle = pdfplumber.open(pdf_path)
+        _auto_close = True
+    else:
+        _pdf_handle = pdf
+        _auto_close = False
+        
+    try:
         # Step 1: Find the global table cuts across all pages using the first page
-        words = pdf.pages[0].extract_words()
+        words = _pdf_handle.pages[0].extract_words()
         cuts = detect_providus_columns(words)
         
         if not cuts:
@@ -112,7 +120,7 @@ def extract_providus_via_tables(pdf_path: Path, metadata: Dict[str, Any]) -> Tup
         for name, bounds in cuts.items():
              col_list.append((name, bounds[0], bounds[1]))
              
-        for pg_num, page in enumerate(pdf.pages):
+        for pg_num, page in enumerate(_pdf_handle.pages):
             words = page.extract_words()
             
             # Group words by Y coordinate (lines)
@@ -182,5 +190,9 @@ def extract_providus_via_tables(pdf_path: Path, metadata: Dict[str, Any]) -> Tup
                     # Continuation row: merge description into the last transaction
                     txns[-1]["description"] += " " + desc
                     txns[-1]["remarks"] = txns[-1]["description"]
+
+    finally:
+        if _auto_close:
+            _pdf_handle.close()
 
     return txns, metadata

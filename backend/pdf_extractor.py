@@ -731,27 +731,27 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
             print(f"DEBUG: Detected Template (Pre-Routing): {bank_identifier}")
             # --- TOP-LEVEL ROUTING: Skip auto-detection if bank is known ---
             if bank_identifier == "providus":
-                 prov_txns, prov_meta = extract_providus_via_tables(Path(pdf_path), metadata)
+                 prov_txns, prov_meta = extract_providus_via_tables(Path(pdf_path), metadata, pdf=pdf)
                  if prov_txns: return [{"transactions": normalize_remarks(prov_txns), "metadata": prov_meta}]
 
             if bank_identifier == "zenith":
                  from zenith_engine import extract_zenith_via_coordinates
-                 zn_txns, zn_meta = extract_zenith_via_coordinates(Path(pdf_path), metadata)
+                 zn_txns, zn_meta = extract_zenith_via_coordinates(Path(pdf_path), metadata, pdf=pdf)
                  if zn_txns: return [{"transactions": normalize_remarks(zn_txns), "metadata": zn_meta}]
 
             if bank_identifier == "wema":
                  from wema_engine import extract_wema_via_coordinates
-                 wm_txns, wm_meta = extract_wema_via_coordinates(Path(pdf_path), metadata)
+                 wm_txns, wm_meta = extract_wema_via_coordinates(Path(pdf_path), metadata, pdf=pdf)
                  if wm_txns: return [{"transactions": normalize_remarks(wm_txns), "metadata": wm_meta}]
 
             if bank_identifier == "sterling":
                  from sterling_engine import extract_sterling_via_coordinates
-                 st_txns, st_meta = extract_sterling_via_coordinates(Path(pdf_path), metadata)
+                 st_txns, st_meta = extract_sterling_via_coordinates(Path(pdf_path), metadata, pdf=pdf)
                  if st_txns: return [{"transactions": normalize_remarks(st_txns), "metadata": st_meta}]
 
             if bank_identifier == "fcmb":
                  from fcmb_engine import extract_fcmb_via_coordinates
-                 fc_txns, fc_meta = extract_fcmb_via_coordinates(Path(pdf_path), metadata)
+                 fc_txns, fc_meta = extract_fcmb_via_coordinates(Path(pdf_path), metadata, pdf=pdf)
                  if fc_txns: return [{"transactions": normalize_remarks(fc_txns), "metadata": fc_meta}]
 
             elif bank_identifier == "uba":
@@ -792,7 +792,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
             # Description, Value Date, Debit, Credit, Balance) are characteristic of Ecobank
             if bank_identifier in ("ecobank", "generic", "unknown"):
                 try:
-                     eco_txns, eco_meta = extract_ecobank_via_tables(Path(pdf_path), metadata)
+                     eco_txns, eco_meta = extract_ecobank_via_tables(Path(pdf_path), metadata, pdf=pdf)
                      if eco_txns:
                          return [{"transactions": normalize_remarks(eco_txns), "metadata": eco_meta}]
                 except Exception as e:
@@ -807,7 +807,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
             # --- 0e) Special Case: Fidelity Table Strategy
             if bank_identifier == "fidelity":
                 try:
-                     fidelity_txns = extract_fidelity_via_tables(Path(pdf_path), metadata)
+                     fidelity_txns, _ = extract_fidelity_via_tables(Path(pdf_path), metadata, pdf=pdf)
                      if fidelity_txns:
                          return [{"transactions": normalize_remarks(fidelity_txns), "metadata": metadata}]
                 except Exception as e:
@@ -2852,7 +2852,7 @@ def extract_zenith_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
 
 
 
-def extract_fidelity_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
+def extract_fidelity_via_tables(pdf_path: Path, metadata: Dict, pdf: pdfplumber.PDF = None) -> List[Dict]:
     """
     Robust word-based extractor for Fidelity Bank.
     Uses column boundaries from header and assigns words by midpoint.
@@ -2860,9 +2860,17 @@ def extract_fidelity_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
     print("DEBUG: Using Fidelity Robust Word-Bucketing Engine")
     
     all_rows = []
-    with pdfplumber.open(pdf_path) as pdf:
+    # If pdf handle is provided, use it, otherwise open
+    if pdf is None:
+        _pdf_handle = pdfplumber.open(pdf_path)
+        _auto_close = True
+    else:
+        _pdf_handle = pdf
+        _auto_close = False
+        
+    try:
         try:
-            page1 = pdf.pages[0]
+            page1 = _pdf_handle.pages[0]
             words = page1.extract_words()
         except Exception as e:
             print(f"DEBUG: Initial pdfplumber crashed: {e}. Trying pypdf for headers...")
@@ -2876,8 +2884,8 @@ def extract_fidelity_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
 
         print(f"DEBUG: Fidelity Column Cuts: {cuts}")
 
-        for i, page in enumerate(pdf.pages):
-            page_num = i + 1
+    for i, page in enumerate(_pdf_handle.pages):
+        page_num = i + 1
             p_words = []
             try:
                 try:
@@ -3209,6 +3217,10 @@ def extract_access_consensus(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict]
             txn["_row"] = 0
             reconciled_txns.append(txn)
 
+    finally:
+        if _auto_close:
+            _pdf_handle.close()
+
     return reconciled_txns, metadata
 
 
@@ -3216,21 +3228,19 @@ def extract_access_consensus(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict]
 
 
 
-def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> Tuple[List[Dict], Dict]:
+def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None, pdf: pdfplumber.PDF = None) -> Tuple[List[Dict], Dict]:
     """
     Dedicated Ecobank extractor using pdfplumber's extract_tables().
-    Features:
-    - Dynamic column mapping (handles 7-col vs 6-col layouts)
-    - Multi-line cell text joined cleanly for descriptions
-    - Amount parsing takes only the first line of text (fixes merged multi-line cells)
-    - Cross-page orphan description rows handled via pending buffer
-    - REFNO extracted from description
-    - OPENING/CLOSING BALANCE rows skipped
-    - Table-level + row-level exception isolation
     """
     if metadata is None:
         metadata = {}
     print(f"DEBUG [Ecobank] Using pdfplumber extract_tables for: {pdf_path}")
+
+    # If pdf handle is provided, use it, otherwise open
+    if pdf is None:
+        _pdf_handle = pdfplumber.open(pdf_path)
+    else:
+        _pdf_handle = pdf
 
     ECO_LINES = {
         "vertical_strategy": "lines",
@@ -3333,8 +3343,15 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> Tuple[L
     pending_desc = ""
     last_txn = None   # reference to the last appended txn for description merging
 
-    with pdfplumber.open(pdf_path) as pdf:
-        for page_idx, page in enumerate(pdf.pages):
+    # If pdf handle is provided, use it, otherwise open
+    if pdf is None:
+        _pdf_handle = pdfplumber.open(pdf_path)
+        _auto_close = True
+    else:
+        _pdf_handle = pdf
+        _auto_close = False
+
+    for page_idx, page in enumerate(_pdf_handle.pages):
             pg = page_idx + 1
             try:
                 tables = page.extract_tables(table_settings=ECO_LINES)
@@ -3455,6 +3472,9 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None) -> Tuple[L
         s = all_txns[0]
         print(f"DEBUG [Ecobank] Sample -> date={s['date']} debit={s['debit']} "
               f"credit={s['credit']} desc={s['description'][:60]}")
+
+    if _auto_close:
+        _pdf_handle.close()
 
     return all_txns, metadata
 

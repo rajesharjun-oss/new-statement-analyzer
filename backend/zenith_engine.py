@@ -91,13 +91,21 @@ def detect_zenith_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float,
         
     return cuts
 
-def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: pdfplumber.PDF = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     from pdf_extractor import parse_date_smart, first_money, is_noise_row
     txns = []
     
-    with pdfplumber.open(pdf_path) as pdf:
+    # If pdf handle is provided, use it, otherwise open
+    if pdf is None:
+        _pdf_handle = pdfplumber.open(pdf_path)
+        _auto_close = True
+    else:
+        _pdf_handle = pdf
+        _auto_close = False
+        
+    try:
         # Step 1: Find the global table cuts across all pages using the first page
-        words = pdf.pages[0].extract_words()
+        words = _pdf_handle.pages[0].extract_words()
         cuts = detect_zenith_columns(words)
         
         if not cuts:
@@ -112,7 +120,7 @@ def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> 
         pending_description = ""
         last_date_y = -999  # Y position of the last date/money row
         
-        for pg_num, page in enumerate(pdf.pages):
+        for pg_num, page in enumerate(_pdf_handle.pages):
             words = page.extract_words()
             
             # Group words by Y coordinate (lines)
@@ -213,5 +221,9 @@ def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> 
                         # Trailing multi-line description
                         txns[-1]["description"] = (txns[-1]["description"] + " " + desc).strip()
                         txns[-1]["remarks"] = txns[-1]["description"]
+
+    finally:
+        if _auto_close:
+            _pdf_handle.close()
 
     return txns, metadata
