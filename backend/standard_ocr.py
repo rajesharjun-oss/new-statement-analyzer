@@ -93,6 +93,7 @@ def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic") -
             "3. Numeric Format: Remove currency symbols and comma formatting. Convert to raw floats (e.g. 100.50). Handle empty values as 0.00.\n"
             "4. Descriptions: Merge multi-line descriptions into a single clean string. Do NOT drop the entire row if it wraps.\n"
             "5. Account Splits: If you see 'BALANCE BROUGHT FORWARD' or currency change, keep it as a separator row.\n"
+            "6. CRITICAL ALIGNMENT: If the statement has a 'Reference' or 'Chq No' column, append its value to the DESCRIPTION. NEVER place reference numbers or account numbers into the DEBIT, CREDIT, or BALANCE fields!\n"
             "Format: Return ONLY raw PSV text (no headers, no markdown). You MUST return exactly 6 columns separated by 5 pipes: DATE|VALUE_DATE|DESCRIPTION|DEBIT|CREDIT|BALANCE. If VALUE_DATE is empty or missing, keep the pipe separators blank."
         )
 
@@ -124,7 +125,12 @@ def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic") -
                 s = str(val).replace(',', '').strip()
                 s = re.sub(r'[^\d\.\-]', '', s)
                 if not s or s == '-' or s == '.': return 0.0
-                return float(s)
+                parsed = float(s)
+                # Safety Clamp: Reject astronomically large floats (hallucinated references e.g. 1e15+)
+                if abs(parsed) > 100000000000000.0:  # 100 Trillion cap
+                    print(f"DEBUG: Rejected hallucinated massive float: {parsed}")
+                    return 0.0
+                return parsed
             except:
                 return 0.0
                 

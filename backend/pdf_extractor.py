@@ -2296,6 +2296,8 @@ def parse_money(text: str) -> float:
         
     try:
         val = float(cleaned)
+        if abs(val) > 100000000000000.0:  # 100 Trillion safety clamp
+            return 0.0
         if "(" in text_str or "-" in text_str:
              return -val
         return val
