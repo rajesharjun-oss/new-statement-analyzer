@@ -127,7 +127,7 @@ def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic") -
                 if not s or s == '-' or s == '.': return 0.0
                 parsed = float(s)
                 # Safety Clamp: Reject astronomically large floats (hallucinated references e.g. 1e15+)
-                if abs(parsed) > 100000000000000.0:  # 100 Trillion cap
+                if abs(parsed) > 10000000000.0:  # 10 Billion cap (10^10)
                     print(f"DEBUG: Rejected hallucinated massive float: {parsed}")
                     return 0.0
                 return parsed
