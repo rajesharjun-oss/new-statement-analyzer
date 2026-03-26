@@ -1,5 +1,5 @@
 # Stage 1: Build React Frontend
-FROM node:18-alpine as frontend_build
+FROM node:20-alpine as frontend_build
 WORKDIR /app/frontend
 
 # Copy frontend dependency files
