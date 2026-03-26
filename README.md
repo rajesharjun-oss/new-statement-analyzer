@@ -2,44 +2,51 @@
 <img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
 </div>
 
-# Run and deploy your AI Studio app
+# AI Bank Statement Analyzer
 
-This contains everything you need to run your app locally.
+A powerful AI-driven tool for extracting, validating, and categorizing transactions from Nigerian bank statements (PDF, Excel, CSV).
 
-View your app in AI Studio: https://ai.studio/apps/drive/19v6lMOKrwyS8J7NIFdcEsJlPKW9vtOgI
+## 🚀 Supported Banks (Verified)
+- **Access Bank** (Searchable & OCR)
+- **UBA** (Searchable & OCR)
+- **WEMA Bank**
+- **FCMB**
+- **Zenith Bank**
+- **GTBank / GTCO** (Multi-statement support)
+- **Providus Bank**
+- **Sterling Bank**
+- **First Bank (FBN)**
 
-# Run and deploy your AI Studio app
-
-This contains everything you need to run your app locally.
-
-View your app in AI Studio: https://ai.studio/apps/drive/19v6lMOKrwyS8J7NIFdcEsJlPKW9vtOgI
-
-## Run Locally (Docker - Recommended)
-
-1.  Set the `OPENAI_API_KEY` in `.env`:
-    `cp .env.example .env`
-    (Then edit `.env` with your key)
-
-2.  Run with Docker Compose:
-    `docker-compose up --build`
-
-3.  Open http://localhost:8000
-
-## Run Locally (Manual)
+## 🛠️ Run Locally (Manual)
 
 **Prerequisites:** Node.js, Python 3.10+
 
-1.  **Backend**:
-    ```bash
-    cd backend
-    pip install -r requirements.txt
-    uvicorn main:app --reload
-    ```
+1. **Environment Setup**:
+   Create a `.env` file in the project root:
+   ```bash
+   GEMINI_API_KEY="your_key_here" # Supports comma-separated keys for rotation
+   OPENAI_API_KEY="optional_fallback_key"
+   ```
 
-2.  **Frontend**:
-    ```bash
-    npm install
-    npm run dev
-    ```
+2. **Backend**:
+   ```bash
+   cd backend
+   pip install -r requirements.txt
+   uvicorn main:app --reload
+   ```
 
-Note: The backend requires `OPENAI_API_KEY` for OCR fallback and advanced categorization.
+3. **Frontend**:
+   ```bash
+   # From the project root
+   npm install
+   npm run dev
+   ```
+
+## 🐳 Run Locally (Docker)
+
+1. `cp .env.example .env` (Add your keys)
+2. `docker-compose up --build`
+3. Open http://localhost:8000
+
+---
+*Powered by Gemini 2.0 Flash for high-accuracy financial OCR.*
