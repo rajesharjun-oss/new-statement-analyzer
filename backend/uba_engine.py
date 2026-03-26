@@ -51,13 +51,15 @@ def parse_uba_ocr_text(json_text: str) -> List[Dict[str, Any]]:
                            "Cheque Number"])
 
             def parse_amt(val):
-                if not val: return 0.0
-                if isinstance(val, (int, float)): 
-                    v = float(val)
-                else:
-                    v = float(str(val).replace(',', '').replace(' ', ''))
-                if abs(v) > 100000000000000.0: return 0.0
-                return v
+                if not val or str(val).isspace(): return 0.0
+                try:
+                    s = str(val).replace(',', '').strip()
+                    v = float(s)
+                    # Safety Clamp: Reject hallucinated massive amounts (>10 Billion)
+                    if abs(v) > 10000000000.0:
+                        return 0.0
+                    return v
+                except: return 0.0
 
             debit = parse_amt(get_val(["Debit", "Dr", "DEBIT", "Withdrawal", "WITHDRAWAL"]))
             credit = parse_amt(get_val(["Credit", "Cr", "CREDIT", "Deposit", "DEPOSIT"]))
