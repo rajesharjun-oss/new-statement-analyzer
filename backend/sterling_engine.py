@@ -131,14 +131,23 @@ def detect_sterling_columns(words):
     print(f"DEBUG: Sterling column cuts: {cuts}")
     return cuts
 
-def extract_sterling_via_coordinates(pdf_path: Path, config: dict):
+def extract_sterling_via_coordinates(pdf_path: Path, metadata: dict, pdf: pdfplumber.PDF = None):
     from pdf_extractor import parse_date_smart, first_money, is_noise_row
     
     transactions = []
-    with pdfplumber.open(pdf_path) as pdf:
+    
+    # If pdf handle is provided, use it, otherwise open
+    if pdf is None:
+        _pdf_handle = pdfplumber.open(pdf_path)
+        _auto_close = True
+    else:
+        _pdf_handle = pdf
+        _auto_close = False
+        
+    try:
         cuts = None
-        for i in range(min(5, len(pdf.pages))):
-            words = pdf.pages[i].extract_words()
+        for i in range(min(5, len(_pdf_handle.pages))):
+            words = _pdf_handle.pages[i].extract_words()
             print(f"DEBUG: Sterling Scan P{i} words: {len(words)}")
             cuts = detect_sterling_columns(words)
             if cuts: break
@@ -150,7 +159,7 @@ def extract_sterling_via_coordinates(pdf_path: Path, config: dict):
         
         col_list = [(name, b[0], b[1]) for name, b in cuts.items()]
         
-        for pg_num, page in enumerate(pdf.pages):
+        for pg_num, page in enumerate(_pdf_handle.pages):
             words = page.extract_words()
             
             # Update cuts per page if header found
@@ -278,4 +287,8 @@ def extract_sterling_via_coordinates(pdf_path: Path, config: dict):
     # Post-process: remove transactions with no date AND no money (orphan continuation lines)
     transactions = [t for t in transactions if t['date'] or t['debit'] or t['credit']]
     
+    finally:
+        if _auto_close:
+            _pdf_handle.close()
+
     return transactions, {}

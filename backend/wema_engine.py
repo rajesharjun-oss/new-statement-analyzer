@@ -84,12 +84,20 @@ def detect_wema_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, f
         
     return cuts
 
-def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: pdfplumber.PDF = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     from pdf_extractor import parse_date_smart, first_money, is_noise_row
     txns = []
     
-    with pdfplumber.open(pdf_path) as pdf:
-        words = pdf.pages[0].extract_words()
+    # If pdf handle is provided, use it, otherwise open
+    if pdf is None:
+        _pdf_handle = pdfplumber.open(pdf_path)
+        _auto_close = True
+    else:
+        _pdf_handle = pdf
+        _auto_close = False
+        
+    try:
+        words = _pdf_handle.pages[0].extract_words()
         cuts = detect_wema_columns(words)
         
         if not cuts:
@@ -97,7 +105,7 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> Tu
              
         print(f"DEBUG: Active WEMA Cuts P0: {cuts}")
         
-        for pg_num, page in enumerate(pdf.pages):
+        for pg_num, page in enumerate(_pdf_handle.pages):
             words = page.extract_words()
             
             new_cuts = detect_wema_columns(words)
@@ -178,5 +186,9 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> Tu
                 elif txns and desc:
                     txns[-1]["description"] += " " + desc
                     txns[-1]["remarks"] = txns[-1]["description"]
+
+    finally:
+        if _auto_close:
+            _pdf_handle.close()
 
     return txns, metadata

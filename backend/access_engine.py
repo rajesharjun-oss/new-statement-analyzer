@@ -119,12 +119,20 @@ def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> 
     
     txns = []
     
-    with pdfplumber.open(pdf_path) as pdf:
+    # If pdf handle is provided, use it, otherwise open
+    if pdf is None:
+        _pdf_handle = pdfplumber.open(pdf_path)
+        _auto_close = True
+    else:
+        _pdf_handle = pdf
+        _auto_close = False
+        
+    try:
         cuts = None
         
         # Try up to first 5 pages to find header row (PDFs may have cover/summary pages)
-        for pg_idx in range(min(5, len(pdf.pages))):
-            words = pdf.pages[pg_idx].extract_words()
+        for pg_idx in range(min(5, len(_pdf_handle.pages))):
+            words = _pdf_handle.pages[pg_idx].extract_words()
             cuts = detect_access_columns(words)
             if cuts:
                 print(f"DEBUG [Access]: Header found on page {pg_idx}")
@@ -139,7 +147,8 @@ def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> 
         pending_description = ""
         pending_reference = ""
         
-        for pg_num, page in enumerate(pdf.pages):
+        txns = []
+        for pg_num, page in enumerate(_pdf_handle.pages):
             words = page.extract_words()
             
             # Group by Y
@@ -214,5 +223,9 @@ def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> 
                     # Final fallback for any other text
                     txns[-1]["description"] = (txns[-1]["description"] + " " + desc).strip()
                     txns[-1]["remarks"] = txns[-1]["description"]
+
+    finally:
+        if _auto_close:
+            _pdf_handle.close()
 
     return txns, metadata
