@@ -694,8 +694,8 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
                 print(f"DEBUG: PDF identified as SEARCHABLE (word count={len(words_sample)}). Prioritizing local extraction.")
 
             # C) Auto-Detect Bank (if needed)
+            combined_text = first_text  # Always initialize for guard checks below
             if bank_identifier == "auto":
-                combined_text = first_text
                 if not combined_text.strip() and is_searchable:
                     # Rare case: first page is blank but searchable exists deeper
                     for p in pdf_pages[1:3]:
