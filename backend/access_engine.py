@@ -91,7 +91,7 @@ def detect_access_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float,
         
     return cuts
 
-def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: pdfplumber.PDF = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     from pdf_extractor import parse_date_smart, first_money, is_noise_row
     import pandas as pd
     
