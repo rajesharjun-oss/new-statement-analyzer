@@ -8,7 +8,7 @@ def detect_sterling_columns(words):
     Detect Sterling Bank column bounds based on headers:
     Trans Date | Narration | Value Date | Money In | Money Out | Balance
     """
-    header_keywords = ["DATE", "NARRATION", "MONEY", "IN", "OUT", "BALANCE", "TRANS", "VALUE"]
+    header_keywords = ["DATE", "NARRATION", "DESCRIPTION", "DETAILS", "MONEY", "IN", "OUT", "BALANCE", "TRANS", "VALUE", "REFERENCE", "REF"]
     header_words = [w for w in words if any(k in w['text'].upper() for k in header_keywords)]
     
     if len(header_words) < 3:
@@ -30,6 +30,16 @@ def detect_sterling_columns(words):
             y_anchor = y
             break
             
+    if not anchor_row:
+        # Fallback: try finding any row with DATE and BALANCE and MONEY
+        for y in sorted(y_groups.keys()):
+            row = sorted(y_groups[y], key=lambda w: w['x0'])
+            row_text = " ".join([w['text'] for w in row]).upper()
+            if "DATE" in row_text and "BALANCE" in row_text and ("MONEY" in row_text or "IN" in row_text):
+                anchor_row = row
+                y_anchor = y
+                break
+    
     if not anchor_row:
         return None
 
@@ -64,6 +74,10 @@ def detect_sterling_columns(words):
     
     x_bal_l, x_bal_r = find_x(["BALANCE"], anchor_row)
     
+    x_ref_l, x_ref_r = find_x(["REFERENCE", "REF"], trans_value_row)
+    if x_ref_l is None:
+        x_ref_l, x_ref_r = find_x(["REFERENCE", "REF"], anchor_row)
+
     if x_narr_l is None or not money_words:
         return None
     
@@ -110,6 +124,9 @@ def detect_sterling_columns(words):
     if x_val_l is not None:
         cuts['description'] = (x_narr_l - 2, x_val_l - 2)
         cuts['value_date'] = (x_val_l - 2, money_in_x0 - 2)
+    elif x_ref_l is not None:
+         cuts['description'] = (x_narr_l - 2, x_ref_l - 2)
+         cuts['reference'] = (x_ref_l - 2, money_in_x0 - 2)
     else:
         cuts['description'] = (x_narr_l - 2, money_in_x0 - 2)
     

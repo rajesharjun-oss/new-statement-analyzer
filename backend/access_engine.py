@@ -7,88 +7,127 @@ import re
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
 
-def detect_access_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
+def detect_access_columns(words: List[Dict[str, Any]], bank_identifier: str = None) -> Dict[str, Tuple[float, float]] | None:
     """
-    Detect column boundaries for Access Bank
+    Detect column boundaries for Access Bank.
+    Handles multiple template variants including:
+    - Standard: TRANSACTION DETAILS | REFERENCE | WITHDRAWALS | LODGEMENTS | BALANCE
+    - Variant 2: Date | Transaction Details | Reference | Value Date | Withdrawals | Lodgements | Balance
     """
-    # Collect all potential header words first
-    header_keywords = ["TRANSACTION", "DETAILS", "LODGEMENTS", "WITHDRAWALS", "REFERENCE", "BALANCE", "DATE"]
+    if not words: return None
+
+    # 1. FIND HEADER BANDS
+    keywords = ["DATE", "TRANSACTION", "DETAILS", "DESCRIPTION", "NARRATION", "REFERENCE", "REF", "VALUE", "WITHDRAWALS", "DEBIT", "LODGEMENTS", "CREDIT", "BALANCE", "BAL"]
+    
     header_words = []
     for w in words:
-        txt = w["text"].upper().strip()
-        if any(k in txt for k in header_keywords) or "DATE" in txt:
-            header_words.append(w)
+        txt = (w.get("text") or "").upper().strip()
+        for k in keywords:
+            if k in txt:
+                header_words.append(w)
+                break
             
-    if not header_words:
-        print(f"DEBUG [Access]: No header keywords found at all")
+    if not header_words: return None
+
+    rows = {}
+    for w in header_words:
+        y = round(w['top'])
+        if y not in rows: rows[y] = []
+        rows[y].append(w)
+    
+    best_y = -1
+    max_indicators = 0
+    for y, row_words in rows.items():
+        band = [w for w in header_words if abs(w['top'] - y) < 8.0]
+        inds = set()
+        for wb in band:
+            t = wb["text"].upper()
+            for k in keywords:
+                if k in t: inds.add(k)
+        
+        if len(inds) >= max_indicators:
+            max_indicators = len(inds)
+            best_y = y
+            
+    if max_indicators < 4:
         return None
 
-    # Fully dynamic: find the Y-band with the most header keywords
-    # Use 5px tolerance to handle multi-line headers (e.g. Y=250 and Y=258)
-    tops = sorted(set([round(w['top'], 0) for w in header_words]))
-    best_band = []
+    active_band = [w for w in header_words if abs(w['top'] - best_y) < 8.0]
     
-    for t in tops:
-        # Collect all header words within 8px of this Y position (handles multi-line headers)
-        band = [w for w in header_words if abs(w['top'] - t) < 8.0]
-        if len(band) > len(best_band):
-            best_band = band
-    
-    print(f"DEBUG [Access]: Found {len(header_words)} header words, best band has {len(best_band)} words at Y~{round(best_band[0]['top']) if best_band else '?'}")
+    def find_x(subs, is_right=False):
+        found_matches = []
+        for word_dict in active_band:
+            original_text = word_dict.get("text", "")
+            if original_text is None:
+                continue
             
-    def find_col(sub: str):
-        for w in best_band:
-            if sub in w["text"].upper(): return w["x0"], w["x1"]
-        return None, None
-
-    # Find both edges for each column with broader match
-    headers = []
-    def add_h(name, sub, alt=None):
-        l, r = find_col(sub)
-        if l is None and alt: l, r = find_col(alt)
-        if l is not None: headers.append((name, l, r))
-
-    add_h("date", "DATE")
-    add_h("description", "DETAILS", "TRANSACTION")
-    add_h("reference", "REFERENCE", "REF")
-    add_h("value_date", "VALUE", "VAL")
-    add_h("debit", "WITHDRAWALS", "DEBIT")
-    add_h("credit", "LODGEMENTS", "CREDIT")
-    add_h("balance", "BALANCE", "BAL")
-    
-    headers = sorted(headers, key=lambda x: x[1])
-    
-    # Check if we have enough headers to be dynamic
-    if len(headers) >= 4:
-        # Calculate cuts at the midpoint of GAPS
-        cuts = {}
-        for i in range(len(headers)):
-            name, x0, x1 = headers[i]
-            # Use actual x1 if available, else x0+gap
-            start = cuts[headers[i-1][0]][1] if i > 0 else -math.inf
+            upper_text = str(original_text).upper().strip()
             
-            if i < len(headers) - 1:
-                next_name, next_x0, next_x1 = headers[i+1]
-                end = (x1 + next_x0) / 2
-            else:
-                end = math.inf
-            cuts[name] = (start, end)
-    else:
-        # Robust fallback to standard Access coordinates
-        print(f"WARN [Access]: Deep header search failed (found {len(headers)}). Using standard fallbacks.")
-        cuts = {
-            "date": (-math.inf, 185),
-            "description": (185, 405),
-            "reference": (405, 478),
-            "value_date": (478, 540),
-            "debit": (540, 610),
-            "credit": (610, 680),
-            "balance": (680, math.inf)
-        }
+            for s in subs:
+                search_term = str(s).upper().strip()
+                match = search_term in upper_text
+                if match:
+                    found_matches.append(word_dict)
+                    break # Found a match for this word
+                    
+        if not found_matches: 
+            return None
+        val = max(m["x1"] for m in found_matches) if is_right else min(m["x0"] for m in found_matches)
+        return val
+
+    # 2. EXTRACT COORDINATES
+    x_date = find_x(["Date"])
+    x_details = find_x(["Details", "Transaction", "Description", "Narration"])
+    x_ref = find_x(["Ref", "Reference"])
+    x_val = find_x(["Value"])
+    x_with = find_x(["Withdrawals", "Debit"], is_right=True)
+    x_lodge = find_x(["Lodgements", "Credit"], is_right=True)
+    x_bal = find_x(["Balance", "Bal"], is_right=True)
+
+    if not all([x_date, x_details, x_ref, x_with or x_lodge, x_bal]):
+        print(f"DEBUG [Access]: Missing core columns: Date={x_date}, Details={x_details}, Ref={x_ref}, With={x_with}, Lodge={x_lodge}, Bal={x_bal}")
+        return None
+
+    # 3. CONSTRUCT CUTS (Midpoint based for max width)
+    # Goal: Use the space between headers as boundaries to avoid clipping large numbers
     
-    print(f"DEBUG [Access]: Detected headers {headers}")
-    print(f"DEBUG [Access]: Derived cuts: {cuts}")
+    # Sort detected headers by their x-coordinate to build a sequence
+    # We use (name, left, right)
+    header_anchors = []
+    if x_date is not None: header_anchors.append(("date", x_date, x_date + 40))
+    if x_details is not None: header_anchors.append(("description", x_details, x_details + 60))
+    if x_ref is not None: header_anchors.append(("reference", x_ref, x_ref + 40))
+    if x_val is not None: header_anchors.append(("value_date", x_val, x_val + 40))
+    
+    # Money columns are usually right-aligned or centered under wide headers
+    # For Access 2.0: Withdrawals (320-385), Lodgements (420-466), Balance (509-562)
+    if x_with is not None: header_anchors.append(("debit", x_with - 60, x_with))
+    if x_lodge is not None: header_anchors.append(("credit", x_lodge - 60, x_lodge))
+    if x_bal is not None: header_anchors.append(("balance", x_bal - 60, x_bal))
+    
+    header_anchors.sort(key=lambda x: x[1])
+    
+    cuts = {}
+    for i in range(len(header_anchors)):
+        name, h_left, h_right = header_anchors[i]
         
+        # Left boundary: midpoint to previous anchor's right, or 0
+        if i == 0:
+            start = 0.0
+        else:
+            prev_name, prev_l, prev_r = header_anchors[i-1]
+            start = (prev_r + h_left) / 2
+            
+        # Right boundary: midpoint to next anchor's left, or 1000
+        if i == len(header_anchors) - 1:
+            end = 1000.0
+        else:
+            next_name, next_l, next_r = header_anchors[i+1]
+            end = (h_right + next_l) / 2
+            
+        cuts[name] = (start, end)
+
+    print(f"DEBUG [Access]: Generated cuts: {cuts}")
     return cuts
 
 def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: pdfplumber.PDF = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -128,18 +167,17 @@ def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
         _auto_close = False
         
     try:
+        # Dynamic cuts: start with None, then update on each page if a header is found
         cuts = None
         
-        # Try up to first 5 pages to find header row (PDFs may have cover/summary pages)
+        # We still do a pre-scan of first 5 pages just to see if we can identify it at all
         for pg_idx in range(min(5, len(_pdf_handle.pages))):
             words = _pdf_handle.pages[pg_idx].extract_words()
-            cuts = detect_access_columns(words)
-            if cuts:
-                print(f"DEBUG [Access]: Header found on page {pg_idx}")
+            if detect_access_columns(words):
+                print(f"DEBUG [Access]: Initial header signature found on page {pg_idx}")
                 break
-        
-        if not cuts:
-            print(f"DEBUG [Access]: Header detection failed on all pages")
+        else:
+            print(f"DEBUG [Access]: No Access header signature found in first 5 pages.")
             return [], metadata
              
         print(f"DEBUG: Active Access Cuts: {cuts}")
@@ -151,6 +189,15 @@ def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
         for pg_num, page in enumerate(_pdf_handle.pages):
             words = page.extract_words()
             
+            # Update cuts for THIS page if a header is present
+            new_cuts = detect_access_columns(words)
+            if new_cuts:
+                cuts = new_cuts
+                print(f"DEBUG [Access]: Cuts updated for page {pg_num}")
+            
+            if not cuts:
+                continue
+                
             # Group by Y
             rows_dict = {}
             for w in words:

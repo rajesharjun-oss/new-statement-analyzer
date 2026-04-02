@@ -15,6 +15,7 @@ from excel_extractor import extract_excel_transactions
 from validation import validate_totals
 from categorization import categorize_transactions
 from excel_generator import generate_excel
+from claude_service import generate_audit_summary
 
 app = FastAPI()
 
@@ -86,6 +87,48 @@ async def analyze_statement(
             # Excel/CSV handling - typically one statement
             txns, meta = extract_excel_transactions(stored_path)
             statement_results = [{"transactions": txns, "metadata": meta}]
+
+        # Step 1b: QUALITY GATE — Claude fallback for bad extractions
+        if file_ext == '.pdf' and os.getenv('ANTHROPIC_API_KEY'):
+            for i, stmt in enumerate(statement_results):
+                txns = stmt.get("transactions", [])
+                meta = stmt.get("metadata", {})
+                detected_bank = meta.get('bank', 'generic')
+
+                needs_claude = False
+                reason = ""
+
+                # Condition 1: Zero transactions
+                if not txns:
+                    needs_claude = True
+                    reason = "0 transactions extracted"
+
+                # Condition 2: High empty description rate (>25%)
+                elif txns:
+                    empty_count = sum(1 for t in txns if not (t.get('description') or t.get('remarks') or '').strip())
+                    if len(txns) > 0 and empty_count / len(txns) > 0.25:
+                        needs_claude = True
+                        reason = f"{empty_count}/{len(txns)} empty descriptions"
+
+                # Condition 3: Unknown bank with no transactions
+                if detected_bank == 'generic' and not txns:
+                    needs_claude = True
+                    reason = "unknown bank template"
+
+                if needs_claude and not meta.get('_claude_retried'):
+                    print(f"QUALITY GATE: Triggering Claude extraction fallback. Reason: {reason}")
+                    try:
+                        from claude_extraction import extract_with_claude
+                        claude_txns = extract_with_claude(str(stored_path))
+                        if claude_txns and len(claude_txns) > len(txns):
+                            print(f"QUALITY GATE: Claude returned {len(claude_txns)} txns (vs {len(txns)} original). Using Claude results.")
+                            from pdf_extractor import normalize_remarks
+                            statement_results[i] = {
+                                "transactions": normalize_remarks(claude_txns),
+                                "metadata": {**meta, "_claude_retried": True, "method": "claude_fallback"}
+                            }
+                    except Exception as e:
+                        print(f"QUALITY GATE: Claude fallback failed: {e}")
 
         processed_statements = []
         for stmt in statement_results:
@@ -162,9 +205,24 @@ async def analyze_statement(
         success = True
         preview_txns = processed_statements[0]["transactions"] if processed_statements else []
         
+        # Step 5: Deep Audit Summary (Claude only)
+        audit_summary = None
+        if os.getenv("ANTHROPIC_API_KEY") and processed_statements:
+            all_txns = []
+            for s in processed_statements:
+                all_txns.extend(s["transactions"])
+            audit_summary = generate_audit_summary(all_txns, {
+                **primary_meta,
+                "total_debits": total_debit,
+                "total_credits": total_credit
+            })
+
         return {
             "file_id": file_id, 
-            "summary": summary, 
+            "summary": {
+                **summary,
+                "auditSummary": audit_summary
+            }, 
             "downloadUrl": download_url,
             "transactions": preview_txns
         }

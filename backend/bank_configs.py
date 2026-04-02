@@ -32,16 +32,16 @@ BANK_CONFIGS = {
             "trans_date": r"Transaction\.?\s*Date",
             "value_date": r"Value\.?\s*Date",
             "reference": r"Ref",
-            "debit": r"Debit",
-            "credit": r"Credit",
+            "debit": r"Debit|Withdrawals",
+            "credit": r"Credit|Lodgements",
             "balance": r"Balance",
-            "remarks": r"Description|Narration"
+            "remarks": r"Description|Narration|Transaction Details"
         },
         "metadata_patterns": {
-            "account_name": r"Account Name[:\s]+([A-Z\s&]+)",
-            "statement_period": r"Period[:\s]+(\d{2}-\w{3}-\d{4})\s+to\s+(\d{2}-\w{3}-\d{4})",
-            "total_debit": r"Total Debit[:\s]+([\d,]+\.\d{2})",
-            "total_credit": r"Total Credit[:\s]+([\d,]+\.\d{2})",
+            "account_name": r"Account Name[:\s]+([A-Z\s&]+?)(?=\s+Total|$)",
+            "statement_period": r"Period[:\s]+(\d{1,2}(?:-|\/)\w{3,}(?:-|\/)\d{2,4})\s+to\s+(\d{1,2}(?:-|\/)\w{3,}(?:-|\/)\d{2,4})",
+            "total_debit": r"Total\s+(?:Debit|Withdrawals)[:\s]+([\d,]+\.\d{2})",
+            "total_credit": r"Total\s+(?:Credit|Deposits|Lodgements)[:\s]+([\d,]+\.\d{2})",
             "opening_balance": r"Opening Balance[:\s]+([\d,]+\.\d{2})",
             "closing_balance": r"Closing Balance[:\s]+([\d,]+\.\d{2})"
         }

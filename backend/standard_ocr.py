@@ -158,8 +158,11 @@ def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic") -
             else:
                 continue
                 
-            # Skip headers
-            if 'DATE' in date_val.upper() or 'DESCRIPTION' in desc_val.upper(): continue
+            # Skip headers and summary rows
+            desc_upper = desc_val.upper()
+            if 'DATE' in date_val.upper() or 'DESCRIPTION' in desc_upper: continue
+            if any(kw in desc_upper for kw in ['TOTAL', 'SUM', 'BROUGHT FORWARD', 'CARRIED FORWARD', 'BALANCE B/F', 'BALANCE C/F', 'OPENING BALANCE', 'CLOSING BALANCE', 'PAGE TOTAL']): 
+                continue
                 
             standard_txns.append({
                 'date': date_val,
