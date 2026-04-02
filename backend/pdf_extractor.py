@@ -11,11 +11,11 @@ from typing import List, Dict, Tuple, Any, Optional
 from dataclasses import dataclass
 
 from uba_engine import detect_uba_columns, parse_uba_ocr_text
-from access_engine import extract_access_via_coordinates
+from access_engine import extract_access_via_coordinates, detect_access_columns
 from providus_engine import extract_providus_via_tables
 from zenith_engine import extract_zenith_via_coordinates
 from wema_engine import extract_wema_via_coordinates
-from sterling_engine import extract_sterling_via_coordinates
+from sterling_engine import extract_sterling_via_coordinates, detect_sterling_columns
 from fcmb_engine import extract_fcmb_via_coordinates
 try:
     from standard_ocr import extract_text_with_gemini_vision, extract_transactions_via_ai
@@ -279,6 +279,7 @@ def detect_column_cuts_from_header(words: List[Dict[str, Any]], bank_identifier:
         ("Fidelity", detect_fidelity_columns),
         ("AptSecurities", detect_apt_columns),
         ("GTCO", detect_gtco_columns),
+        ("Sterling", detect_sterling_columns),
         ("GTBank", detect_gtbank_columns) # Fallback last
     ]
     
@@ -674,24 +675,31 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
             if not pdf_pages:
                 return [{"transactions": [], "metadata": {"error": "PDF has no pages"}}]
 
-            # A) Metadata Extraction (Consolidated)
-            first_page = pdf_pages[0]
-            first_text = first_page.extract_text() or ""
-            metadata.update(parse_statement_metadata(first_text))
-            
-            if len(pdf_pages) > 1:
-                last_text = pdf_pages[-1].extract_text() or ""
-                last_meta = parse_statement_metadata(last_text)
-                for key in ["statement_total_debit", "statement_total_credit", "closing_balance", "opening_balance"]:
-                    if last_meta.get(key) is not None:
-                        metadata[key] = last_meta[key]
-
-            # B) Searchable Density Check (Skip OCR if possible)
+            first_text = ""
             is_searchable = False
-            words_sample = first_page.extract_words(x_tolerance=2, y_tolerance=2)
-            if len(words_sample) > 50:
-                is_searchable = True
-                print(f"DEBUG: PDF identified as SEARCHABLE (word count={len(words_sample)}). Prioritizing local extraction.")
+            try:
+                # A) Metadata Extraction (Consolidated)
+                first_page = pdf_pages[0]
+                first_text = first_page.extract_text() or ""
+                metadata.update(parse_statement_metadata(first_text))
+                
+                if len(pdf_pages) > 1:
+                    last_text = pdf_pages[-1].extract_text() or ""
+                    last_meta = parse_statement_metadata(last_text)
+                    for key in ["statement_total_debit", "statement_total_credit", "closing_balance", "opening_balance"]:
+                        if last_meta.get(key) is not None:
+                            metadata[key] = last_meta[key]
+
+                # B) Searchable Density Check (Skip OCR if possible)
+                words_sample = first_page.extract_words(x_tolerance=2, y_tolerance=2)
+                if len(words_sample) > 50:
+                    is_searchable = True
+                    print(f"DEBUG: PDF identified as SEARCHABLE (word count={len(words_sample)}). Prioritizing local extraction.")
+            except Exception as e:
+                print(f"DEBUG: pdfplumber native text engine crashed: {e}")
+                print("DEBUG: Corrupted or secured PDF layout detected. Forcing Vision OCR Fallback.")
+                is_searchable = False
+                first_text = ""
 
             # C) Auto-Detect Bank (if needed)
             combined_text = first_text  # Always initialize for guard checks below
@@ -852,6 +860,18 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
                              return [{"transactions": transactions, "metadata": {}}]
                     except Exception as e:
                         print(f"DEBUG: Gemini Multimodal fallback failed: {e}")
+
+                # Claude fallback (between Gemini and legacy OCR)
+                if os.getenv("ANTHROPIC_API_KEY"):
+                    print(f"DEBUG: Trying Claude extraction fallback...")
+                    try:
+                        from claude_extraction import extract_with_claude
+                        claude_txns = extract_with_claude(str(pdf_path))
+                        if claude_txns:
+                            print(f"DEBUG: Claude extracted {len(claude_txns)} txns")
+                            return [{"transactions": normalize_remarks(claude_txns), "metadata": metadata}]
+                    except Exception as e:
+                        print(f"DEBUG: Claude extraction fallback failed: {e}")
 
                 # Legacy OCR fallback as last resort
                 print(f"DEBUG: Falling back to legacy OCR engine (Engine: {os.getenv('OCR_ENGINE', 'openai')})...")
@@ -1508,64 +1528,6 @@ def detect_ecobank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float
     return cuts
 
 
-def detect_access_columns(words: List[Dict], bank_identifier: str) -> Dict[str, Tuple[float, float]] | None:
-    """Access Bank: Date | Transaction Details | Reference | Value Date | Withdrawals | Lodgements | Balance"""
-    if bank_identifier != "accessbank": return None
-    
-    # 1. Gather x-coordinates of known headers
-    def find_x(regex):
-        matches = [w for w in words if re.search(regex, w["text"], re.I)]
-        return min([w["x0"] for w in matches]) if matches else None
-
-    # Right-aligned columns need right edge
-    def find_x_right(regex):
-        matches = [w for w in words if re.search(regex, w["text"], re.I)]
-        return max([w["x1"] for w in matches]) if matches else None
-
-    x_date = find_x(r"Date")
-    x_details = find_x(r"Details|Narration|Description|Particulars")
-    x_ref = find_x(r"Ref|Chq")
-    x_val = find_x(r"Value")
-    x_with = find_x_right(r"Withdraw|Debit|Dr\b")
-    x_lodge = find_x_right(r"Lodg|Deposit|Credit|Cr\b")
-    x_bal = find_x_right(r"Balance|Bal\b")
-
-    if not all([x_date, x_details, x_with, x_lodge, x_bal]):
-        print(f"DEBUG: ACCESS DETECT FAILED. Found: date={x_date}, det={x_details}, with={x_with}, lodge={x_lodge}, bal={x_bal}")
-        return None
-
-    # 2. Build cuts directly
-    # Date | Details | Ref | Value | With | Lodge | Bal
-    cuts = {}
-    
-    # Date: 0 to Details
-    cuts["date"] = (0, x_details - 5)
-    
-    # Details: Date to Ref (or Value if Ref missing)
-    next_col = x_ref if x_ref else x_val
-    cuts["description"] = (x_details - 5, next_col - 5)
-    
-    # Reference
-    if x_ref and x_val:
-        cuts["reference"] = (x_ref - 5, x_val - 5)
-    elif x_ref:
-        cuts["reference"] = (x_ref - 5, x_with - 50) # Fallback
-
-    # Value Date
-    if x_val:
-        cuts["value_date"] = (x_val - 5, x_with - 10)
-
-    # Withdrawals (Debit)
-    cuts["debit"] = (x_with - 80, x_with + 5)
-    
-    # Lodgements (Credit)
-    cuts["credit"] = (x_lodge - 80, x_lodge + 5)
-    
-    # Balance
-    cuts["balance"] = (x_bal - 80, x_bal + 5)
-
-    print(f"DEBUG: ACCESS columns: {cuts.keys()}")
-    return cuts
 
 def detect_fidelity_columns(words: List[Dict], bank_identifier: str) -> Dict[str, Tuple[float, float]] | None:
     """Fidelity: Transaction Date | Value Date | Channel | Details | Pay In | Pay Out | Balance OR Date | Transaction Details | Reference | Value Date | Withdrawals | Lodgements | Balance"""

@@ -6,6 +6,7 @@ import re
 import os
 import math
 from typing import List, Dict, Any, Optional
+from claude_service import categorize_with_claude
 
 # --- 1. CONFIGURATION ---
 
@@ -363,16 +364,32 @@ def categorize_transactions(transactions: List[Dict]) -> List[Dict]:
     
     for i, txn in enumerate(transactions):
         categorize_single_transaction(txn)
-        if txn.get('category') in ['Unallocated', 'Uncategorized Expense', 'Uncategorized Income']:
+        cat = txn.get('category')
+        conf = txn.get('confidence', 0.0)
+        source = txn.get('decision_source')
+        
+        is_unallocated = cat in ['Unallocated', 'Uncategorized Expense', 'Uncategorized Income']
+        is_low_conf_transfer = (cat == 'Inter-Account / Treasury Transfer' and source == 'AI_HEURISTIC' and conf <= 0.6)
+        
+        if is_unallocated or is_low_conf_transfer:
             unallocated_indices.append(i)
             
     # AI fallback for unallocated (batch processing)
-    # Prefer OpenAI for categorization if available, else Gemini
     if unallocated_indices:
         try:
             unallocated = [transactions[i] for i in unallocated_indices]
             if unallocated:
-                if os.getenv('OPENAI_API_KEY'):
+                # Get all categories from VENDOR_MAPPING + Standard ones
+                available_categories = list(VENDOR_MAPPING.keys()) + [
+                    "Operating Income", "Inter-Account / Treasury Transfer", "Bank Charges", 
+                    "Salaries & Wages", "Staff Welfare", "Security & Safety", 
+                    "Repairs & Maintenance", "Office Rent / Lease", "WHT Receivable", "Interest Income"
+                ]
+                available_categories = sorted(list(set(available_categories)))
+
+                if os.getenv('ANTHROPIC_API_KEY'):
+                    categorize_with_claude(unallocated, available_categories)
+                elif os.getenv('OPENAI_API_KEY'):
                     categorize_with_openai(unallocated)
                 elif os.getenv('GEMINI_API_KEY'):
                     categorize_with_gemini(unallocated)

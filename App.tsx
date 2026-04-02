@@ -474,6 +474,7 @@ export default function App() {
                                           <option value="providus">Providus Bank</option>
                                           <option value="fcmb">FCMB</option>
                                           <option value="sterling">Sterling Bank</option>
+                                          <option value="standard_chartered">Standard Chartered</option>
                                        </select>
                                     </div>
 
