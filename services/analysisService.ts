@@ -30,6 +30,7 @@ export const analyzeDocument = async (
         organizationName: summary.accountName || "Unknown Org",
         bankName: summary.bank || bankId,
         downloadUrl: backendResult.downloadUrl,
+        backend_version: backendResult.backend_version,
         stats: {
             total_txns: transactions.length,
             rule_hits: 0,

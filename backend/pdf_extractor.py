@@ -17,6 +17,7 @@ from zenith_engine import extract_zenith_via_coordinates
 from wema_engine import extract_wema_via_coordinates
 from sterling_engine import extract_sterling_via_coordinates, detect_sterling_columns
 from fcmb_engine import extract_fcmb_via_coordinates
+from utils import parse_date_smart, DATE_DMY_RE, DATE_MDY_SL_RE, DATE_DMY_YY_RE, ECO_DATE_RE
 try:
     from standard_ocr import extract_text_with_gemini_vision, extract_transactions_via_ai
     GEMINI_AVAILABLE = True
@@ -53,11 +54,6 @@ def looks_like_ref(tok: str) -> bool:
     t = tok.strip().strip("'")
     return len(t) >= 6 and any(c.isdigit() for c in t)  # Must contain digits
 
-# Flexible date patterns
-DATE_DMY_RE = re.compile(r"^\d{1,2}-[A-Za-z]{3}-\d{4}$")       # 01-Jan-2023 OR 1-JAN-2026
-DATE_MDY_SL_RE = re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$")      # 10/1/2025 (Access)
-DATE_DMY_YY_RE = re.compile(r"^\d{2}-[A-Za-z]{3}-\d{2}$")    # 15-Jan-21 (Fidelity)
-ECO_DATE_RE = re.compile(r"^\d{2}-[A-Za-z]{3}-\d{4}$")      # 05-Jun-2025 (Ecobank)
 MONEY_RE = re.compile(r"^-?[\d,]+(?:\.\d{2})?$")             # Standard money pattern
 ECO_MONEY_RE = re.compile(r"^-?\d{1,3}(?:,\d{3})*(?:\.\d{2})$|^-?\d+(?:\.\d{2})$")
 
@@ -346,33 +342,6 @@ def detect_column_cuts_from_header(words: List[Dict[str, Any]], bank_identifier:
     # Last resort fallback if everything failed
     return detect_gtbank_columns(words)
 
-
-def parse_date_smart(date_str: str) -> str | None:
-    """
-    Parse various date formats robustly.
-    Normalization: DD-MMM-YYYY (e.g., 15-Jan-2023)
-    """
-    # Remove soft hyphens \xad often found in GTCO PDFs
-    s = (date_str or "").replace("\xad", "").strip()
-    if not s or len(s) < 4: # Relaxed for partial matches during merging
-        return None
-    
-    # Standard: 01-Jan-2023
-    if DATE_DMY_RE.match(s):
-        return s
-        
-    try:
-        # Use pandas for robust parsing. dayfirst=True is critical for Nigerian banks.
-        dt = pd.to_datetime(s, dayfirst=True, errors='coerce')
-        if pd.isna(dt):
-            # Check for DD-MMM-YY (Fidelity 15-Jan-21)
-            if DATE_DMY_YY_RE.match(s):
-                parts = s.split('-')
-                return f"{parts[0]}-{parts[1]}-20{parts[2]}"
-            return None
-        return dt.strftime("%d-%b-%Y")
-    except:
-        return None
 
 # Strict money parsing (Allowing 1 or 2 decimal places for squeezed numbers)
 MONEY_RE = re.compile(r"^-?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})$|^-?\d+(?:\.\d{1,2})$")
@@ -748,8 +717,10 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config
                  if zn_txns: return [{"transactions": normalize_remarks(zn_txns), "metadata": zn_meta}]
 
             if bank_identifier == "wema":
+                 print("\n!!! ROUTING: Wema Bank Identified - Calling Unified 2.1 Engine !!!")
                  from wema_engine import extract_wema_via_coordinates
                  wm_txns, wm_meta = extract_wema_via_coordinates(Path(pdf_path), metadata, pdf=pdf)
+                 print(f"!!! ROUTING: Wema Engine returned {len(wm_txns)} transactions\n")
                  if wm_txns: return [{"transactions": normalize_remarks(wm_txns), "metadata": wm_meta}]
 
             if bank_identifier == "sterling":

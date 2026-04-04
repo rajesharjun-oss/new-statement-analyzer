@@ -230,11 +230,13 @@ export default function App() {
    const [batchStatus, setBatchStatus] = useState<string>("");
 
    const handleFileProcess = async (file: File) => {
+      setAnalysisResult(null); // FORCE RESET - DO ACTUAL WORK
+      setHasFile(false);
       setFileName(file.name);
       setIsAnalyzing(true);
       setError(null);
       setProcessingTime(0);
-      setBatchStatus(""); // Reset
+      setBatchStatus("");
 
       const startTime = Date.now();
       const timerInterval = setInterval(() => {
@@ -352,7 +354,17 @@ export default function App() {
                   <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#9B87FF] to-[#4F85FF] flex items-center justify-center shadow-lg shadow-purple-900/20">
                      <ShieldCheck className="w-4 h-4 text-white" />
                   </div>
-                  <span className="text-[15px] font-bold text-white tracking-tight">LedgerSentinel</span>
+                  <div className="flex flex-col">
+                     <span className="text-[15px] font-bold text-white tracking-tight">LedgerSentinel</span>
+                     <div className="flex gap-1.5 items-center">
+                        <Badge variant="purple" className="text-[9px] py-0 px-1 opacity-80">v2.1 STABLE</Badge>
+                        {analysisResult?.backend_version && (
+                           <Badge variant="success" className="text-[9px] py-0 px-1 bg-green-500/10 text-green-400 border-green-500/20">
+                              API: {analysisResult.backend_version}
+                           </Badge>
+                        )}
+                     </div>
+                  </div>
                </div>
 
                <div className="flex items-center gap-6">
