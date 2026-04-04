@@ -32,7 +32,8 @@ export async function analyzeWithBackend(
         onProgress('Uploading to backend...', 10);
     }
 
-    const response = await fetch(`${BACKEND_URL}/analyze`, {
+    const cacheBuster = Date.now();
+    const response = await fetch(`${BACKEND_URL}/analyze?t=${cacheBuster}`, {
         method: 'POST',
         body: formData
     });

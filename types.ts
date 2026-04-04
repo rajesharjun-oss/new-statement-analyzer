@@ -35,6 +35,7 @@ export interface AnalysisResult {
   bankName: string;
   downloadUrl?: string;
   stats?: AnalysisStatistics;
+  backend_version?: string;
 }
 
 export enum AppStatus {

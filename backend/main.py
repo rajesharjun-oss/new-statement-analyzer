@@ -59,6 +59,9 @@ async def analyze_statement(
     file: UploadFile = File(...),
     bank: str = Form("auto")  # auto, gtbank, accessbank, firstbank, zenith, uba, etc.
 ):
+    print(f"\n{'!'*40}")
+    print(f"!!! [ANALYZE] Request received: {file.filename} (Bank: {bank})")
+    print(f"{'!'*40}\n")
     """
     Main endpoint: accepts PDF, returns summary + download URL
     
@@ -219,6 +222,7 @@ async def analyze_statement(
 
         return {
             "file_id": file_id, 
+            "backend_version": "v2.1-STABLE",
             "summary": {
                 **summary,
                 "auditSummary": audit_summary
