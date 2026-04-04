@@ -95,7 +95,9 @@ def extract_wema_summary(words: List[Dict[str, Any]]) -> Dict[str, float]:
             parts = line_txt.split(":")
             if len(parts) > 1:
                 val = parse_wema_money(parts[-1])
-                if val: summary["statement_total_debit"] = val
+                if val: 
+                     summary["statement_total_debit"] = val
+                     print(f"  [WEMA-SUMMARY] Statement Total Debit Found: {val:,.2f}")
                 
         if "TOTAL CREDIT" in line_txt.upper():
             parts = line_txt.split(":")
@@ -163,9 +165,11 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
                 
                 row_data = {k: "" for k in cuts.keys()}
                 for w in row_words:
-                    word_mid = (w['x0'] + w['x1']) / 2.0
+                    # AREA-BASED INTERSECTION (Unified 2.1 STABLE)
+                    # Instead of midpoint, we check if the word overlaps with the column zone
                     for col_name, (c_start, c_end) in cuts.items():
-                        if c_start <= word_mid < c_end:
+                        overlap = min(w['x1'], c_end) - max(w['x0'], c_start)
+                        if overlap > (w['x1'] - w['x0']) * 0.5: # Over 50% overlap
                             row_data[col_name] = (row_data[col_name] + " " + w['text']).strip()
                             break
                             
