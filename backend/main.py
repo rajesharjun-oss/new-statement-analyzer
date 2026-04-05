@@ -60,8 +60,16 @@ async def analyze_statement(
     bank: str = Form("auto")  # auto, gtbank, accessbank, firstbank, zenith, uba, etc.
 ):
     print(f"\n{'!'*40}")
-    print(f"!!! [ANALYZE] Request received: {file.filename} (Bank: {bank})")
+    print(f"!!! [ANALYZE-FORENSIC] Request received: {file.filename} (Bank: {bank}) !!!")
     print(f"{'!'*40}\n")
+    
+    # Audit file size
+    try:
+        content = await file.read()
+        await file.seek(0) # Reset for later use
+        print(f"  [FORENSIC] Upload Buffer Size: {len(content)} bytes")
+    except Exception as e:
+        print(f"  [FORENSIC] Error reading buffer: {e}")
     """
     Main endpoint: accepts PDF, returns summary + download URL
     
@@ -222,7 +230,7 @@ async def analyze_statement(
 
         return {
             "file_id": file_id, 
-            "backend_version": "v2.1-STABLE",
+            "backend_version": "v2.1-STABLE-FINAL-CORP-V6",
             "summary": {
                 **summary,
                 "auditSummary": audit_summary
@@ -281,5 +289,5 @@ async def serve_spa(full_path: str):
 if __name__ == "__main__":
     import uvicorn
     import os
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", 8001))
     uvicorn.run(app, host="0.0.0.0", port=port)

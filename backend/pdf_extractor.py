@@ -538,6 +538,8 @@ def detect_template(first_page_text: str) -> str:
         return "access"
     if "transaction details" in text and "value date" in text:
         return "zenith"
+    if "withdrawals" in text and "deposits" in text and "narration" in text:
+        return "wema"
 
     print("DEBUG [detect_template]: Could not identify bank - returning 'generic'")
     return "generic"

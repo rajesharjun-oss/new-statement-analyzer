@@ -2,7 +2,9 @@ from pdf_extractor import extract_transactions
 import pdfplumber
 import re
 
-txns, meta = extract_transactions('temp_uploads/WEMA test.pdf', 'wema')
+results = extract_transactions('backend/temp_uploads/MOSES TRANSPORT LIMITED WEMA.pdf', 'wema')
+txns = results[0]['transactions'] if results else []
+meta = results[0]['metadata'] if results else {}
 largest_txns = sorted(txns, key=lambda x: x.get('debit', 0), reverse=True)[:10]
 
 print('Largest Extracted Debits:')
