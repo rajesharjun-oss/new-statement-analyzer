@@ -1,20 +1,23 @@
 import pdfplumber
+import os
 
-with pdfplumber.open('temp_uploads/WEMA test.pdf') as pdf:
-    # Page 26
-    page = pdf.pages[26]
-    words = page.extract_words()
-    
-    header_keywords = ['ID', 'CHEQUE', 'WITHDRAWALS', 'DEPOSITS', 'BALANCE']
-    header_words = [w for w in words if any(k in w['text'].upper().strip() for k in header_keywords)]
-    
-    print('Header locations:')
-    for w in header_words:
-        if w['text'].upper() in ['ID', 'WITHDRAWALS', 'DEPOSITS', 'BALANCE']:
-            print(f"{w['text']}: x0={w['x0']:.2f}, x1={w['x1']:.2f}")
-            
-    print('\nLarge amounts:')
-    for w in words:
-        if '200,000,000' in w['text'] or '150,000,000' in w['text']:
-            word_mid = w['x1'] - 5
-            print(f"{w['text']}: x0={w['x0']:.2f}, x1={w['x1']:.2f}, word_mid={word_mid:.2f}")
+pdf_path = r"c:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\temp_uploads\MOSES TRANSPORT LIMITED WEMA.pdf"
+
+if not os.path.exists(pdf_path):
+    print(f"ERROR: File not found at {pdf_path}")
+else:
+    with pdfplumber.open(pdf_path) as pdf:
+        page = pdf.pages[0]
+        words = page.extract_words()
+        
+        print(f"\n{'#'*60}")
+        print(f"!!! DEEP FORENSIC AUDIT: PAGE 1 !!!")
+        print(f"{'#'*60}\n")
+        
+        # Print every word starting with 'Total' or containing digits
+        for w in words:
+            txt = w['text']
+            if "TOTAL" in txt.upper() or any(c.isdigit() for c in txt):
+                print(f"[{txt}] | BBox: (y_top={w['top']:.2f}, y_bottom={w['bottom']:.2f}, x0={w['x0']:.1f}, x1={w['x1']:.1f})")
+        
+        print(f"\n{'#'*60}\n")

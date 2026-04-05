@@ -37,7 +37,7 @@ def parse_wema_money(text: str) -> float | None:
         return None
 
 def detect_wema_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
-    header_keywords = ["TRAN", "DATE", "VALUE", "NARRATION", "ID", "CHEQUE", "WITHDRAWALS", "DEPOSITS", "BALANCE"]
+    header_keywords = ["TRAN", "DATE", "VALUE", "NARRATION", "ID", "CHEQUE", "WITHDRAWALS", "DEPOSITS", "BALANCE", "DEBIT", "CREDIT"]
     
     header_words = [w for w in words if any(k in w["text"].upper() for k in header_keywords)]
     if len(header_words) < 5: return None
@@ -58,16 +58,23 @@ def detect_wema_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, f
     x_desc_l, _ = find_x("NARRATION")
     x_id_l, _   = find_x("ID")
     x_wid_l, x_wid_r = find_x("WITHDRAWALS")
+    if x_wid_l is None: x_wid_l, x_wid_r = find_x("DEBIT")
+
     x_dep_l, x_dep_r = find_x("DEPOSITS")
+    if x_dep_l is None: x_dep_l, x_dep_r = find_x("CREDIT")
+
     x_bal_l, _ = find_x("BALANCE")
+    
+    if x_date_l:
+         print(f"  [WEMA-LAYOUT] Header Audit - Date: {x_date_l}, Width: {x_wid_l}, Dep: {x_dep_l}")
 
     if x_date_l is None or x_wid_l is None: return None
 
-    # Column Slices (WIDENED for Billion-Naira Support)
+    # Column Slices (WIDENED for Billion-Naira Support - Extreme -32)
     cuts = {
         "date": (x_date_l - 4, x_date_l + 52),
-        "description": (x_desc_l, x_wid_l - 8), 
-        "debit": (x_wid_l - 12, x_dep_l - 5),    
+        "description": (x_desc_l, x_wid_l - 28), 
+        "debit": (x_wid_l - 32, x_dep_l - 5),    
         "credit": (x_dep_l - 8, x_bal_l - 8),   
         "balance": (x_bal_l - 12, 1000.0)
     }
@@ -78,33 +85,67 @@ def detect_wema_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, f
 
     return cuts
 
-def extract_wema_summary(words: List[Dict[str, Any]]) -> Dict[str, float]:
-    """Extract ground-truth summary totals from Page 1 header table."""
-    summary = {}
-    rows = {}
-    for w in words:
-        y = round(w['top'])
-        if y not in rows: rows[y] = []
-        rows[y].append(w)
+def extract_wema_summary(pages: List[pdfplumber.page.Page], existing_summary: Dict[str, float] = None) -> Dict[str, float]:
+    """
+    Extract ground-truth summary totals across First 5 and Last 5 pages (Atomic Speed Scan).
+    Keeps the absolute MAXIMUM values found to ignore 'Page Totals'.
+    """
+    summary = existing_summary if existing_summary else {"statement_total_debit": 0.0, "statement_total_credit": 0.0}
     
-    for y in sorted(rows.keys()):
-        line_txt = " ".join([w['text'] for w in sorted(rows[y], key=lambda x: x['x0'])])
-        
-        # Look for "Total Debit: 45,567,533,642.72"
-        if "TOTAL DEBIT" in line_txt.upper():
-            parts = line_txt.split(":")
-            if len(parts) > 1:
-                val = parse_wema_money(parts[-1])
-                if val: 
+    # Speed Optimization (V6): Scan only head and tail pages for corporate totals
+    # This bypasses the 10-minute scan bottleneck for 1,238-page PDFs
+    scan_pages = pages[:5] + pages[-5:] if len(pages) > 10 else pages
+    
+    for i, page in enumerate(scan_pages):
+        # --- PATH A: Word-to-Row Bucketing (Coordinate-Guided) ---
+        words = page.extract_words(x_tolerance=3, y_tolerance=3)
+        rows_dict = {}
+        for w in words:
+            # Vertical Stabilization (V6): Bucket within 5 pixels to 'weld' misaligned label/values
+            y = int(w['top'] / 5) * 5
+            if y not in rows_dict: rows_dict[y] = []
+            rows_dict[y].append(w)
+            
+        for y in sorted(rows_dict.keys()):
+            row_words = sorted(rows_dict[y], key=lambda x: x['x0'])
+            line_txt = " ".join([w['text'] for w in row_words])
+            
+            # Robust Regex Capture (V6): Support digit splitting and space-agnosticism
+            import re
+            match_debit = re.search(r"TOTAL\s+DEBIT.*?([0-9\s,.]+)", line_txt.upper())
+            if match_debit:
+                val = parse_wema_money(match_debit.group(1))
+                if val and val > summary.get("statement_total_debit", 0.0):
                      summary["statement_total_debit"] = val
-                     print(f"  [WEMA-SUMMARY] Statement Total Debit Found: {val:,.2f}")
-                
-        if "TOTAL CREDIT" in line_txt.upper():
-            parts = line_txt.split(":")
-            if len(parts) > 1:
-                val = parse_wema_money(parts[-1])
-                if val: summary["statement_total_credit"] = val
-                
+                     print(f"  !!! [WEMA-STABLE-PATH-A] Found Max Debit: {val:,.2f} !!!")
+            
+            match_credit = re.search(r"TOTAL\s+CREDIT.*?([0-9\s,.]+)", line_txt.upper())
+            if match_credit:
+                val = parse_wema_money(match_credit.group(1))
+                if val and val > summary.get("statement_total_credit", 0.0):
+                     summary["statement_total_credit"] = val
+                     print(f"  !!! [WEMA-STABLE-PATH-A] Found Max Credit: {val:,.2f} !!!")
+
+        # --- PATH B: Atomic Text Weld (Stream-Guided Backup) ---
+        full_text = page.extract_text()
+        if full_text:
+            text_lines = full_text.split('\n')
+            for line in text_lines:
+                # FIX: Stricter summary total regex to avoid catching partial numbers
+                match_debit_b = re.search(r"TOTAL\s+DEBIT.*?([\d\s,]+\.\d{2})", line.upper())
+                if match_debit_b:
+                    val = parse_wema_money(match_debit_b.group(1))
+                    if val and val > summary.get("statement_total_debit", 0.0):
+                         summary["statement_total_debit"] = val
+                         print(f"  !!! [WEMA-STABLE-PATH-B-WELD] Found Max Debit: {val:,.2f} !!!")
+
+                match_credit_b = re.search(r"TOTAL\s+CREDIT.*?([\d\s,]+\.\d{2})", line.upper())
+                if match_credit_b:
+                    val = parse_wema_money(match_credit_b.group(1))
+                    if val and val > summary.get("statement_total_credit", 0.0):
+                         summary["statement_total_credit"] = val
+                         print(f"  !!! [WEMA-STABLE-PATH-B-WELD] Found Max Credit: {val:,.2f} !!!")
+                          
     return summary
 
 def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: pdfplumber.PDF = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -121,33 +162,23 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
     print(f"\n>>> [WEMA ENGINE 2.1] Extraction Started for: {pdf_path.name} ({_total_pages} pages)")
     
     try:
-        # Detect columns and summary from first page
+        # 1. EXTRACT SUMMARY TOTALS GLOBALLY (Unified 2.1 FINAL)
+        summary_meta = extract_wema_summary(_pdf_handle.pages)
+        metadata.update(summary_meta)
+        
+        summary_keywords = ["TOTAL DEBIT", "TOTAL CREDIT", "TOTAL WITHDRAWAL", "TOTAL DEPOSIT", "TOTALS", "CARRIED FORWARD"]
+        
+        # 2. Detect columns
         words_p0 = _pdf_handle.pages[0].extract_words()
         cuts = detect_wema_columns(words_p0)
         
-        # EXTRACT SUMMARY TOTALS (Unified 2.1)
-        summary_meta = extract_wema_summary(words_p0)
-        metadata.update(summary_meta)
-        
-        # If not on P0, check P1
-        if not cuts and len(_pdf_handle.pages) > 1:
-            words_p1 = _pdf_handle.pages[1].extract_words()
-            cuts = detect_wema_columns(words_p1)
-            summary_meta_p1 = extract_wema_summary(words_p1)
-            metadata.update(summary_meta_p1)
-            
+        if not cuts:
+             words_p1 = _pdf_handle.pages[1].extract_words() if _total_pages > 1 else []
+             cuts = detect_wema_columns(words_p1)
         if not cuts:
             raise ValueError("Wema column headers not found in first 2 pages.")
 
-        summary_keywords = [
-            "TOTAL", "CURRENT BAL", "PAYMENTS", "RECEIPTS", "BAL B/F", "BAL C/F", 
-            "BROUGHT FORWARD", "CARRIED FORWARD", "ACCOUNT NO:", "ACCOUNT SUMMARY",
-            "PAGE TOTAL", "SUB TOTAL", "OPENING BAL", "CLOSING BAL"
-        ]
-
         for i, page in enumerate(_pdf_handle.pages):
-            if i % 100 == 0:
-                print(f"  [WEMA] Processing page {i+1}/{_total_pages} ({len(txns)} txns so far, {time.time()-_start:.0f}s)")
             p_words = page.extract_words(x_tolerance=2, y_tolerance=2)
             
             # Recalibrate cuts
@@ -156,7 +187,7 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
             
             rows_dict = {}
             for w in p_words:
-                y = round(w['top'] / 3) * 3 
+                y = int(w['top'] / 5) * 5 
                 if y not in rows_dict: rows_dict[y] = []
                 rows_dict[y].append(w)
                 
@@ -175,23 +206,30 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
                             
                 # Skip noise and summary rows (only if it's NOT a transaction)
                 row_full_text = " ".join(row_data.values()).upper()
-                if any(sk in row_full_text for sk in summary_keywords):
-                    # Special case: don't skip if it has a valid date and amount
-                    # (Wema sometimes includes "TOTAL" in the description)
-                    pass
-                
-                date_str = row_data.get("date", "")
-                parsed_date = parse_date_smart(date_str)
-                debit_val = parse_wema_money(row_data.get("debit", ""))
-                credit_val = parse_wema_money(row_data.get("credit", ""))
                 
                 # REINFORCE: The summary rows usually don't have dates in the transaction region.
-                # If "TOTAL" is found but no date exists, it's noise.
-                if any(sk in row_full_text for sk in summary_keywords) and not parsed_date:
+                date_str = row_data.get("date", "")
+                parsed_date = parse_date_smart(date_str)
+                
+                # PROTECTION: Detect if this is a "Summary Header" block (often at top of page)
+                is_summary_header = any(sk in row_full_text for sk in summary_keywords)
+                
+                # If "TOTAL" is found but no date exists, it's definitely noise.
+                if is_summary_header and not parsed_date:
                     continue
 
+                debit_val = parse_wema_money(row_data.get("debit", ""))
+                credit_val = parse_wema_money(row_data.get("credit", ""))
+
                 if parsed_date and (debit_val or credit_val):
+                    # ADDITIONAL GUARD: If we have a massive number but no description or small description, 
+                    # it might be a misaligned total from the header.
                     desc = row_data.get("description", "").strip()
+                    
+                    # If date exists but it's clearly a summary row (e.g. "Opening Balance" row might have a date printed in header)
+                    if "OPENING BAL" in row_full_text or "CLOSING BAL" in row_full_text:
+                        continue
+
                     if row_data.get("tran_id") and not any(c.isdigit() for c in row_data["tran_id"]):
                          desc = (desc + " " + row_data["tran_id"]).strip()
                     
