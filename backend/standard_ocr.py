@@ -12,7 +12,7 @@ load_dotenv(dotenv_path=env_path)
 # Global index for rotation
 _current_key_index = 0
 
-def pdf_to_images(pdf_path: str, dpi: int = 300, max_pages: int = 15) -> List:
+def pdf_to_images(pdf_path: str, dpi: int = 150, max_pages: int = 10) -> List:
     """Convert PDF pages to PIL Images using PyMuPDF (fitz), with a strict limit."""
     import fitz
     from PIL import Image
@@ -55,7 +55,7 @@ def extract_text_with_gemini_vision(image_bytes: bytes) -> str:
     except:
         return ""
 
-def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic", max_pages: int = 15) -> List[Dict]:
+def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic", max_pages: int = 10) -> List[Dict]:
     """
     Overhauled 2-Phase OCR Pipeline:
     Phase 1: High-DPI Rendering -> Vision Transcriber (Literal Grid Extraction)
@@ -77,9 +77,9 @@ def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic", m
         # Using gemini-2.0-flash for speed/quota, heavily relying on Phase 2 strict 6-pipe PSV prompting
         model = genai.GenerativeModel('gemini-2.0-flash')
         
-        # Phase 1: Convert PDF to high-quality images (300 DPI for watermark-heavy PDFs)
+        # Phase 1: Convert PDF to high-quality images (150 DPI for speed and gateway timeout safety)
         # CRITICAL: Pass max_pages to pdf_to_images to avoid memory crashes
-        images = pdf_to_images(pdf_path, dpi=300, max_pages=max_pages)
+        images = pdf_to_images(pdf_path, dpi=150, max_pages=max_pages)
         if not images:
             return []
             
