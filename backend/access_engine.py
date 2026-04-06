@@ -1,23 +1,74 @@
-"""
-Access Bank Dedicated Coordinate Extractor
-"""
-import pdfplumber
-import math
-import re
+import os
+import google.generativeai as genai
+from PIL import Image
+import io
+import fitz
+from dotenv import load_dotenv
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
+import re
+import pdfplumber
 
-def detect_access_columns(words: List[Dict[str, Any]], bank_identifier: str = None) -> Dict[str, Tuple[float, float]] | None:
+# Load .env from project root
+env_path = Path(__file__).parent.parent / ".env"
+load_dotenv(dotenv_path=env_path)
+
+def detect_columns_via_vision(pdf_path: Path, page_index: int = 0) -> Dict[str, Tuple[float, float]] | None:
+    """Uses Gemini Vision to identify column boundaries when text-based parsing fails."""
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        print("DEBUG [Access-Vision]: No GEMINI_API_KEY found.")
+        return None
+    
+    try:
+        genai.configure(api_key=api_key)
+        # Using gemini-2.0-flash for speed/quota
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        
+        doc = fitz.open(str(pdf_path))
+        page = doc[page_index]
+        # High DPI for better recognition
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+        img = Image.open(io.BytesIO(pix.tobytes("png")))
+        
+        prompt = """
+        Identify the horizontal (x) boundaries for these columns in the bank statement:
+        Date, Description, Reference, Value Date, Debit/Withdrawal, Credit/Deposit, Balance.
+        Return ONLY a JSON object: {"date": [x0, x1], "description": [x0, x1], "reference": [x0, x1], "value_date": [x0, x1], "debit": [x0, x1], "credit": [x0, x1], "balance": [x0, x1]}
+        Use a scale of 0 to 600 (standard PDF points). If a column is missing, omit it from JSON.
+        """
+        
+        response = model.generate_content([prompt, img])
+        raw_text = response.text
+        # Extract JSON from potential markdown
+        import json
+        match = re.search(r"({.*})", raw_text, re.DOTALL)
+        if match:
+            data = json.loads(match.group(1))
+            # Conver to Tuples
+            return {k: (float(v[0]), float(v[1])) for k, v in data.items()}
+    except Exception as e:
+        print(f"DEBUG [Access-Vision]: Vision detection failed: {e}")
+    return None
+
+def detect_access_columns(words: List[Dict[str, Any]], bank_identifier: str = None, pdf_path: Path = None) -> Dict[str, Tuple[float, float]] | None:
     """
     Detect column boundaries for Access Bank.
     Handles multiple template variants including:
     - Standard: TRANSACTION DETAILS | REFERENCE | WITHDRAWALS | LODGEMENTS | BALANCE
     - Variant 2: Date | Transaction Details | Reference | Value Date | Withdrawals | Lodgements | Balance
+    - Variant 3: Posted Date | Value Date | Description/Remarks | Reference | Debit | Credit | Balance
     """
-    if not words: return None
+    if not words: 
+        print("DEBUG [Access]: detect_access_columns received 0 words.")
+        return None
+    
+    import sys
+    print(f"DEBUG [Access]: detect_access_columns received {len(words)} words.")
+    sys.stdout.flush()
 
     # 1. FIND HEADER BANDS
-    keywords = ["DATE", "TRANSACTION", "DETAILS", "DESCRIPTION", "NARRATION", "REFERENCE", "REF", "VALUE", "WITHDRAWALS", "DEBIT", "LODGEMENTS", "CREDIT", "BALANCE", "BAL"]
+    keywords = ["DATE", "TRANSACTION", "DETAILS", "DESCRIPTION", "NARRATION", "REFERENCE", "REF", "VALUE", "WITHDRAWALS", "DEBIT", "LODGEMENTS", "CREDIT", "BALANCE", "BAL", "POSTED", "REMARKS"]
     
     header_words = []
     for w in words:
@@ -26,8 +77,15 @@ def detect_access_columns(words: List[Dict[str, Any]], bank_identifier: str = No
             if k in txt:
                 header_words.append(w)
                 break
-            
-    if not header_words: return None
+    
+    if not header_words:
+        if pdf_path:
+            print("DEBUG [Access]: No header words found. Trying AI Vision Fallback...")
+            sys.stdout.flush()
+            vision_cuts = detect_columns_via_vision(pdf_path)
+            if vision_cuts:
+                return vision_cuts
+        return None
 
     rows = {}
     for w in header_words:
@@ -50,6 +108,11 @@ def detect_access_columns(words: List[Dict[str, Any]], bank_identifier: str = No
             best_y = y
             
     if max_indicators < 4:
+        if pdf_path:
+            print(f"DEBUG [Access]: Rule-based detection weak ({max_indicators} indicators). Trying AI Vision Fallback...")
+            vision_cuts = detect_columns_via_vision(pdf_path)
+            if vision_cuts:
+                return vision_cuts
         return None
 
     active_band = [w for w in header_words if abs(w['top'] - best_y) < 8.0]
@@ -76,8 +139,8 @@ def detect_access_columns(words: List[Dict[str, Any]], bank_identifier: str = No
         return val
 
     # 2. EXTRACT COORDINATES
-    x_date = find_x(["Date"])
-    x_details = find_x(["Details", "Transaction", "Description", "Narration"])
+    x_date = find_x(["Date", "Posted"])
+    x_details = find_x(["Details", "Transaction", "Description", "Narration", "Remarks"])
     x_ref = find_x(["Ref", "Reference"])
     x_val = find_x(["Value"])
     x_with = find_x(["Withdrawals", "Debit"], is_right=True)
@@ -85,7 +148,12 @@ def detect_access_columns(words: List[Dict[str, Any]], bank_identifier: str = No
     x_bal = find_x(["Balance", "Bal"], is_right=True)
 
     if not all([x_date, x_details, x_ref, x_with or x_lodge, x_bal]):
-        print(f"DEBUG [Access]: Missing core columns: Date={x_date}, Details={x_details}, Ref={x_ref}, With={x_with}, Lodge={x_lodge}, Bal={x_bal}")
+        if pdf_path:
+            print(f"DEBUG [Access]: Missing core columns. Trying AI Vision Fallback...")
+            sys.stdout.flush()
+            vision_cuts = detect_columns_via_vision(pdf_path)
+            if vision_cuts:
+                return vision_cuts
         return None
 
     # 3. CONSTRUCT CUTS (Midpoint based for max width)
@@ -130,7 +198,7 @@ def detect_access_columns(words: List[Dict[str, Any]], bank_identifier: str = No
     print(f"DEBUG [Access]: Generated cuts: {cuts}")
     return cuts
 
-def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: pdfplumber.PDF = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: pdfplumber.PDF = None, max_pages: int = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     from pdf_extractor import parse_date_smart, first_money, is_noise_row
     import pandas as pd
     
@@ -173,7 +241,7 @@ def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
         # We still do a pre-scan of first 5 pages just to see if we can identify it at all
         for pg_idx in range(min(5, len(_pdf_handle.pages))):
             words = _pdf_handle.pages[pg_idx].extract_words()
-            if detect_access_columns(words):
+            if detect_access_columns(words, pdf_path=pdf_path):
                 print(f"DEBUG [Access]: Initial header signature found on page {pg_idx}")
                 break
         else:
@@ -186,11 +254,15 @@ def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
         pending_reference = ""
         
         txns = []
-        for pg_num, page in enumerate(_pdf_handle.pages):
+        target_pages = _pdf_handle.pages
+        if max_pages:
+            target_pages = target_pages[:max_pages]
+            
+        for pg_num, page in enumerate(target_pages):
             words = page.extract_words()
             
             # Update cuts for THIS page if a header is present
-            new_cuts = detect_access_columns(words)
+            new_cuts = detect_access_columns(words, pdf_path=pdf_path)
             if new_cuts:
                 cuts = new_cuts
                 print(f"DEBUG [Access]: Cuts updated for page {pg_num}")
