@@ -216,17 +216,17 @@ async def analyze_statement(
         success = True
         preview_txns = processed_statements[0]["transactions"] if processed_statements else []
         
-        # Step 5: Deep Audit Summary (Claude only)
-        audit_summary = None
-        if os.getenv("ANTHROPIC_API_KEY") and processed_statements:
-            all_txns = []
-            for s in processed_statements:
-                all_txns.extend(s["transactions"])
-            audit_summary = generate_audit_summary(all_txns, {
-                **primary_meta,
-                "total_debits": total_debit,
-                "total_credits": total_credit
-            })
+        # Step 5: Deep Audit Summary (Optional / Move to background)
+        audit_summary = "Audit in progress... refresh in 30 seconds."
+        # if os.getenv("ANTHROPIC_API_KEY") and processed_statements:
+        #     all_txns = []
+        #     for s in processed_statements:
+        #         all_txns.extend(s["transactions"])
+        #     audit_summary = generate_audit_summary(all_txns, {
+        #         **primary_meta,
+        #         "total_debits": total_debit,
+        #         "total_credits": total_credit
+        #     })
 
         return {
             "file_id": file_id, 

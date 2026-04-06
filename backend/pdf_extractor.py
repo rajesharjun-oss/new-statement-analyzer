@@ -757,7 +757,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                  
                  # Scanned or coordinate failure -> AI fallback
                  print("DEBUG: UBA PDF requires AI extraction...")
-                 txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='uba')
+                 txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='uba', max_pages=15)
                  if txns: return [{"transactions": normalize_remarks(txns), "metadata": {"method": "gemini_vision"}}]
                  return [{"transactions": [], "metadata": {"error": "UBA Gemini Vision returned 0 txns"}}]
 
@@ -774,7 +774,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                  # AI fallback for Access Bank ONLY
                  if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
                      try:
-                         ai_txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='access')
+                         ai_txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='access', max_pages=15)
                          if ai_txns:
                              print(f"DEBUG: Access AI fallback returned {len(ai_txns)} transactions")
                              return [{"transactions": normalize_remarks(ai_txns), "metadata": metadata}]
@@ -795,10 +795,10 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 except Exception as e:
                      print(f"DEBUG: Ecobank table strategy failed: {e}. Trying Hybrid AI Fallback...")
                 
-                # Hardened Fallback: If 0 transactions found, trigger AI
+                # Hardened Fallback: If 0 transactions found, trigger AI (Capped to 15 pages)
                 if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
                     print(f"DEBUG: Ecobank table engine returned 0 txns. Triggering Hybrid AI Fallback...")
-                    txns = extract_transactions_via_ai(str(pdf_path))
+                    txns = extract_transactions_via_ai(str(pdf_path), max_pages=15)
                     if txns: return [{"transactions": normalize_remarks(txns), "metadata": metadata}]
 
             # --- 0e) Special Case: Fidelity Table Strategy
@@ -843,7 +843,8 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 
                 if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
                     try:
-                        transactions = extract_transactions_via_ai(str(pdf_path))
+                        # CRITICAL: Cap AI fallback to 15 pages to prevent 502 timeouts
+                        transactions = extract_transactions_via_ai(str(pdf_path), max_pages=15)
                         if transactions:
                              print(f"DEBUG: Gemini Multimodal extracted {len(transactions)} txns")
                              return [{"transactions": transactions, "metadata": {}}]
