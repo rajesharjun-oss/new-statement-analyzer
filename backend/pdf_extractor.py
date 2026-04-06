@@ -494,10 +494,8 @@ def detect_template(first_page_text: str) -> str:
     header_text = text[:1500]
     if "ecobank" in header_text:
         return "ecobank"
-    if "gtco" in header_text:
-        return "gtco"
-    if "guaranty trust" in header_text or "gtbank" in header_text or " gtb " in header_text:
-        return "gtbank"
+    if "gtco" in header_text or "guaranty trust" in header_text:
+        return "gtbank"  # Route both to GTBank logic
     if "providus" in header_text:
         return "providus"
     if "zenith" in header_text:
@@ -506,7 +504,7 @@ def detect_template(first_page_text: str) -> str:
         return "access"
     if "united bank for africa" in header_text or " uba " in header_text or ("withdrawal" in header_text and "deposit" in header_text):
         return "uba"
-    if "first bank" in header_text or "firstbank" in header_text:
+    if "first bank" in header_text or "firstbank" in header_text or " fbn " in header_text:
         return "firstbank"
     if "fidelity" in header_text:
         return "fidelity"
@@ -516,8 +514,8 @@ def detect_template(first_page_text: str) -> str:
         return "wema"
     if "sterling" in header_text:
         return "sterling"
-    if "stanbic" in header_text:
-        return "stanbic"
+    if "stanbic" in header_text or "standard chartered" in header_text:
+        return "generic"
 
     # --- Priority 2: Column-header fingerprints ---
     # GTBank requires BOTH structural signals to avoid false positives
@@ -746,20 +744,22 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
             if bank_identifier == "fcmb":
                  from fcmb_engine import extract_fcmb_via_coordinates
                  fc_txns, fc_meta = extract_fcmb_via_coordinates(Path(pdf_path), metadata, pdf=pdf)
-                 if fc_txns: return [{"transactions": normalize_remarks(fc_txns), "metadata": fc_meta}]
+                 if fc_txns: 
+                     print(f"DEBUG: FCMB engine returned {len(fc_txns)} transactions")
+                     return [{"transactions": normalize_remarks(fc_txns), "metadata": fc_meta}]
 
             elif bank_identifier == "uba":
                  if is_searchable:
-                     from uba_engine import detect_uba_columns, group_words_to_rows
+                     from uba_engine import extract_uba_via_coordinates
                      print("DEBUG: UBA PDF is searchable - routing to dedicated coordinate engine")
-                     # We reuse the generic loop because UBA uses standard word bucketing
-                     # but we need to ensure the header is detected correctly.
-                     pass 
-                 else:
-                     print("DEBUG: UBA PDF is scanned - routing to Gemini Vision OCR...")
-                     txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='uba')
-                     if txns: return [{"transactions": normalize_remarks(txns), "metadata": {"method": "gemini_vision"}}]
-                     return [{"transactions": [], "metadata": {"error": "UBA Gemini Vision returned 0 txns"}}]
+                     uba_txns, uba_meta = extract_uba_via_coordinates(Path(pdf_path), metadata, pdf=pdf)
+                     if uba_txns: return [{"transactions": normalize_remarks(uba_txns), "metadata": uba_meta}]
+                 
+                 # Scanned or coordinate failure -> AI fallback
+                 print("DEBUG: UBA PDF requires AI extraction...")
+                 txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='uba')
+                 if txns: return [{"transactions": normalize_remarks(txns), "metadata": {"method": "gemini_vision"}}]
+                 return [{"transactions": [], "metadata": {"error": "UBA Gemini Vision returned 0 txns"}}]
 
             elif bank_identifier == "access":
                  from access_engine import extract_access_via_coordinates

@@ -1,0 +1,163 @@
+﻿On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add/rm <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   backend/__pycache__/categorization.cpython-311.pyc
+	modified:   backend/__pycache__/pdf_extractor.cpython-311.pyc
+	deleted:    backend/debug_access.py
+	deleted:    backend/debug_wema.py
+	modified:   backend/debug_wema_bounds.py
+	deleted:    backend/debug_wema_diff.py
+	modified:   backend/debug_wema_missing.py
+	modified:   backend/main.py
+	modified:   backend/pdf_extractor.py
+	deleted:    backend/temp_uploads/1b46d5bc-8f9d-4142-9a0d-85a074d2ca0f.phase1.raw.csv
+	deleted:    backend/temp_uploads/1b46d5bc-8f9d-4142-9a0d-85a074d2ca0f.phase2.raw.json
+	deleted:    backend/temp_uploads/230ebdac-8669-4179-959f-a6a00881a693.raw.csv
+	deleted:    backend/temp_uploads/23b1cf08-e450-4834-b3d6-4367d07b70b5.phase1.raw.csv
+	deleted:    backend/temp_uploads/23b1cf08-e450-4834-b3d6-4367d07b70b5.phase2.raw.psv
+	deleted:    backend/temp_uploads/281dee5a-b8f0-4599-a521-08d143f1c947.phase1.raw.csv
+	deleted:    backend/temp_uploads/281dee5a-b8f0-4599-a521-08d143f1c947.phase2.raw.psv
+	deleted:    backend/temp_uploads/3ca747ad-855c-4df5-a916-87bfd6edc60e.raw.csv
+	deleted:    backend/temp_uploads/57f2deb5-10d9-4648-bca7-53adf345fa12.phase1.raw.csv
+	deleted:    backend/temp_uploads/57f2deb5-10d9-4648-bca7-53adf345fa12.phase2.raw.psv
+	deleted:    backend/temp_uploads/5d9dcba1-aca0-4868-a38a-b9082e57f597.raw.csv
+	deleted:    backend/temp_uploads/665d8041-5c2f-41b5-a3a2-dd1286fc75d2.raw.csv
+	deleted:    backend/temp_uploads/675f3275-3824-410e-b426-6623044f5521.phase1.raw.csv
+	deleted:    backend/temp_uploads/675f3275-3824-410e-b426-6623044f5521.phase2.raw.psv
+	deleted:    backend/temp_uploads/6a7f8b98-c749-4d5a-a790-f6a48532e389.phase1.raw.csv
+	deleted:    backend/temp_uploads/6a7f8b98-c749-4d5a-a790-f6a48532e389.phase2.raw.psv
+	deleted:    backend/temp_uploads/6bb5b133-1f25-4b51-a58a-c3a690bafa59.phase1.raw.csv
+	deleted:    backend/temp_uploads/6bb5b133-1f25-4b51-a58a-c3a690bafa59.phase2.raw.json
+	deleted:    backend/temp_uploads/6bbf2cc2-4d05-4860-82b4-60000cf6d1d9.raw.csv
+	deleted:    backend/temp_uploads/7202e5a5-1e68-4cad-ac14-52706946b98e.phase1.raw.csv
+	deleted:    backend/temp_uploads/7202e5a5-1e68-4cad-ac14-52706946b98e.raw.csv
+	deleted:    backend/temp_uploads/757aeb62-722f-4827-8e7e-1db8e5835a69.phase1.raw.csv
+	deleted:    backend/temp_uploads/757aeb62-722f-4827-8e7e-1db8e5835a69.phase2.raw.psv
+	deleted:    backend/temp_uploads/77f2c056-9247-462b-a5f1-5098664d40d9.phase1.raw.csv
+	deleted:    backend/temp_uploads/77f2c056-9247-462b-a5f1-5098664d40d9.phase2.raw.psv
+	deleted:    backend/temp_uploads/8205ae7a-ac1c-4333-a39b-2de0c33ff15e.raw.csv
+	deleted:    backend/temp_uploads/85011d0b-9933-4e2b-ba03-c7f58fffa759.raw.csv
+	deleted:    backend/temp_uploads/8535ee03-985e-485e-8fa9-762385a2da6c.phase1.raw.csv
+	deleted:    backend/temp_uploads/8535ee03-985e-485e-8fa9-762385a2da6c.phase2.raw.psv
+	deleted:    backend/temp_uploads/8b4521e0-7a72-4832-b3a9-52f808a24fad.raw.csv
+	deleted:    backend/temp_uploads/93d76acc-b03d-4e24-96b4-7ca59ddfc47b.raw.csv
+	deleted:    backend/temp_uploads/9d0ce071-9005-42c9-a2bd-33ed77b1d5df.raw.csv
+	deleted:    backend/temp_uploads/UBA test.phase1.raw.csv
+	deleted:    backend/temp_uploads/UBA test.phase2.raw.psv
+	deleted:    backend/temp_uploads/UBA test.raw.csv
+	deleted:    backend/temp_uploads/WEMA test.raw.csv
+	deleted:    backend/temp_uploads/a33e59fa-47fb-4660-a4cb-d1db01c4085d.raw.csv
+	deleted:    backend/temp_uploads/a463f26d-a8ba-4b3e-a107-9533c5b16718.raw.csv
+	deleted:    backend/temp_uploads/dff33eb4-a75b-480b-b678-1259c3b643fe.phase1.raw.csv
+	deleted:    backend/temp_uploads/dff33eb4-a75b-480b-b678-1259c3b643fe.phase2.raw.psv
+	deleted:    backend/temp_uploads/e46916ec-98c5-4235-bd93-096bd92189ed.phase1.raw.csv
+	deleted:    backend/temp_uploads/e46916ec-98c5-4235-bd93-096bd92189ed.phase2.raw.psv
+	deleted:    backend/temp_uploads/eabbc4fb-c0b3-462a-b976-8ab0d0602a86.phase1.raw.csv
+	deleted:    backend/temp_uploads/eabbc4fb-c0b3-462a-b976-8ab0d0602a86.phase2.raw.psv
+	deleted:    backend/temp_uploads/ed17d8d0-3d28-40c8-876b-5bab1dda5a88.phase1.raw.csv
+	deleted:    backend/temp_uploads/ed17d8d0-3d28-40c8-876b-5bab1dda5a88.phase2.raw.psv
+	deleted:    backend/temp_uploads/f0509729-dbb8-41ec-8144-f697729b64aa.phase1.raw.csv
+	deleted:    backend/temp_uploads/f0509729-dbb8-41ec-8144-f697729b64aa.phase2.raw.psv
+	deleted:    backend/temp_uploads/f17e46a0-4293-47b4-bcae-1cfddf4cb075.phase1.raw.csv
+	deleted:    backend/temp_uploads/f17e46a0-4293-47b4-bcae-1cfddf4cb075.raw.csv
+	deleted:    backend/temp_uploads/fd22a09a-f4a7-47b1-b962-170c914d29f0.raw.csv
+	modified:   backend/verify_ecobank_final.py
+	modified:   backend/wema_engine.py
+	modified:   vite.config.ts
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	all_pdfs.txt
+	all_pdfs_final.txt
+	all_pdfs_names.txt
+	all_pdfs_utf8.txt
+	backend/FIDELITY 1 2024.phase1.raw.psv
+	backend/audit_billionaire.py
+	backend/audit_last_page.py
+	backend/audit_summary_wema.py
+	backend/deep_debug_wema.py
+	backend/diag_out_headers.txt
+	backend/diag_wema_headers.py
+	backend/diag_wema_outliers.py
+	backend/diagnose_wema_results.txt
+	backend/dump_wema_coords.py
+	backend/dump_wema_p319.py
+	backend/failure_test_result_utf8.txt
+	backend/final_benchmark_stanc.txt
+	backend/final_metrics.txt
+	backend/final_metrics_v2.txt
+	backend/final_metrics_v3.txt
+	backend/forensic_wema.py
+	backend/full_analysis_result.txt
+	backend/repaired_fidelity.phase1.raw.psv
+	backend/run_fidelity.txt
+	backend/run_fidelity_utf8.txt
+	backend/run_stanc_direct.txt
+	backend/run_stanc_direct_utf8.txt
+	backend/run_two_more.txt
+	backend/run_two_more_tests.py
+	backend/run_two_more_utf8.txt
+	backend/sample_out.txt
+	backend/sample_result_fixed.txt
+	backend/sample_verify_wema.py
+	backend/search_exact_big.py
+	backend/search_huge_numbers.py
+	backend/search_pdf.py
+	backend/search_pdf2.py
+	backend/str_test_results.txt
+	backend/str_test_results_utf8.txt
+	backend/sum_latest.py
+	backend/sum_latest_output.txt
+	backend/sum_latest_output_utf8.txt
+	backend/test_final_wema.py
+	backend/test_results.txt
+	backend/test_results_utf8.txt
+	backend/test_results_v2.txt
+	backend/test_results_v3.txt
+	backend/test_speed_accuracy.py
+	backend/test_stanc_direct.py
+	backend/test_text_layer.py
+	backend/test_wema.py
+	backend/test_wema_final.py
+	backend/test_wema_final_results.txt
+	backend/test_wema_full_output.txt
+	backend/test_wema_output.txt
+	claude_verif.txt
+	claude_verif_final.txt
+	claude_verif_fix.txt
+	coord_log.txt
+	debug_log.txt
+	detect_funcs.txt
+	detect_funcs_utf8.txt
+	diag_access.py
+	eco_matches.txt
+	final_verif_log.txt
+	git_status_full.txt
+	haiku_test.txt
+	header_log.txt
+	inspect_header.py
+	investigate_coords.py
+	parse_log.py
+	pdf_backend.txt
+	pdf_backend_utf8.txt
+	pdf_list.txt
+	pdf_list_utf8.txt
+	pdf_paths.txt
+	reproduce_access.py
+	test_access_detect.py
+	test_claude_integration.py
+	test_wema_standalone.py
+	uba_files.txt
+	uba_files_final.txt
+	uba_files_utf8.txt
+	uba_names_final.txt
+	verif_log.txt
+	wema_all_files.txt
+	wema_search.txt
+	wema_search_full.txt
+	wema_search_utf8.txt
+
+no changes added to commit (use "git add" and/or "git commit -a")

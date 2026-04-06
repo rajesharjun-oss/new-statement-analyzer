@@ -82,7 +82,26 @@ def generate_excel(statement_results: List[Dict[str, Any]], combined_validation:
         ws[f'B{summary_row + 3}'].number_format = '#,##0.00'
         
         ws[f'A{summary_row + 4}'] = 'Validation Status:'
-        ws[f'B{summary_row + 4}'] = validation.get('status', 'Unknown')
+        ws[f'B{summary_row + 4}'] = metadata.get('validation_status', validation.get('status', 'Unknown'))
+        
+        # If there are gaps found during audit, add an Audit Sheet
+        mismatch_details = metadata.get("mismatch_details")
+        if mismatch_details:
+            audit_ws = wb.create_sheet(title=f"Audit - {str(acc_no)[:20]}")
+            audit_ws.append(['Impacted Page', 'Date', 'Description', 'Expected Balance', 'Extracted Balance', 'Difference'])
+            for gap in mismatch_details:
+                audit_ws.append([
+                    gap.get('page', 'Unknown'),
+                    gap.get('date', 'Unknown'),
+                    gap.get('description', 'Unknown'),
+                    gap.get('expected', 0),
+                    gap.get('claimed', 0),
+                    gap.get('diff', 0)
+                ])
+            # Color the difference red
+            red_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
+            for row in range(2, len(mismatch_details) + 2):
+                audit_ws[f'F{row}'].fill = red_fill
         
         # Adjust column widths
         ws.column_dimensions['A'].width = 12

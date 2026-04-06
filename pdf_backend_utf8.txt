@@ -1,0 +1,18 @@
+﻿
+
+    Directory: C:\User
+    s\ionawoga\Desktop
+    \Statement-analyze
+    r-3.0-1\backend
+
+
+Mode     LastWriteTime
+----     -------------
+-a----    2/12/2026   
+               3:14 PM
+-a----     2/23/2026  
+              12:05 AM
+-a----     1/2/2026   
+               9:03 PM
+
+

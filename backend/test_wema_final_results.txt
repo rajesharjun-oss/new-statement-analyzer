@@ -1,0 +1,48 @@
+﻿--- Fast Test Wema (First 20 Pages) ---
+
+########################################
+!!! [WEMA ENGINE 2.1] ACTIVE !!!
+########################################
+
+
+>>> [WEMA ENGINE 2.1] Extraction Started for: MOSES TRANSPORT LIMITED WEMA.pdf (20 pages)
+  !!! [WEMA-STABLE-PATH-A] Found Max Credit: 296,376,564.64 !!!
+  !!! [WEMA-STABLE-PATH-B-WELD] Found Max Debit: 296,376,564.64 !!!
+  [WEMA-LAYOUT] Header Audit - Date: 34.0, Width: 572.6, Dep: 680.27
+  [WEMA-LAYOUT] Header Audit - Date: 34.0, Width: 572.6, Dep: 680.27
+  [WEMA-LAYOUT] Header Audit - Date: 34.0, Width: 572.6, Dep: 680.27
+  [WEMA-LAYOUT] Header Audit - Date: 34.0, Width: 572.6, Dep: 680.27
+  [WEMA-LAYOUT] Header Audit - Date: 34.0, Width: 572.6, Dep: 680.27
+  [WEMA-LAYOUT] Header Audit - Date: 34.0, Width: 572.6, Dep: 680.27
+  [WEMA-LAYOUT] Header Audit - Date: 34.0, Width: 572.6, Dep: 680.27
+  [WEMA-LAYOUT] Header Audit - Date: 34.0, Width: 572.6, Dep: 680.27
+  [WEMA-LAYOUT] Header Audit - Date: 34.0, Width: 572.6, Dep: 680.27
+  [WEMA-LAYOUT] Header Audit - Date: 34.0, Width: 572.6, Dep: 680.27
+  [WEMA-LAYOUT] Header Audit - Date: 34.0, Width: 572.6, Dep: 680.27
+  [WEMA-LAYOUT] Header Audit - Date: 34.0, Width: 572.6, Dep: 680.27
+  [WEMA-LAYOUT] Header Audit - Date: 34.0, Width: 572.6, Dep: 680.27
+  [WEMA-LAYOUT] Header Audit - Date: 34.0, Width: 572.6, Dep: 680.27
+  [WEMA-LAYOUT] Header Audit - Date: 34.0, Width: 572.6, Dep: 680.27
+  [WEMA-LAYOUT] Header Audit - Date: 34.0, Width: 572.6, Dep: 680.27
+  [WEMA-LAYOUT] Header Audit - Date: 34.0, Width: 572.6, Dep: 680.27
+  [WEMA-LAYOUT] Header Audit - Date: 34.0, Width: 572.6, Dep: 680.27
+  [WEMA-LAYOUT] Header Audit - Date: 34.0, Width: 572.6, Dep: 680.27
+  [WEMA-LAYOUT] Header Audit - Date: 34.0, Width: 572.6, Dep: 680.27
+  [WEMA-LAYOUT] Header Audit - Date: 34.0, Width: 572.6, Dep: 680.27
+>>> [WEMA ENGINE 2.1] Done: 319 txns, Debit=14,664,779.79, Credit=15,153,211.00 in 6.2s
+Status: SUCCESS
+Total Transactions Extracted (P1-20): 319
+
+Sample Transactions:
+Date            |           Debit |          Credit | Description
+--------------------------------------------------------------------------------
+02-Sep-2024     |            0.00 |       10,000.00 | S34627310...
+03-Sep-2024     |        8,600.00 |            0.00 | M34273...
+03-Sep-2024     |            0.00 |       79,000.00 | S36267141...
+03-Sep-2024     |        3,500.00 |            0.00 | M46100...
+03-Sep-2024     |            0.00 |        4,500.00 | S37349997 NO16/AT68_TRF2MPT92JE1831027655...
+03-Sep-2024     |           50.00 |            0.00 | S37956743...
+04-Sep-2024     |            0.00 |        4,000.00 | S39951808 NO16/AT68_TRF2MPT92JE1831366632...
+04-Sep-2024     |            0.00 |        4,000.00 | S40236562...
+04-Sep-2024     |            0.00 |        4,000.00 | S40565243...
+04-Sep-2024     |            0.00 |        4,000.00 | S40681544 NIP:CDL-NO 23...

@@ -169,9 +169,10 @@ def detect_access_columns(words: List[Dict[str, Any]], bank_identifier: str = No
     
     # Money columns are usually right-aligned or centered under wide headers
     # For Access 2.0: Withdrawals (320-385), Lodgements (420-466), Balance (509-562)
-    if x_with is not None: header_anchors.append(("debit", x_with - 60, x_with))
-    if x_lodge is not None: header_anchors.append(("credit", x_lodge - 60, x_lodge))
-    if x_bal is not None: header_anchors.append(("balance", x_bal - 60, x_bal))
+    # WIDENING to 100 to avoid clipping large amounts (e.g. 100,000,000.00)
+    if x_with is not None: header_anchors.append(("debit", x_with - 100, x_with + 20))
+    if x_lodge is not None: header_anchors.append(("credit", x_lodge - 100, x_lodge + 20))
+    if x_bal is not None: header_anchors.append(("balance", x_bal - 100, x_bal + 20))
     
     header_anchors.sort(key=lambda x: x[1])
     
