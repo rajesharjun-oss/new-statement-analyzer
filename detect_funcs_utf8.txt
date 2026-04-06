@@ -1,0 +1,103 @@
+﻿13:from uba_engine import detect_uba_columns, parse_uba_ocr_text
+14:from access_engine import extract_access_via_coordinates, detect_access_columns
+18:from sterling_engine import extract_sterling_via_coordinates, detect_sterling_columns
+25:    def extract_transactions_via_ai(*args, **kwargs): return []
+33:    def extract_text_with_ocr(*args, **kwargs):
+51:def looks_like_ref(tok: str) -> bool:
+78:def scrub_boilerplate(text: str) -> str:
+101:def parse_eco_money(s: str) -> Optional[float]:
+113:def looks_like_eco_date(s: str) -> bool:
+117:def safe_join_parts(parts: List[str]) -> str:
+121:def normalize_eco_ref(desc: str) -> Tuple[str, str]:
+137:def get_midpoint(x0: float, x1: float) -> float:
+140:def is_in_interval(x: float, interval: Tuple[float, float]) -> bool:
+146:def is_date(text: str) -> bool:
+162:def parse_date(text: str) -> str:
+178:def detect_providus_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
+205:    def find_col(sub: str):
+263:def detect_column_cuts_from_header(words: List[Dict[str, Any]], bank_identifier: str = "gtbank") -> Dict[str, Tuple[float, float]] | None:
+271:        ("Providus", detect_providus_columns),
+272:        ("Zenith", detect_zenith_columns),
+273:        ("Wema", detect_wema_columns),
+274:        ("FCMB", detect_fcmb_columns),
+275:        ("FirstBank", detect_firstbank_columns),
+276:        ("Ecobank", detect_ecobank_columns),
+277:        ("UBA", detect_uba_columns),
+278:        ("Access", detect_access_columns),
+279:        ("Fidelity", detect_fidelity_columns),
+280:        ("AptSecurities", detect_apt_columns),
+281:        ("GTCO", detect_gtco_columns),
+282:        ("Sterling", detect_sterling_columns),
+283:        ("GTBank", detect_gtbank_columns) # Fallback last
+347:    return detect_gtbank_columns(words)
+350:def parse_date_smart(date_str: str) -> str | None:
+380:def first_money(s: str) -> str:
+395:def _try_merge_split_decimal(base: str, tail: str):
+405:def is_txn_start(row: dict) -> bool:
+409:def is_noise_row(row: dict) -> bool:
+444:def extract_words_from_pypdf(pdf_path: str, page_idx: int) -> List[Dict[str, Any]]:
+457:        def visitor(text, cm, tm, fontDict, fontSize):
+510:def detect_template(first_page_text: str) -> str:
+514:    NEVER defaults to GTBank ÔÇö returns 'generic' when unknown.
+573:    print("DEBUG [detect_template]: Could not identify bank - returning 'generic'")
+577:def map_headers_to_columns(headers: list) -> dict:
+599:def detect_header_row(table: list) -> int:
+614:            print(f"DEBUG [detect_header_row]: found at row {ri}: {preview}")
+619:def normalize_remarks(transactions: List[Dict]) -> List[Dict]:
+648:def extract_transactions(pdf_path: str, bank_identifier: str = "generic", config: dict = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+705:                bank_identifier = detect_template(combined_text)
+834:                base_cuts = detect_column_cuts_from_header(words, bank_identifier)
+837:                # Specific bank detectors are now handled by detect_column_cuts_from_header (Smart Template Detection)
+1021:def build_description(tx: dict) -> str:
+1044:def repair_ref_branch_remarks(tx: dict) -> dict:
+1086:def repair_fields_batch(transactions: List[Dict]) -> List[Dict]:
+1091:def parse_statement_metadata(text: str) -> Dict[str, Any]:
+1095:    def find_money(pat):
+1183:def detect_zenith_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
+1205:        # Must definitely contain DATE and (DEBIT or CREDIT or BALANCE)
+1235:    def find_word_x(text_part, start_idx=0):
+1299:def detect_ecobank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
+1355:    def find_left(rx: str):
+1359:    def find_right(rx: str):
+1397:    print("DEBUG: Entering detect_ecobank_columns")
+1458:    # We define cut points *between* columns.
+1513:def detect_fidelity_columns(words: List[Dict], bank_identifier: str) -> Dict[str, Tuple[float, float]] | None:
+1522:    def find_x(regex):
+1526:    def find_x_right(regex):
+1600:    def find_bounds(regex):
+1606:    def find_phrase_bounds(p1, p2):
+1699:def detect_apt_columns(words: List[Dict], bank_identifier: str) -> Dict[str, Tuple[float, float]] | None:
+1742:def detect_gtco_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
+1769:    def find_x(regex: str):
+1774:    def find_x_right(regex: str):
+1812:def detect_gtbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
+1831:        print(f"DEBUG [detect_gtbank_columns]: No header row found. Max score: {max_score}")
+1839:    def find_x(regex: str):
+1844:    def find_x_right(regex: str):
+1863:        print(f"DEBUG [detect_gtbank_columns]: Missing required columns. Returning None.")
+1914:def assign_row_to_cols(row_words: List[Dict[str, Any]], cuts: Dict[str, Tuple[float, float]]) -> Dict[str, str]:
+2028:def group_words_to_rows(words: List[Dict[str, Any]], y_tol: float = 3.0) -> List[Dict[str, Any]]:
+2062:def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+2070:    def clean_as_float(s):
+2113:                def try_merge_dec(curr_val, next_val):
+2198:def parse_money(text: str) -> float:
+2229:def clean_amount(val):
+2235:def reconcile_transactions(transactions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+2247:    def clean_amt(x):
+2296:def detect_firstbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
+2344:    def find_word_x(text_part, start_idx=0):
+2423:def detect_wema_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
+2472:    def find_word_x(text_part, start_idx=0):
+2544:def detect_fcmb_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
+2588:    def find_word_x(text_part, start_idx=0):
+2667:def clean_currency_str(value):
+2679:def extract_zenith_via_tables(pdf_path: Path, metadata: Dict) -> List[Dict]:
+2790:def extract_fidelity_via_tables(pdf_path: Path, metadata: Dict, pdf: pdfplumber.PDF = None) -> List[Dict]:
+2814:        cuts = detect_fidelity_columns(words, 'fidelity')
+2897:def extract_access_via_tables(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict], Dict]:
+2999:def extract_access_consensus(pdf_path: Path, metadata: Dict) -> Tuple[List[Dict], Dict]:
+3164:def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None, pdf: pdfplumber.PDF = None) -> Tuple[List[Dict], Dict]:
+3197:    def _cell(row, idx, is_amount=False):
+3212:    def _find_col_map(row):
+3248:            print("WARN [Ecobank] 'date' column not found by keyword ÔÇö defaulting to index 0")
+3271:    def _is_skip(date_s, desc_s):

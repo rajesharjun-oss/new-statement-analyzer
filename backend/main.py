@@ -290,4 +290,5 @@ if __name__ == "__main__":
     import uvicorn
     import os
     port = int(os.environ.get("PORT", 8001))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # Increased timeout to 300s to support high-precision math audits
+    uvicorn.run(app, host="0.0.0.0", port=port, timeout_keep_alive=300)

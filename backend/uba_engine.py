@@ -254,3 +254,43 @@ def detect_uba_columns(words: List[Dict], bank_identifier: str = "") -> Dict[str
 
     print(f"DEBUG: UBA Column boundaries: {[(n, f'{l:.1f}-{r:.1f}') for n, (l, r) in cuts.items()]}")
     return cuts
+
+import pdfplumber
+from pathlib import Path
+
+def extract_uba_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: pdfplumber.PDF = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    from pdf_extractor import parse_date_smart, parse_money, is_noise_row, group_words_to_rows, assign_row_to_cols, merge_multiline_rows
+    
+    # If pdf handle is provided, use it, otherwise open
+    _auto_close = False
+    if pdf is None:
+        pdf = pdfplumber.open(pdf_path)
+        _auto_close = True
+        
+    all_rows = []
+    cuts = None
+    
+    try:
+        for page_num, page in enumerate(pdf.pages, start=1):
+            words = page.extract_words(x_tolerance=2, y_tolerance=2)
+            if not words: continue
+            
+            # Re-detect cuts on every page to be safe
+            page_cuts = detect_uba_columns(words)
+            if page_cuts: cuts = page_cuts
+            
+            if not cuts: continue
+            
+            row_groups = group_words_to_rows(words, y_tol=3.0)
+            for rg in row_groups:
+                row = assign_row_to_cols(rg["words"], cuts)
+                if is_noise_row(row): continue
+                row["_page"] = page_num
+                all_rows.append(row)
+                
+        txns = merge_multiline_rows(all_rows)
+        # Final cleanup/parsing happens in map_uba_records or returning to extractor
+        return txns, metadata
+    finally:
+        if _auto_close:
+            pdf.close()

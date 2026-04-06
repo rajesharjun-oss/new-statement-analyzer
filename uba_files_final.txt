@@ -1,0 +1,41 @@
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\check_uba_test.py
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\debug_uba_layout.py
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\test_uba_api.py
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\test_uba_api_out.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\test_uba_api_out2.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\uba_files.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\uba_files_final.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\uba_files_utf8.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\uba_layout_out.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\uba_layout_out2.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\uba_names_final.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\uba_ocr_api_out.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\uba_ocr_api_out2.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\uba_ocr_api_out_json.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\uba_ocr_api_out_json2.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\uba_ocr_api_out_phase2.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\uba_ocr_api_out_phase2_fixed.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\uba_ocr_api_out_psv.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\uba_ocr_api_out_psv_fixed.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\uba_ocr_api_out_retry.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\uba_ocr_api_out_retry2.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\verify_uba.py
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\verify_uba_out.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\verify_uba_out2.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\verify_uba_test.py
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\verify_uba_test_out.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\verify_uba_test_out2.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\debug_uba.py
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\test_uba_pypdf.py
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\test_uba_render.py
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\uba_columns.py.txt
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\uba_engine.py
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\temp_uploads\NGN JAN - JUNE UBA.phase1.raw.psv
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\temp_uploads\UBA test.phase1.raw.csv
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\temp_uploads\UBA test.phase1.raw.psv
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\temp_uploads\UBA test.phase2.raw.psv
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\temp_uploads\UBA test.raw.csv
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\__pycache__\debug_uba.cpython-311.pyc
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\backend\__pycache__\uba_engine.cpython-311.pyc
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\node_modules\lodash\stubArray.js
+C:\Users\ionawoga\Desktop\Statement-analyzer-3.0-1\node_modules\lodash\fp\stubArray.js
