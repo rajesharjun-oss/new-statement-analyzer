@@ -39,14 +39,27 @@ def extract_with_claude(pdf_path: str) -> List[Dict[str, Any]]:
         print(f"DEBUG [claude_extraction]: PDF not found: {pdf_path}")
         return []
 
-    # Read and encode the PDF
-    pdf_bytes = pdf_file.read_bytes()
-    pdf_size_mb = len(pdf_bytes) / (1024 * 1024)
-    
-    if pdf_size_mb > 30:
-        print(f"DEBUG [claude_extraction]: PDF too large ({pdf_size_mb:.1f}MB). Max 30MB for Claude. Skipping.")
-        return []
+    # --- SAFETY CAP: Slice PDF to max_pages ---
+    from pypdf import PdfReader, PdfWriter
+    import io
 
+    max_pages = 15
+    reader = PdfReader(pdf_file)
+    total_orig_pages = len(reader.pages)
+    
+    if total_orig_pages > max_pages:
+        print(f"DEBUG [claude_extraction]: Slicing PDF from {total_orig_pages} to {max_pages} pages for safety.")
+        writer = PdfWriter()
+        for i in range(max_pages):
+            writer.add_page(reader.pages[i])
+        
+        output_buffer = io.BytesIO()
+        writer.write(output_buffer)
+        pdf_bytes = output_buffer.getvalue()
+    else:
+        pdf_bytes = pdf_file.read_bytes()
+
+    pdf_size_mb = len(pdf_bytes) / (1024 * 1024)
     pdf_base64 = base64.standard_b64encode(pdf_bytes).decode("utf-8")
 
     print(f"DEBUG [claude_extraction]: Sending {pdf_size_mb:.1f}MB PDF to Claude for extraction...")
