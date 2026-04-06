@@ -91,12 +91,13 @@ async def analyze_statement(
         content = await file.read()
         stored_path.write_bytes(content)
 
-        # Step 1: Extract transactions (Now returns a list of statement groups)
+        # Step 1: Extract transactions (Non-blocking background thread)
+        import asyncio
         if file_ext == ".pdf":
-            statement_results = extract_transactions(stored_path, bank_identifier=bank.lower())
+            statement_results = await asyncio.to_thread(extract_transactions, stored_path, bank_identifier=bank.lower())
         else:
-            # Excel/CSV handling - typically one statement
-            txns, meta = extract_excel_transactions(stored_path)
+            # Excel/CSV handling
+            txns, meta = await asyncio.to_thread(extract_excel_transactions, stored_path)
             statement_results = [{"transactions": txns, "metadata": meta}]
 
         # Step 1b: QUALITY GATE — Claude fallback for bad extractions
@@ -130,7 +131,7 @@ async def analyze_statement(
                     print(f"QUALITY GATE: Triggering Claude extraction fallback. Reason: {reason}")
                     try:
                         from claude_extraction import extract_with_claude
-                        claude_txns = extract_with_claude(str(stored_path))
+                        claude_txns = await asyncio.to_thread(extract_with_claude, str(stored_path))
                         if claude_txns and len(claude_txns) > len(txns):
                             print(f"QUALITY GATE: Claude returned {len(claude_txns)} txns (vs {len(txns)} original). Using Claude results.")
                             from pdf_extractor import normalize_remarks
@@ -158,7 +159,7 @@ async def analyze_statement(
                 if empty_pct > 0.25 and detected_bank not in ['gtbank', 'providus', 'zenith', 'access', 'uba', 'fcmb', 'wema', 'sterling'] and file_ext == '.pdf':
                     print(f'WARN: {empty_pct:.0%} empty descriptions. Retrying statement with generic mapping...')
                     from pdf_extractor import extract_transactions as _et
-                    retry_results = _et(stored_path, bank_identifier='generic')
+                    retry_results = await asyncio.to_thread(_et, stored_path, bank_identifier='generic')
                     # Find matching account in retry results
                     for rs in retry_results:
                          if rs['metadata'].get('account_no') == meta.get('account_no'):
