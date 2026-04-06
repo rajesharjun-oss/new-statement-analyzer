@@ -12,8 +12,8 @@ load_dotenv(dotenv_path=env_path)
 # Global index for rotation
 _current_key_index = 0
 
-def pdf_to_images(pdf_path: str, dpi: int = 300) -> List:
-    """Convert PDF pages to PIL Images using PyMuPDF (fitz)"""
+def pdf_to_images(pdf_path: str, dpi: int = 300, max_pages: int = 15) -> List:
+    """Convert PDF pages to PIL Images using PyMuPDF (fitz), with a strict limit."""
     import fitz
     from PIL import Image
     import io
@@ -21,7 +21,10 @@ def pdf_to_images(pdf_path: str, dpi: int = 300) -> List:
     images = []
     try:
         doc = fitz.open(pdf_path)
-        for page_num in range(len(doc)):
+        total_pages = len(doc)
+        limit = min(total_pages, max_pages)
+        
+        for page_num in range(limit):
             page = doc.load_page(page_num)
             zoom = dpi / 72.0
             pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
@@ -52,7 +55,7 @@ def extract_text_with_gemini_vision(image_bytes: bytes) -> str:
     except:
         return ""
 
-def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic") -> List[Dict]:
+def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic", max_pages: int = 15) -> List[Dict]:
     """
     Overhauled 2-Phase OCR Pipeline:
     Phase 1: High-DPI Rendering -> Vision Transcriber (Literal Grid Extraction)
@@ -75,14 +78,10 @@ def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic") -
         model = genai.GenerativeModel('gemini-2.0-flash')
         
         # Phase 1: Convert PDF to high-quality images (300 DPI for watermark-heavy PDFs)
-        images = pdf_to_images(pdf_path, dpi=300)
+        # CRITICAL: Pass max_pages to pdf_to_images to avoid memory crashes
+        images = pdf_to_images(pdf_path, dpi=300, max_pages=max_pages)
         if not images:
             return []
-            
-        # Limit to 15 pages for speed/token safety
-        if len(images) > 15:
-            print(f"DEBUG: PDF has {len(images)} pages. Processing first 15.")
-            images = images[:15]
             
         prompt_extractor = (
             "Role: You are a high-precision Financial OCR Engine.\n"
