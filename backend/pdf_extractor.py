@@ -811,9 +811,9 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                      print(f"DEBUG: Fidelity table strategy failed: {e}. Falling back to standard/pypdf...")
                      # Let it fall through
 
-            # --- 1) Scan all pages to detect header and column positions ---
+            # --- 1) Scan first 10 pages to detect header and column positions ---
             base_cuts = None
-            for i, p in enumerate(pdf_pages):
+            for i, p in enumerate(pdf_pages[:10]):
                 words = []
                 try:
                     words = p.extract_words(x_tolerance=2, y_tolerance=2)
