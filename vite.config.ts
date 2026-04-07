@@ -13,10 +13,14 @@ export default defineConfig(({ mode }) => {
         '/analyze': {
           target: 'http://localhost:8001',
           changeOrigin: true,
+          timeout: 600000,
+          proxyTimeout: 600000,
         },
         '/download': {
           target: 'http://localhost:8001',
           changeOrigin: true,
+          timeout: 600000,
+          proxyTimeout: 600000,
         },
       },
     },

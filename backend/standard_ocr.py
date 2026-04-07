@@ -12,7 +12,7 @@ load_dotenv(dotenv_path=env_path)
 # Global index for rotation
 _current_key_index = 0
 
-def pdf_to_images(pdf_path: str, dpi: int = 150, max_pages: int = 10) -> List:
+def pdf_to_images(pdf_path: str, dpi: int = 150, max_pages: int = 20) -> List:
     """Convert PDF pages to PIL Images using PyMuPDF (fitz), with a strict limit."""
     import fitz
     from PIL import Image
@@ -55,7 +55,7 @@ def extract_text_with_gemini_vision(image_bytes: bytes) -> str:
     except:
         return ""
 
-def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic", max_pages: int = 10) -> List[Dict]:
+def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic", max_pages: int = 20) -> List[Dict]:
     """
     Overhauled 2-Phase OCR Pipeline:
     Phase 1: High-DPI Rendering -> Vision Transcriber (Literal Grid Extraction)

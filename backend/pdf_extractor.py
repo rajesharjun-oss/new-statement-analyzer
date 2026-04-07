@@ -813,7 +813,9 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
 
             # --- 1) Scan first 10 pages to detect header and column positions ---
             base_cuts = None
-            for i, p in enumerate(pdf_pages[:10]):
+            # Limit header scan to first 10 pages, but DATA extraction will use all pages if searchable
+            scan_pages = pdf_pages[:10]
+            for i, p in enumerate(scan_pages):
                 words = []
                 try:
                     words = p.extract_words(x_tolerance=2, y_tolerance=2)
@@ -894,7 +896,14 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
             current_account_no = metadata.get("account_no")
             current_stmt_id = 0
 
-            for page_num, page in enumerate(pdf_pages, start=1):
+            # DETERMINISTIC RULE: If searchable (digital), process every single page.
+            # If scanned (image-based), cap at 20 pages to prevent 502 timeout.
+            effective_page_limit = 9999 if is_searchable else 20
+            pages_to_process = pdf_pages[:effective_page_limit]
+            
+            print(f"DEBUG: Processing {len(pages_to_process)} pages (Searchable={is_searchable})")
+
+            for page_num, page in enumerate(pages_to_process, start=1):
                 # Scan for metadata on every page to detect split/merged statements
                 try:
                     pg_text = page.extract_text() or ""
