@@ -91,22 +91,6 @@ async def analyze_statement(
         content = await file.read()
         stored_path.write_bytes(content)
 
-        # --- ULTIMATE 502 SHIELD: Physical Slicing ---
-        if file_ext == ".pdf":
-            try:
-                from pypdf import PdfReader, PdfWriter
-                import io
-                reader = PdfReader(stored_path)
-                if len(reader.pages) > 10:
-                    print(f"DEBUG: Slicing massive PDF ({len(reader.pages)} pgs) down to 10 for safety.")
-                    writer = PdfWriter()
-                    for i in range(10):
-                        writer.add_page(reader.pages[i])
-                    with open(stored_path, "wb") as f:
-                        writer.write(f)
-            except Exception as e:
-                print(f"ERROR: Slicer failed (likely encrypted): {e}")
-
         # Step 1: Extract transactions (Non-blocking background thread)
         import asyncio
         if file_ext == ".pdf":
