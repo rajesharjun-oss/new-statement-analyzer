@@ -179,6 +179,9 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
             raise ValueError("Wema column headers not found in first 2 pages.")
 
         for i, page in enumerate(_pdf_handle.pages):
+            if (i + 1) % 50 == 0 or i == 0:
+                print(f"  [WEMA-PROGRESS] Processing Page {i+1}/{_total_pages}...")
+                
             p_words = page.extract_words(x_tolerance=2, y_tolerance=2)
             
             # Recalibrate cuts

@@ -11,16 +11,16 @@ export default defineConfig(({ mode }) => {
       proxy: {
         // Proxy all backend API calls through Vite dev server to avoid CORS
         '/analyze': {
-          target: 'http://localhost:8001',
+          target: 'http://127.0.0.1:8001',
           changeOrigin: true,
-          timeout: 600000,
-          proxyTimeout: 600000,
+          timeout: 1800000,
+          proxyTimeout: 1800000,
         },
         '/download': {
-          target: 'http://localhost:8001',
+          target: 'http://127.0.0.1:8001',
           changeOrigin: true,
-          timeout: 600000,
-          proxyTimeout: 600000,
+          timeout: 1800000,
+          proxyTimeout: 1800000,
         },
       },
     },
