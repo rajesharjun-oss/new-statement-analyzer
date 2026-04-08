@@ -19,6 +19,10 @@ from claude_service import generate_audit_summary
 
 app = FastAPI()
 
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "message": "Backend is reachable"}
+
 # CORS for local development
 app.add_middleware(
     CORSMiddleware,
@@ -292,8 +296,9 @@ if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 8001))
     print(f"\n{'='*40}")
-    print(f"!!! STARTING BACKEND v2.1-STABLE-FINAL !!!")
-    print(f"!!! Listening on port: {port} !!!")
+    print(f"!!! STARTING BACKEND v2.3-ULTRA-STABLE !!!")
+    print(f"!!! Listening on port: {port} (IPv4) !!!")
+    print(f"!!! Timeout Support: 1800s Proxy Sync !!!")
     print(f"{'='*40}\n")
-    # Increased timeout to 300s to support high-precision math audits
-    uvicorn.run(app, host="0.0.0.0", port=port, timeout_keep_alive=300)
+    # Increased timeout to 600s for idle keep-alive support
+    uvicorn.run(app, host="0.0.0.0", port=port, timeout_keep_alive=600)
