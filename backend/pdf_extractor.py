@@ -984,11 +984,61 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
             current_account_no = metadata.get("account_no")
             current_stmt_id = 0
 
+            # --- GTBank single-content-stream detection ---
+            # GTBank PDFs often embed all page content in ONE shared content stream.
+            # pdfplumber reports N logical pages, but page.extract_words() returns ALL words
+            # for every page (with shifted y-coordinates). This causes boundary duplicates
+            # when processing page-by-page. Detect and handle as a single-pass extraction.
+            _is_single_stream = False
+            if bank_identifier in ("gtbank", "gtco") and len(pdf_pages) > 1:
+                try:
+                    _p0_words = pdf_pages[0].extract_words(x_tolerance=2, y_tolerance=2)
+                    _p1_words = pdf_pages[1].extract_words(x_tolerance=2, y_tolerance=2) if len(pdf_pages) > 1 else []
+                    if _p0_words and _p1_words and len(_p0_words) == len(_p1_words):
+                        _is_single_stream = True
+                        print(f"DEBUG [GTBank]: Single content stream detected ({len(_p0_words)} words on every page). Using full-document single-pass extraction.")
+                except Exception as _e:
+                    pass
+
+            if _is_single_stream:
+                # Single-pass: use all words from page 0 (the full content stream) without any
+                # height clipping. Group all words into rows and process once.
+                try:
+                    _all_words = pdf_pages[0].extract_words(x_tolerance=2, y_tolerance=2)
+                    _all_words.sort(key=lambda w: (w["top"], w["x0"]))
+                    # GTBank date rows have 3 physical sub-rows per transaction:
+                    #   day  (top=N)       — e.g. "24\xad"
+                    #   month+amounts (top=N+10.5) — e.g. "Aug\xad", "36,699.99"
+                    #   year (top=N+13.9 or N+20.9)
+                    # With y_tol=15, year+day rows can merge (13.9 < 15), burying the day
+                    # inside the year row and leaving the month+amounts row without a date.
+                    # y_tol=12 keeps day+month together (10.5 < 12) while separating year
+                    # from day when they are only 13.9 pts apart (13.9 > 12).
+                    tol = 12.0
+                    row_groups = group_words_to_rows(_all_words, y_tol=tol)
+                    for rg in row_groups:
+                        row = assign_row_to_cols(rg["words"], base_cuts)
+                        if is_noise_row(row):
+                            continue
+                        row["_page"] = 1
+                        row["_acc"] = current_account_no
+                        row["_stmt_id"] = current_stmt_id
+                        all_rows.append(row)
+                    print(f"DEBUG [GTBank]: Single-pass extracted {len(all_rows)} rows from full content stream.")
+                except Exception as _e:
+                    print(f"DEBUG [GTBank]: Single-pass extraction failed ({_e}). Falling back to page-by-page.")
+                    _is_single_stream = False  # fall through to normal processing
+
             # DETERMINISTIC RULE: If searchable (digital), process every single page.
             # If scanned (image-based), cap at 20 pages to prevent 502 timeout.
-            effective_page_limit = 9999 if is_searchable else 20
-            pages_to_process = pdf_pages[:effective_page_limit]
-            
+            # For single-stream GTBank PDFs, all_rows was already populated above, so
+            # set pages_to_process=[] to skip the per-page loop entirely.
+            if _is_single_stream:
+                pages_to_process = []
+            else:
+                effective_page_limit = 9999 if is_searchable else 20
+                pages_to_process = pdf_pages[:effective_page_limit]
+
             print(f"DEBUG: Processing {len(pages_to_process)} pages (Searchable={is_searchable})")
 
             for page_num, page in enumerate(pages_to_process, start=1):
@@ -1034,9 +1084,18 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
 
                 # Filter out words drawn outside the printable page area.
                 page_height = page.height
-                words = [w for w in words if w["bottom"] >= -5 and w["top"] <= page_height + 5]
+                if bank_identifier in ("gtbank", "gtco"):
+                    # GTBank PDFs often use a single shared content stream across all logical
+                    # pages. Each page's coordinate system is shifted by page_height, so the
+                    # same content stream appears on every page with different top offsets.
+                    # Using the default ±5 tolerance creates a ~10pt overlap between adjacent
+                    # pages, causing boundary transactions to be extracted twice.
+                    # Use a strict [0, page_height) window to eliminate the overlap.
+                    words = [w for w in words if w["top"] >= 0 and w["top"] < page_height]
+                else:
+                    words = [w for w in words if w["bottom"] >= -5 and w["top"] <= page_height + 5]
 
-                tol = 15.0 if bank_identifier in ["gtbank", "gtco"] else 2.5
+                tol = 12.0 if bank_identifier in ["gtbank", "gtco"] else 2.5
                 row_groups = group_words_to_rows(words, y_tol=tol)
 
                 for rg in row_groups:
@@ -2064,16 +2123,25 @@ def assign_row_to_cols(row_words: List[Dict[str, Any]], cuts: Dict[str, Tuple[fl
     # Ensure words are sorted left-to-right
     row_words = sorted(row_words, key=lambda w: w["x0"])
 
+    # Pattern to identify monetary amounts (e.g. "19,000.00", "100.00", "1,234,567.89")
+    # Also matches \xad-prefixed amounts used by GTBank for negative/overdrawn balances
+    # (e.g. "\xad3,398.20" means -3398.20)
+    _money_re = re.compile(r'^[\xad\u00ad]?[\d,]+\.\d{2}$')
+
     # 1. Geometric Assignment
     for w in row_words:
         x0, x1 = w["x0"], w["x1"]
+        # For monetary amounts (e.g. "19,000.00"), always use x1 (the right edge) for column
+        # assignment. This serves two purposes:
+        #   (a) Amounts whose x0 falls just inside a text column (e.g. value_date) but whose
+        #       x1 falls in the correct numeric column are correctly placed.
+        #   (b) Text words (bank name, descriptions, dates) whose x1 happens to fall in a
+        #       numeric column are NOT misassigned because they aren't monetary.
+        # For non-monetary text, always use x0 so it lands in the leftmost matching column.
+        is_monetary = bool(_money_re.match(w["text"].strip()))
+        ref_point = x1 if is_monetary else x0
+
         for col, (l, r) in cuts.items():
-            # Use lowercase comparison for the column name
-            if col.lower() in right_aligned_cols:
-                ref_point = x1
-            else:
-                ref_point = x0
-            
             if l <= ref_point < r:
                 bucket[col].append(w["text"])
                 break
@@ -2294,14 +2362,30 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             else:
                 # Merging logic
                 if current:
+                    # --- FIX: GTBank year fragment repair ---
+                    # GTBank dates are split across 3 physical rows (day, month+amounts, year).
+                    # The year row (containing just "YYYY" in the date column) is a separate
+                    # group that is NOT an anchor (no amounts). Detect it and fix incomplete dates.
+                    year_only = re.match(r'^(20\d{2})$', tdate.strip()) if tdate else None
+                    if year_only and current.get("date"):
+                        curr_date = current["date"]
+                        # Fix dates where year is "1" (parsed from "DD-Mon" without year)
+                        if re.search(r'-1$', curr_date):
+                            fixed = re.sub(r'-1$', f'-{year_only.group(1)}', curr_date)
+                            current["date"] = fixed
+                        # Also fix value_date if it has a similar incomplete form
+                        curr_vd = current.get("value_date", "")
+                        if curr_vd and re.search(r'-1$', curr_vd):
+                            current["value_date"] = re.sub(r'-1$', f'-{year_only.group(1)}', curr_vd)
+
                     desc_dt = parse_date_smart(rem)
                     assigned_dt = False
                     if desc_dt and not current["value_date"]:
                          current["value_date"] = desc_dt
                          assigned_dt = True
-                    
+
                     if ref: current["reference"] = (current["reference"] + " " + ref).strip()
-                    if not assigned_dt and rem: 
+                    if not assigned_dt and rem:
                          current["description"] = (current["description"] + " " + rem).strip()
                     if branch: current["branch"] = (current["branch"] + " " + branch).strip()
                     
@@ -2334,23 +2418,26 @@ def parse_money(text: str) -> float:
         return 0.0
     text_str = str(text).strip()
     
-    # User Request: Robust cleaning: keep only digits and decimals
+    # Check for soft-hyphen negative sign (GTBank overdrawn balances, e.g. "\xad3,398.20")
+    is_negative = text_str.startswith('\xad') or text_str.startswith('\u00ad')
+
+    # Robust cleaning: keep only digits and decimals
     cleaned = re.sub(r'[^\d.]', '', text_str)
     if not cleaned:
         return 0.0
-        
+
     # Reject pure digit strings with no decimal point or comma formatting.
     # Real amounts always have '.XX' (e.g., '20,000.00' or '200.00').
     # Reference numbers (even those prefixed with REF:) become unformatted digit strings like '2027676474'.
     if '.' not in cleaned and len(cleaned) >= 6:
         # 6+ digits with no decimal = almost certainly a reference number
         return 0.0
-        
+
     try:
         val = float(cleaned)
         if abs(val) > 100000000000000.0:  # 100 Trillion safety clamp
             return 0.0
-        if "(" in text_str or "-" in text_str:
+        if is_negative or "(" in text_str or "-" in text_str:
              return -val
         return val
     except:
