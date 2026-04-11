@@ -699,11 +699,16 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
             # C) Auto-Detect Bank (if needed)
             combined_text = first_text  # Always initialize for guard checks below
             if bank_identifier == "auto":
-                if not combined_text.strip() and is_searchable:
-                    # Rare case: first page is blank but searchable exists deeper
+                if not combined_text.strip():
+                    # First page has no text — probe the next 2 pages.
+                    # This catches: (a) blank cover pages on digital PDFs,
+                    # (b) scanned docs where only page 2+ carries the bank header.
                     for p in pdf_pages[1:3]:
-                        combined_text += "\n" + (p.extract_text() or "")
-                
+                        try:
+                            combined_text += "\n" + (p.extract_text() or "")
+                        except Exception:
+                            pass
+
                 bank_identifier = detect_template(combined_text)
 
             # HARD GUARD: GTBank only allowed if positively detected (with 2+ signals OR explicit header name)
@@ -767,12 +772,27 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                      print("DEBUG: UBA PDF is searchable - routing to dedicated coordinate engine")
                      uba_txns, uba_meta = extract_uba_via_coordinates(Path(pdf_path), metadata, pdf=pdf)
                      if uba_txns: return [{"transactions": normalize_remarks(uba_txns), "metadata": uba_meta}]
-                 
-                 # Scanned or coordinate failure -> AI fallback
-                 print("DEBUG: UBA PDF requires AI extraction...")
-                 txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='uba', max_pages=15)
-                 if txns: return [{"transactions": normalize_remarks(txns), "metadata": {"method": "gemini_vision"}}]
-                 return [{"transactions": [], "metadata": {"error": "UBA Gemini Vision returned 0 txns"}}]
+
+                 # Scanned or coordinate failure — use batched Vision so all pages are covered.
+                 # The old 15-page hard-cap dropped most transactions for multi-page UBA statements.
+                 print("DEBUG: UBA PDF requires AI extraction (batched, all pages)...")
+                 if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+                     try:
+                         from standard_ocr import extract_scanned_statement_batched
+                         uba_ai_txns = extract_scanned_statement_batched(
+                             str(pdf_path), bank_identifier="uba", batch_size=15
+                         )
+                         if uba_ai_txns:
+                             print(f"DEBUG: UBA batched AI returned {len(uba_ai_txns)} transactions")
+                             return [{"transactions": normalize_remarks(uba_ai_txns),
+                                      "metadata": {**metadata, "method": "gemini_vision_batched"}}]
+                     except Exception as _e:
+                         print(f"DEBUG: UBA batched AI failed ({_e}), trying single-call fallback...")
+                         txns = extract_transactions_via_ai(str(pdf_path), bank_identifier="uba", max_pages=15)
+                         if txns:
+                             return [{"transactions": normalize_remarks(txns),
+                                      "metadata": {**metadata, "method": "gemini_vision"}}]
+                 return [{"transactions": [], "metadata": {**metadata, "error": "UBA Gemini Vision returned 0 txns"}}]
 
             elif bank_identifier == "access":
                  from access_engine import extract_access_via_coordinates
