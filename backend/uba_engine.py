@@ -181,10 +181,12 @@ def detect_uba_columns(words: List[Dict], bank_identifier: str = "") -> Dict[str
     if w_vd:
         bounds["value_date"] = (w_vd["x0"], w_vd["x1"])
 
-    # 3. Description (Narration / Transaction Remarks / Remarks)
+    # 3. Description (Narration / Transaction Remarks / Remarks / Description)
     idx_desc, w_desc = find_word("NARRATION")
     if not w_desc:
         idx_desc, w_desc = find_word("REMARKS")
+    if not w_desc:
+        idx_desc, w_desc = find_word("DESCRIPTION")
     if w_desc:
         bounds["description"] = (w_desc["x0"], w_desc["x1"])
 

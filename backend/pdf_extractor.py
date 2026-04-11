@@ -502,7 +502,13 @@ def detect_template(first_page_text: str) -> str:
         return "zenith"
     if "access bank" in header_text or "access diamond" in header_text:
         return "access"
-    if "united bank for africa" in header_text or " uba " in header_text or ("withdrawal" in header_text and "deposit" in header_text):
+    # UBA signals: explicit name OR word-boundary "UBA" OR column fingerprints.
+    # "date posted" is the column header used in UBA Naira statements (not other banks).
+    # "withdrawal"+"deposit" covers older UBA templates.
+    # re.search word-boundary avoids matching "/UBA" inside narrations.
+    _uba_name = bool(re.search(r'\buba\b', header_text)) or "united bank for africa" in header_text
+    _uba_cols = "date posted" in header_text or ("withdrawal" in header_text and "deposit" in header_text)
+    if _uba_name or _uba_cols:
         return "uba"
     if "first bank" in header_text or "firstbank" in header_text or " fbn " in header_text:
         return "firstbank"
