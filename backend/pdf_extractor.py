@@ -711,6 +711,21 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
 
                 bank_identifier = detect_template(combined_text)
 
+                # D) If text-based detection still returned 'generic' (scanned / no text layer),
+                #    use a single cheap Gemini Vision call to read the bank logo/header from
+                #    the first page image.  This lets scanned UBA, Access, GTBank etc. be routed
+                #    to their dedicated engines instead of the generic Vision path.
+                if bank_identifier == "generic" and GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+                    print("DEBUG: Text detection → generic. Trying Gemini Vision bank identification...")
+                    try:
+                        from standard_ocr import detect_bank_from_scanned_image
+                        gemini_bank = detect_bank_from_scanned_image(str(pdf_path))
+                        if gemini_bank and gemini_bank != "generic":
+                            bank_identifier = gemini_bank
+                            print(f"DEBUG: Gemini Vision identified scanned bank as: '{bank_identifier}'")
+                    except Exception as _gbe:
+                        print(f"DEBUG: Gemini Vision bank ID failed: {_gbe}")
+
             # HARD GUARD: GTBank only allowed if positively detected (with 2+ signals OR explicit header name)
             if STRICT_TEMPLATE_MODE and bank_identifier == "gtbank":
                 low_text = combined_text.lower()

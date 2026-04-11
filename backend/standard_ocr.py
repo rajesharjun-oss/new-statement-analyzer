@@ -48,7 +48,7 @@ def extract_text_with_gemini_vision(image_bytes: bytes) -> str:
     if not keys: return ""
     api_key = keys[_current_key_index % len(keys)]
     _current_key_index += 1
-    
+
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-2.0-flash')
@@ -59,6 +59,68 @@ def extract_text_with_gemini_vision(image_bytes: bytes) -> str:
         return response.text if response else ""
     except:
         return ""
+
+
+_KNOWN_BANKS = {
+    "uba", "gtbank", "access", "zenith", "wema", "fcmb",
+    "fidelity", "providus", "sterling", "firstbank", "ecobank",
+}
+
+def detect_bank_from_scanned_image(pdf_path: str) -> str:
+    """
+    Use Gemini Vision to identify the issuing bank from the first page of a scanned PDF.
+    Called only when text-based auto-detection returns 'generic' (i.e. no text layer).
+
+    Returns a lowercase bank identifier from _KNOWN_BANKS, or 'generic' on failure.
+    This is a cheap single-image call — much faster than full extraction.
+    """
+    global _current_key_index
+    raw_keys = os.getenv("GEMINI_API_KEY", "")
+    keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
+    if not keys:
+        return "generic"
+
+    api_key = keys[_current_key_index % len(keys)]
+    _current_key_index += 1
+
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-2.0-flash")
+
+        images = pdf_to_images(pdf_path, dpi=150, max_pages=1, start_page=0)
+        if not images:
+            return "generic"
+
+        prompt = (
+            "This is the first page of a Nigerian bank statement.\n"
+            "Identify which bank issued this statement.\n"
+            "Reply with ONLY one of these exact lowercase identifiers:\n"
+            "uba, gtbank, access, zenith, wema, fcmb, fidelity, providus, sterling, firstbank, ecobank\n"
+            "If you cannot determine the bank, reply: generic\n"
+            "Reply with just the single identifier word — no punctuation, no explanation."
+        )
+
+        response = model.generate_content([prompt, images[0]])
+        if not response or not response.text:
+            return "generic"
+
+        candidate = response.text.strip().lower().split()[0].rstrip(".,;:")
+        if candidate in _KNOWN_BANKS:
+            print(f"DEBUG: Gemini Vision identified scanned bank as: '{candidate}'")
+            return candidate
+
+        # Partial-match fallback (e.g. response was "gtbank nigeria")
+        for known in _KNOWN_BANKS:
+            if known in candidate:
+                print(f"DEBUG: Gemini Vision partial-match bank: '{known}' in '{candidate}'")
+                return known
+
+        print(f"DEBUG: Gemini Vision bank ID returned unrecognised value: '{candidate}'")
+        return "generic"
+
+    except Exception as e:
+        print(f"DEBUG: Gemini Vision bank detection failed: {e}")
+        return "generic"
 
 def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic", max_pages: int = 20, _start_page: int = 0) -> List[Dict]:
     """
