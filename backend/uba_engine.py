@@ -181,19 +181,25 @@ def detect_uba_columns(words: List[Dict], bank_identifier: str = "") -> Dict[str
     if w_vd:
         bounds["value_date"] = (w_vd["x0"], w_vd["x1"])
 
-    # 3. Description (Narration / Transaction Remarks / Remarks / Description)
+    # 3. Description (Narration / Transaction Remarks / Remarks / Description / Details)
     idx_desc, w_desc = find_word("NARRATION")
     if not w_desc:
         idx_desc, w_desc = find_word("REMARKS")
     if not w_desc:
         idx_desc, w_desc = find_word("DESCRIPTION")
+    if not w_desc:
+        # First Bank uses "Transaction Details" header
+        idx_desc, w_desc = find_word("DETAILS")
     if w_desc:
         bounds["description"] = (w_desc["x0"], w_desc["x1"])
 
-    # 4. Reference (CHQ NO / Cheque Number)
+    # 4. Reference (CHQ NO / Cheque Number / Ref. Number)
     idx_ref, w_ref = find_word("CHQ")
     if not w_ref:
         idx_ref, w_ref = find_word("CHEQUE")
+    if not w_ref:
+        # First Bank uses "Ref. Number" header; "REF" matches "Ref."
+        idx_ref, w_ref = find_word("REF")
     if w_ref:
         bounds["reference"] = (w_ref["x0"], w_ref["x1"])
 
