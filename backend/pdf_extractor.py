@@ -682,6 +682,19 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 print("DEBUG: Corrupted or secured PDF layout detected. Forcing Vision OCR Fallback.")
                 is_searchable = False
                 first_text = ""
+                # Fallback: use pypdf to extract first-page text for bank detection.
+                # pypdf does not execute path-rendering code so it survives pdfplumber crashes.
+                if PYPDF_AVAILABLE:
+                    try:
+                        from pypdf import PdfReader as _PyReader
+                        _r = _PyReader(pdf_path)
+                        if _r.pages:
+                            first_text = _r.pages[0].extract_text() or ""
+                            if not first_text.strip() and len(_r.pages) > 1:
+                                first_text = _r.pages[1].extract_text() or ""
+                            print(f"DEBUG: pypdf bank-detection fallback: {len(first_text)} chars extracted")
+                    except Exception as _pe:
+                        print(f"DEBUG: pypdf bank-detection fallback also failed: {_pe}")
 
             # C) Auto-Detect Bank (if needed)
             combined_text = first_text  # Always initialize for guard checks below
@@ -795,11 +808,20 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 except Exception as e:
                      print(f"DEBUG: Ecobank table strategy failed: {e}. Trying Hybrid AI Fallback...")
                 
-                # Hardened Fallback: If 0 transactions found, trigger AI (Capped to 15 pages)
+                # Hardened Fallback: If 0 transactions found, trigger batched AI (all pages)
                 if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
-                    print(f"DEBUG: Ecobank table engine returned 0 txns. Triggering Hybrid AI Fallback...")
-                    txns = extract_transactions_via_ai(str(pdf_path), max_pages=15)
-                    if txns: return [{"transactions": normalize_remarks(txns), "metadata": metadata}]
+                    print(f"DEBUG: Ecobank table engine returned 0 txns. Triggering batched AI Fallback...")
+                    try:
+                        from standard_ocr import extract_scanned_statement_batched
+                        ai_txns = extract_scanned_statement_batched(
+                            str(pdf_path), bank_identifier=bank_identifier, batch_size=15
+                        )
+                        if ai_txns:
+                            return [{"transactions": normalize_remarks(ai_txns), "metadata": metadata}]
+                    except Exception as _e:
+                        print(f"DEBUG: Batched AI fallback failed ({_e}), trying single-call (15 pages)...")
+                        txns = extract_transactions_via_ai(str(pdf_path), max_pages=15)
+                        if txns: return [{"transactions": normalize_remarks(txns), "metadata": metadata}]
 
             # --- 0e) Special Case: Fidelity Table Strategy
             if bank_identifier == "fidelity":
@@ -808,8 +830,23 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                      if fidelity_txns:
                          return [{"transactions": normalize_remarks(fidelity_txns), "metadata": metadata}]
                 except Exception as e:
-                     print(f"DEBUG: Fidelity table strategy failed: {e}. Falling back to standard/pypdf...")
-                     # Let it fall through
+                     print(f"DEBUG: Fidelity table strategy failed: {e}. Trying batched AI fallback...")
+
+                # Batched Gemini Vision fallback: processes ALL pages, not capped at 15.
+                # Fidelity PDFs can be 30-50+ pages, and the 15-page cap loses most transactions.
+                if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+                    try:
+                        from standard_ocr import extract_scanned_statement_batched
+                        print("DEBUG: Fidelity — batched AI extraction (all pages)...")
+                        fid_ai_txns = extract_scanned_statement_batched(
+                            str(pdf_path), bank_identifier="fidelity", batch_size=15
+                        )
+                        if fid_ai_txns:
+                            print(f"DEBUG: Fidelity batched AI returned {len(fid_ai_txns)} transactions")
+                            return [{"transactions": normalize_remarks(fid_ai_txns), "metadata": metadata}]
+                    except Exception as e:
+                        print(f"DEBUG: Fidelity batched AI fallback failed: {e}. Falling through...")
+                    # Let remaining code try generic column detection as last resort
 
             # --- 1) Scan first 10 pages to detect header and column positions ---
             base_cuts = None
@@ -845,13 +882,23 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 
                 if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
                     try:
-                        # CRITICAL: Cap AI fallback to 15 pages to prevent 502 timeouts
-                        transactions = extract_transactions_via_ai(str(pdf_path), max_pages=15)
+                        from standard_ocr import extract_scanned_statement_batched
+                        print(f"DEBUG: Gemini batched fallback (all pages) for bank={bank_identifier}...")
+                        transactions = extract_scanned_statement_batched(
+                            str(pdf_path), bank_identifier=bank_identifier, batch_size=15
+                        )
                         if transactions:
-                             print(f"DEBUG: Gemini Multimodal extracted {len(transactions)} txns")
-                             return [{"transactions": transactions, "metadata": {}}]
+                            print(f"DEBUG: Gemini batched extracted {len(transactions)} txns")
+                            return [{"transactions": transactions, "metadata": {}}]
                     except Exception as e:
-                        print(f"DEBUG: Gemini Multimodal fallback failed: {e}")
+                        print(f"DEBUG: Gemini batched fallback failed ({e}), trying 15-page single-call...")
+                        try:
+                            transactions = extract_transactions_via_ai(str(pdf_path), max_pages=15)
+                            if transactions:
+                                print(f"DEBUG: Gemini single-call extracted {len(transactions)} txns")
+                                return [{"transactions": transactions, "metadata": {}}]
+                        except Exception as e2:
+                            print(f"DEBUG: Gemini single-call fallback also failed: {e2}")
 
                 # Claude fallback (between Gemini and legacy OCR)
                 if os.getenv("ANTHROPIC_API_KEY"):
