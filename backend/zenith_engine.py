@@ -9,10 +9,13 @@ from typing import Dict, List, Tuple, Any
 
 def detect_zenith_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
     """
-    Detect column boundaries for Zenith Bank (DATE POSTED | VALUE DATE | DESCRIPTION | DEBIT | CREDIT | BALANCE)
+    Detect column boundaries for Zenith Bank.
+    Supports two header variants:
+      Classic: DATE POSTED | VALUE DATE | DESCRIPTION | DEBIT | CREDIT | BALANCE
+      Alt:     TXN DATE    | VAL DATE   | REMARKS      | DEBIT | CREDIT | BALANCE
     """
-    header_keywords = ["DATE", "POSTED", "VALUE", "DESCRIPTION", "DEBIT", "CREDIT", "BALANCE"]
-    
+    header_keywords = ["DATE", "POSTED", "TXN", "VALUE", "VAL", "DESCRIPTION", "REMARKS", "DEBIT", "CREDIT", "BALANCE"]
+
     header_words = []
     for w in words:
         txt = w["text"].upper().strip()
@@ -35,30 +38,32 @@ def detect_zenith_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float,
     if len(best_band) < 4:
         return None
 
-    def find_col(sub: str):
-        for w in best_band:
-            if sub in w["text"].upper():
-                return w["x0"], w["x1"]
+    def find_col(*subs: str):
+        """Return (x0, x1) for the first header word matching any of the given substrings."""
+        for sub in subs:
+            for w in best_band:
+                if sub in w["text"].upper():
+                    return w["x0"], w["x1"]
         return None, None
 
-    x_date_l, _   = find_col("DATE")
-    x_val_l, _    = find_col("VALUE")
-    x_desc_l, _   = find_col("DESCRIPTION")
-    x_deb_l, _    = find_col("DEBIT")
-    x_cred_l, _   = find_col("CREDIT")
-    x_bal_l, _    = find_col("BALANCE")
+    x_date_l, x_date_r   = find_col("DATE")          # TXN DATE / DATE POSTED
+    x_val_l,  x_val_r    = find_col("VALUE", "VAL")   # VALUE DATE / VAL DATE
+    x_desc_l, x_desc_r   = find_col("DESCRIPTION", "REMARKS", "NARRATION")
+    x_deb_l,  x_deb_r    = find_col("DEBIT")
+    x_cred_l, x_cred_r   = find_col("CREDIT")
+    x_bal_l,  x_bal_r    = find_col("BALANCE")
 
     if x_date_l is None or x_deb_l is None:
         return None
 
     # Find both edges for each column
     headers = []
-    if x_date_l is not None: headers.append(("date", x_date_l, find_col("DATE")[1]))
-    if x_val_l is not None: headers.append(("value_date", x_val_l, find_col("VALUE")[1]))
-    if x_desc_l is not None: headers.append(("description", x_desc_l, find_col("DESCRIPTION")[1]))
-    if x_deb_l is not None: headers.append(("debit", x_deb_l, find_col("DEBIT")[1]))
-    if x_cred_l is not None: headers.append(("credit", x_cred_l, find_col("CREDIT")[1]))
-    if x_bal_l is not None: headers.append(("balance", x_bal_l, find_col("BALANCE")[1]))
+    if x_date_l is not None: headers.append(("date",        x_date_l, x_date_r))
+    if x_val_l  is not None: headers.append(("value_date",  x_val_l,  x_val_r))
+    if x_desc_l is not None: headers.append(("description", x_desc_l, x_desc_r))
+    if x_deb_l  is not None: headers.append(("debit",       x_deb_l,  x_deb_r))
+    if x_cred_l is not None: headers.append(("credit",      x_cred_l, x_cred_r))
+    if x_bal_l  is not None: headers.append(("balance",     x_bal_l,  x_bal_r))
     
     headers = sorted(headers, key=lambda x: x[1])
     
@@ -145,10 +150,11 @@ def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
                                  bool(re.match(r'^[\d.]+$', text) and len(text) > 2)
                     
                     for name, (min_x, max_x) in cuts.items():
-                        if is_numeric:
-                            val = w['x1']  # Right-align all amounts
-                        else:
-                            val = w['x1'] if name in ["debit", "credit", "balance"] else w['x0']
+                        # Use x0 (left edge) for all words.
+                        # Using x1 (right edge) for amounts caused misclassification because
+                        # right-aligned amounts can extend past the column boundary into the
+                        # next column's range, shifting every amount one column to the right.
+                        val = w['x0']
                         if min_x <= val < max_x:
                             row_dict[name].append(w['text'])
                             break

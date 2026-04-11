@@ -867,7 +867,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
             # --- 0e) Special Case: Fidelity Table Strategy
             if bank_identifier == "fidelity":
                 try:
-                     fidelity_txns, _ = extract_fidelity_via_tables(Path(pdf_path), metadata, pdf=pdf)
+                     fidelity_txns = extract_fidelity_via_tables(Path(pdf_path), metadata, pdf=pdf)
                      if fidelity_txns:
                          return [{"transactions": normalize_remarks(fidelity_txns), "metadata": metadata}]
                 except Exception as e:
@@ -1372,14 +1372,16 @@ def detect_zenith_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float,
     if w_td: 
         bounds["date"] = (w_td["x0"], w_td["x1"])
     
-    # 2. value_date (Look for "VALUE")
+    # 2. value_date (Look for "VALUE" or "VAL" — Zenith uses "VAL DATE")
     idx_vd, w_vd = find_word_x("VALUE")
+    if not w_vd: idx_vd, w_vd = find_word_x("VAL")
     if w_vd:
         bounds["value_date"] = (w_vd["x0"], w_vd["x1"])
 
-    # 3. description (NARRATION / DESCRIPTION)
+    # 3. description (NARRATION / DESCRIPTION / REMARKS — Zenith uses "REMARKS")
     idx_rem, w_rem = find_word_x("NARRATION")
     if not w_rem: idx_rem, w_rem = find_word_x("DESCRIPTION")
+    if not w_rem: idx_rem, w_rem = find_word_x("REMARKS")
     if not w_rem: idx_rem, w_rem = find_word_x("PARTICULARS")
     if w_rem: bounds["description"] = (w_rem["x0"], w_rem["x1"])
 
