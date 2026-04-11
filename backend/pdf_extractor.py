@@ -2124,9 +2124,9 @@ def assign_row_to_cols(row_words: List[Dict[str, Any]], cuts: Dict[str, Tuple[fl
     row_words = sorted(row_words, key=lambda w: w["x0"])
 
     # Pattern to identify monetary amounts (e.g. "19,000.00", "100.00", "1,234,567.89")
-    # Also matches \xad-prefixed amounts used by GTBank for negative/overdrawn balances
-    # (e.g. "\xad3,398.20" means -3398.20)
-    _money_re = re.compile(r'^[\xad\u00ad]?[\d,]+\.\d{2}$')
+    # Also matches \xad-prefixed amounts (GTBank negatives, e.g. "\xad3,398.20")
+    # and regular minus-prefixed negatives (First Bank, e.g. "-17,916,933,934.18")
+    _money_re = re.compile(r'^[-\xad\u00ad]?[\d,]+\.\d{2}$')
 
     # 1. Geometric Assignment
     for w in row_words:
@@ -2312,10 +2312,22 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     if not curr_val or not next_val: return None
                     curr_val = curr_val.strip()
                     next_val = next_val.strip()
+                    # Case 1: Trailing decimal point (e.g., '59,910,642.' + '35')
                     if curr_val.endswith('.') and re.match(r'^\d{1,2}$', next_val):
                          return curr_val + next_val
+                    # Case 2: One decimal digit (e.g., '59,910,642.3' + '5')
                     if re.match(r'.*\.\d$', curr_val) and re.match(r'^\d$', next_val):
                          return curr_val + next_val
+                    # Case 3: Integer split with decimal continuation for very wide numbers
+                    # Handles wrapping in narrow PDF balance columns, e.g.:
+                    #   '1,084,293,1'  + '29.87' → '1,084,293,129.87'
+                    #   '784,293,025'  + '.87'   → '784,293,025.87'
+                    #   '-157,177,33'  + '6.69'  → '-157,177,336.69'
+                    if ('.' not in curr_val and
+                            len(curr_val) >= 7 and
+                            re.search(r'[\d,]', curr_val) and
+                            re.match(r'^-?\d{0,2}\.\d{2}$', next_val)):
+                        return curr_val + next_val
                     return None
 
                 m_d = try_merge_dec(deb, next_deb)
@@ -3053,19 +3065,27 @@ def extract_fidelity_via_tables(pdf_path: Path, metadata: Dict, pdf: pdfplumber.
                     for r_idx, r in enumerate(rows):
                         if is_noise_row(r): continue
                         
+                        _fid_money_re = re.compile(r'^-?[\d,]+\.\d{2}$')
                         row_data = {name: [] for name in cuts.keys()}
                         for w in r["words"]:
-                            x_mid = (w["x0"] + w["x1"]) / 2
+                            # Money values are right-aligned in their column; use x1 (right edge)
+                            # so that very wide amounts (e.g. 13,000,000,000.00) that start
+                            # left of their column header still land in the correct column.
+                            # Text/description words are left-aligned; use xmid for those.
+                            if _fid_money_re.match(w["text"]):
+                                x_probe = w["x1"]
+                            else:
+                                x_probe = (w["x0"] + w["x1"]) / 2
                             assigned = False
                             for name, (left, right) in cuts.items():
-                                if left <= x_mid <= right:
+                                if left <= x_probe <= right:
                                     row_data[name].append(w["text"])
                                     assigned = True
                                     break
-                            
+
                             if not assigned:
                                 for name, (left, right) in cuts.items():
-                                    if left - 5 <= x_mid <= right + 5:
+                                    if left - 5 <= x_probe <= right + 5:
                                         row_data[name].append(w["text"])
                                         break
 
