@@ -2445,7 +2445,50 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         # If Date+Bal but no Amt, we keep it (Fix 2).
         if txn["date"]:
              final_out.append(txn)
-    
+
+    # --- BALANCE INFERENCE: fill in invalid/missing balances ---
+    # When a transaction's balance was not captured (e.g. value overflowed the
+    # narrow PDF column and the partial string has no decimal point), parse_money
+    # will return 0 for it.  The NEXT transaction's balance IS correct (the PDF
+    # re-anchors there).  We can work backwards: B[i] = B[i+1] + D[i+1] - C[i+1].
+
+    def _is_valid_balance(raw) -> bool:
+        """Returns True only if the raw balance string will survive parse_money."""
+        if not raw:
+            return False
+        s = re.sub(r'[^\d.]', '', str(raw))
+        if not s:
+            return False
+        # Reject strings without a decimal point that are 6+ digits (parse_money does the same)
+        if '.' not in s and len(s) >= 6:
+            return False
+        try:
+            return float(s) != 0.0
+        except ValueError:
+            return False
+
+    for i in range(len(final_out) - 2, -1, -1):
+        txn = final_out[i]
+        bal_raw = txn.get("balance", "")
+        if _is_valid_balance(bal_raw):
+            continue  # Balance is present and valid; skip
+
+        next_txn = final_out[i + 1]
+        next_b_raw = next_txn.get("balance", "") or ""
+        if not _is_valid_balance(next_b_raw):
+            continue  # Next balance also invalid/missing; can't infer
+
+        next_b = clean_as_float(str(next_b_raw))
+        next_d = clean_as_float(str(next_txn.get("debit", "") or ""))
+        next_c = clean_as_float(str(next_txn.get("credit", "") or ""))
+
+        if next_b == 0.0:
+            continue  # Next balance is genuinely 0; skip
+
+        # Infer: B[i] such that B[i] - D[i+1] + C[i+1] = B[i+1]
+        inferred = round(next_b + next_d - next_c, 2)
+        final_out[i]["balance"] = str(inferred)
+
     return final_out
 
 
