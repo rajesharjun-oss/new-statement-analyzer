@@ -2378,7 +2378,8 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     # GTBank dates are split across 3 physical rows (day, month+amounts, year).
                     # The year row (containing just "YYYY" in the date column) is a separate
                     # group that is NOT an anchor (no amounts). Detect it and fix incomplete dates.
-                    year_only = re.match(r'^(20\d{2})$', tdate.strip()) if tdate else None
+                    # Allow "2026 18:27" (year + trailing time) in addition to bare "2026"
+                    year_only = re.match(r'^(20\d{2})(?:\s|$)', tdate.strip()) if tdate else None
                     if year_only and current.get("date"):
                         curr_date = current["date"]
                         # Fix dates where year is "1" (parsed from "DD-Mon" without year)
@@ -2389,6 +2390,34 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                         curr_vd = current.get("value_date", "")
                         if curr_vd and re.search(r'-1$', curr_vd):
                             current["value_date"] = re.sub(r'-1$', f'-{year_only.group(1)}', curr_vd)
+
+                    # --- FIX: GTBank amounts-in-continuation repair ---
+                    # In GTBank 4-row format, the "month row" has amounts but is not an
+                    # anchor because the date field contains "Jan '249607428GAP" (ref mixed
+                    # in). The value_date field however has "21 Jan" which is parseable.
+                    # If this continuation has amounts AND current already has amounts,
+                    # recover the date from value_date and start a new transaction.
+                    cont_has_amounts = bool(deb or cred)
+                    if cont_has_amounts and (current.get("debit") or current.get("credit")):
+                        vdate_raw = (r.get("value_date") or "").strip()
+                        recovered_date = parse_date_smart(vdate_raw) if vdate_raw else None
+                        if recovered_date:
+                            out.append(current)
+                            current = {
+                                "_page": r.get("_page"),
+                                "_row": r.get("_row"),
+                                "date": recovered_date,
+                                "value_date": vdate_raw,
+                                "reference": ref,
+                                "debit": deb,
+                                "credit": cred,
+                                "balance": bal,
+                                "description": rem,
+                                "branch": branch,
+                                "raw_text": raw_text
+                            }
+                            i += 1
+                            continue
 
                     desc_dt = parse_date_smart(rem)
                     assigned_dt = False
