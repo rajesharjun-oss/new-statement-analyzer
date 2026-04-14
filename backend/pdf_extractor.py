@@ -564,6 +564,7 @@ def map_headers_to_columns(headers: list) -> dict:
     Purely keyword-driven - never relies on column position.
     Returns: {"date": 0, "description": 2, "debit": 4, ...}
     """
+    import re as _re
     mapping = {}
     for i, raw_header in enumerate(headers):
         # Normalize: collapse newlines + extra whitespace, lowercase
@@ -572,7 +573,13 @@ def map_headers_to_columns(headers: list) -> dict:
             if field in mapping:
                 continue  # Already resolved
             for variant in variants:
-                if variant in h:
+                # Short variants (≤3 chars, e.g. "cr", "dr") must match as whole words
+                # to avoid false substring matches (e.g. "cr" inside "description").
+                if len(variant) <= 3:
+                    matched = bool(_re.search(r'\b' + _re.escape(variant) + r'\b', h))
+                else:
+                    matched = variant in h
+                if matched:
                     mapping[field] = i
                     break
     short = [str(x or "")[:15] for x in headers]
@@ -2397,8 +2404,18 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     # in). The value_date field however has "21 Jan" which is parseable.
                     # If this continuation has amounts AND current already has amounts,
                     # recover the date from value_date and start a new transaction.
+                    # GUARD: only fire when tdate looks like a bare month name (the
+                    # GTBank-specific pattern). This prevents false triggers on files
+                    # where continuation rows happen to have a parseable value_date.
+                    _MONTH_RE = re.compile(
+                        r'^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b',
+                        re.IGNORECASE
+                    )
                     cont_has_amounts = bool(deb or cred)
-                    if cont_has_amounts and (current.get("debit") or current.get("credit")):
+                    tdate_clean = tdate.replace("\xad", "").strip()
+                    if (cont_has_amounts
+                            and (current.get("debit") or current.get("credit"))
+                            and _MONTH_RE.match(tdate_clean)):
                         vdate_raw = (r.get("value_date") or "").strip()
                         recovered_date = parse_date_smart(vdate_raw) if vdate_raw else None
                         if recovered_date:
@@ -3674,8 +3691,11 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None, pdf: pdfpl
                                 "originating_branch": "",
                                 "description":       full_desc,
                                 "remarks":           full_desc, # ENSURE Remarks is not empty
-                                "debit":             parse_money(raw_debit),
-                                "credit":            parse_money(raw_cred),
+                                # Debit/credit are amounts in dedicated columns — always positive.
+                                # Some Ecobank PDFs store debit values with a leading minus sign;
+                                # abs() ensures the amount is always non-negative.
+                                "debit":             abs(parse_money(raw_debit)),
+                                "credit":            abs(parse_money(raw_cred)),
                                 "balance":           parse_money(raw_bal),
                                 "category":          "Unallocated",
                                 "is_reversal":       False,
