@@ -2271,7 +2271,66 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     out: List[Dict[str, Any]] = []
     current = None
-    
+
+    # Pending carry-forward amounts from "pre-date narration rows".
+    # In some UBA PDFs the narration line (which carries the debit/credit amount
+    # and sometimes the running balance) appears ABOVE the date line in the PDF's
+    # visual order, the reverse of the normal layout.  Because the narration row
+    # has no date it is treated as a non-anchor continuation and its amounts would
+    # normally be silently dropped.  We save them here and inject them into the
+    # very next anchor that is still missing those fields.
+    _pending_debit   = ""
+    _pending_credit  = ""
+    _pending_balance = ""
+    # Regex for a well-formed monetary amount (commas ok, optional leading minus).
+    # The 2-decimal variant is the standard form; the 1-decimal variant catches
+    # amounts whose last digit was physically split to a second line in the PDF
+    # (e.g. "1,000,000,000.0" + "0" across two rows).
+    _valid_money_re  = re.compile(r'^[-\xad]?[\d,]+\.\d{2}$')   # standard xx
+    _valid_money_re1 = re.compile(r'^[-\xad]?[\d,]+\.\d$')       # one-decimal
+
+    def _is_carry_amount(s: str) -> bool:
+        """Return True if s is a monetary value worth carrying forward.
+
+        Accepts the standard 2-decimal form AND large 1-decimal values that
+        result from a PDF splitting "1,000,000,000.00" across two physical
+        lines (e.g. "1,000,000,000.0" on one line, "0" on the next).
+        Rejects 0.00 and non-numeric strings like "Withdrawals".
+        """
+        if not s:
+            return False
+        if _valid_money_re.match(s):
+            try:
+                return float(s.replace(',', '')) != 0.0
+            except ValueError:
+                return False
+        if _valid_money_re1.match(s):
+            try:
+                return float(s.replace(',', '')) >= 1000.0  # must be a large amount
+            except ValueError:
+                return False
+        return False
+
+    def _pick_amount(anchor_val: str, pending_val: str) -> str:
+        """Return the more meaningful of the two amount strings.
+
+        Non-zero pending overrides a zero (or empty) anchor value; a non-zero
+        anchor value always wins over pending.
+        """
+        def _nonzero(s):
+            if not s:
+                return False
+            try:
+                return float(s.replace(',', '')) != 0.0
+            except ValueError:
+                return False
+
+        if _nonzero(anchor_val):
+            return anchor_val
+        if pending_val and _valid_money_re.match(pending_val):
+            return pending_val
+        return anchor_val or pending_val or ""
+
     def clean_as_float(s):
         if not s: return 0.0
         s = s.replace(" ", "").replace(",", "")
@@ -2309,7 +2368,14 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                  continue
 
             # --- FIX: SPLIT DECIMAL MERGE ---
-            if i + 1 < len(rows):
+            # Only attempt to merge split numbers when the current row has some
+            # transaction context (date, description, or reference).  Rows that
+            # are pure numbers with no text fields are statement header totals
+            # (e.g. "Total Debit: 45,567,533,642.72") that leak into all_rows;
+            # merging their truncated values with digits from the following
+            # address line produces wildly incorrect debit/credit figures.
+            _has_context = bool(tdate or rem or ref)
+            if _has_context and i + 1 < len(rows):
                 next_r = rows[i+1]
                 next_deb = (next_r.get("debit") or "").strip()
                 next_cred = (next_r.get("credit") or "").strip()
@@ -2364,20 +2430,24 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             if is_anchor:
                 if current:
                     out.append(current)
-                
+
                 current = {
                     "_page": r.get("_page"),
                     "_row": r.get("_row"),
                     "date": parse_date_smart(tdate),
                     "value_date": (r.get("value_date") or "").strip(),
                     "reference": ref,
-                    "debit": deb,
-                    "credit": cred,
-                    "balance": bal,
+                    "debit":   _pick_amount(deb,  _pending_debit),
+                    "credit":  _pick_amount(cred, _pending_credit),
+                    "balance": bal or _pending_balance,
                     "description": rem,
                     "branch": branch,
                     "raw_text": raw_text
                 }
+                # Consumed — clear pending carry-forward state
+                _pending_debit   = ""
+                _pending_credit  = ""
+                _pending_balance = ""
             else:
                 # Merging logic
                 if current:
@@ -2435,6 +2505,32 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                             }
                             i += 1
                             continue
+
+                    # --- FIX: UBA pre-date narration carry-forward ---
+                    # Some UBA statements place the narration (and its debit/credit
+                    # amount, sometimes the running balance too) on the line visually
+                    # ABOVE the transaction date line.  Because such a row has no
+                    # date it is not an anchor; without special handling its amounts
+                    # are silently dropped.  We detect valid monetary amounts on
+                    # these non-anchor rows and carry them forward into the next
+                    # anchor that is still missing those fields.
+                    # Guard: only fire for truly monetary values (not header words
+                    # like "Withdrawals") and skip the GTBank month-row path
+                    # (already handled above with its own `continue`).
+                    _carry_deb  = _is_carry_amount(deb)
+                    _carry_cred = _is_carry_amount(cred)
+                    _carry_bal  = bool(bal  and _valid_money_re.match(bal))
+                    if _carry_deb or _carry_cred or _carry_bal:
+                        if _carry_deb:  _pending_debit   = deb
+                        if _carry_cred: _pending_credit  = cred
+                        if _carry_bal:  _pending_balance = bal
+                        # Still append any description text to the current transaction
+                        if rem:
+                            current["description"] = (current["description"] + " " + rem).strip()
+                        if ref:
+                            current["reference"] = (current["reference"] + " " + ref).strip()
+                        i += 1
+                        continue
 
                     desc_dt = parse_date_smart(rem)
                     assigned_dt = False
