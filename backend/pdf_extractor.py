@@ -271,6 +271,8 @@ def detect_column_cuts_from_header(words: List[Dict[str, Any]], bank_identifier:
         ("Wema", detect_wema_columns),
         ("FCMB", detect_fcmb_columns),
         ("FirstBank", detect_firstbank_columns),
+        ("stanchart", detect_stanchart_columns),
+        ("stanbic", detect_stanbic_columns),
         ("Ecobank", detect_ecobank_columns),
         ("UBA", detect_uba_columns),
         ("Access", detect_access_columns),
@@ -520,8 +522,10 @@ def detect_template(first_page_text: str) -> str:
         return "wema"
     if "sterling" in header_text:
         return "sterling"
-    if "stanbic" in header_text or "standard chartered" in header_text:
-        return "generic"
+    if "standard chartered" in header_text or "stanchart" in header_text:
+        return "stanchart"
+    if "stanbic" in header_text:
+        return "stanbic"
 
     # --- Priority 2: Column-header fingerprints ---
     # GTBank requires BOTH structural signals to avoid false positives
@@ -1102,7 +1106,14 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 else:
                     words = [w for w in words if w["bottom"] >= -5 and w["top"] <= page_height + 5]
 
-                tol = 12.0 if bank_identifier in ["gtbank", "gtco"] else 2.5
+                # y_tol=12 was designed for single-stream GTBank PDFs where the
+                # transaction date is split across 3 physical sub-rows (day / month+amounts
+                # / year, spaced ~10-14pt apart).  Those PDFs are handled by the
+                # single-pass path above and never reach this per-page loop.
+                # Non-single-stream GTBank/GTCO PDFs use a normal single-row-per-transaction
+                # layout; applying y_tol=12 here merges adjacent transactions into one row,
+                # causing ~77% chain errors.  Use 4pt for all per-page extraction.
+                tol = 4.0 if bank_identifier in ["gtbank", "gtco"] else 2.5
                 row_groups = group_words_to_rows(words, y_tol=tol)
 
                 for rg in row_groups:
@@ -2716,44 +2727,56 @@ def detect_firstbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[flo
         return None
 
     # Keywords to identify header row
-    keywords = ["TRANS", "DATE", "REF", "NUMBER", "DETAILS", "VALUE", "WITHDRAWAL", "DEPOSIT", "BALANCE"]
-    
-    # Zenith/FirstBank often clearer with slightly larger tolerance? Or stick to 3.0?
+    keywords = ["TRANS", "DATE", "REF", "NUMBER", "DETAILS", "VALUE",
+                "WITHDRAWAL", "DEPOSIT", "DEBIT", "CREDIT", "BALANCE"]
+
     rows = group_words_to_rows(words, y_tol=3.0)
-    
+
     best_row = None
+    best_row_idx = -1
     max_score = 0
-    
-    for r in rows:
+
+    for idx, r in enumerate(rows):
         score = 0
         row_text_upper = " ".join([w["text"].upper() for w in r["words"]])
-        
+
         # Mandatory checks
         if "DATE" not in row_text_upper: continue
-        if not any(x in row_text_upper for x in ["WITHDRAWAL", "DEPOSIT", "BALANCE"]): continue
-        
+        if not any(x in row_text_upper for x in
+                   ["WITHDRAWAL", "DEPOSIT", "DEBIT", "CREDIT", "BALANCE"]): continue
+
         for w in r["words"]:
-            for k in keywords: 
+            for k in keywords:
                 if k in w["text"].upper():
                     score += 1
-        
+
         # Bonus for specific FirstBank phrases
         if "WITHDRAWAL" in row_text_upper and "(DR)" in row_text_upper: score += 3
         if "DEPOSIT" in row_text_upper and "(CR)" in row_text_upper: score += 3
         if "TRANSACTION DETAILS" in row_text_upper: score += 2
+        if "DEBIT" in row_text_upper and "CREDIT" in row_text_upper: score += 1
 
         if score > max_score:
             max_score = score
             best_row = r
+            best_row_idx = idx
 
     if not best_row or max_score < 3:
         return None
 
     print(f"DEBUG: Found FirstBank Header Row: {[w['text'] for w in best_row['words']]}")
 
+    # Merge next row if multi-line header (e.g. "WITHDRAWAL" on one line, "(DR)" on the next)
+    header_words = list(best_row["words"])
+    if best_row_idx + 1 < len(rows):
+        next_r = rows[best_row_idx + 1]
+        next_text = " ".join(w["text"].upper() for w in next_r["words"])
+        if any(k in next_text for k in ["(DR)", "(CR)", "NUMBER", "DATE", "AMOUNT"]):
+            header_words.extend(next_r["words"])
+
     # Extract columns
-    sorted_words = sorted(best_row["words"], key=lambda w: w["x0"])
-    
+    sorted_words = sorted(header_words, key=lambda w: w["x0"])
+
     # Use helper similar to Zenith
     def find_word_x(text_part, start_idx=0):
         for i in range(start_idx, len(sorted_words)):
@@ -2781,15 +2804,17 @@ def detect_firstbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[flo
     idx_vd, w_vd = find_word_x("VALUE")
     if w_vd: bounds["value_date"] = (w_vd["x0"], w_vd["x1"])
 
-    # 5. Withdrawal (Debit)
-    idx_deb, w_deb = find_word_x("WITHDRAWAL") 
+    # 5. Withdrawal / Debit
+    idx_deb, w_deb = find_word_x("WITHDRAWAL")
     if not w_deb: idx_deb, w_deb = find_word_x("WITHDRAW")
+    if not w_deb: idx_deb, w_deb = find_word_x("DEBIT")
     if not w_deb: idx_deb, w_deb = find_word_x("DR")
     if w_deb: bounds["debit"] = (w_deb["x0"], w_deb["x1"])
 
-    # 6. Deposit (Credit)
+    # 6. Deposit / Credit
     idx_cred, w_cred = find_word_x("DEPOSIT")
     if not w_cred: idx_cred, w_cred = find_word_x("LODGEMENT")
+    if not w_cred: idx_cred, w_cred = find_word_x("CREDIT")
     if not w_cred: idx_cred, w_cred = find_word_x("CR")
     if w_cred: bounds["credit"] = (w_cred["x0"], w_cred["x1"])
 
@@ -2797,8 +2822,10 @@ def detect_firstbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[flo
     idx_bal, w_bal = find_word_x("BALANCE")
     if w_bal: bounds["balance"] = (w_bal["x0"], w_bal["x1"])
 
-    # Mandatory
-    if "date" not in bounds or "debit" not in bounds:
+    # Mandatory: need date AND at least one amount column AND balance
+    if "date" not in bounds or ("debit" not in bounds and "credit" not in bounds):
+        return None
+    if "balance" not in bounds:
         return None
 
     # Construct cuts
@@ -2831,6 +2858,178 @@ def detect_firstbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[flo
             
         cuts[col_name] = (start, end)
 
+    return cuts
+
+
+def detect_stanchart_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
+    """
+    Detect column boundaries for Standard Chartered Nigeria.
+    Typical headers: Posting Date | Value Date | Description | Reference | Debit | Credit | Balance
+    """
+    if not words:
+        return None
+
+    keywords = ["DATE", "POSTING", "VALUE", "DESCRIPTION", "REFERENCE", "DEBIT", "CREDIT",
+                "BALANCE", "NARRATION", "WITHDRAWAL", "DEPOSIT", "CHEQUE", "DETAILS", "AMOUNT"]
+
+    rows = group_words_to_rows(words, y_tol=3.0)
+
+    best_row = None
+    max_score = 0
+
+    for r in rows:
+        row_text = " ".join(w["text"].upper() for w in r["words"])
+        if "DATE" not in row_text:
+            continue
+        if "BALANCE" not in row_text:
+            continue
+        if not any(k in row_text for k in ["DEBIT", "CREDIT", "WITHDRAWAL", "DEPOSIT"]):
+            continue
+
+        score = sum(1 for k in keywords if k in row_text)
+        if "POSTING" in row_text and "DATE" in row_text:
+            score += 2
+        if "STANDARD" in row_text or "CHARTERED" in row_text:
+            score -= 5  # header watermark rows, not the column header
+
+        if score > max_score:
+            max_score = score
+            best_row = r
+
+    if not best_row or max_score < 3:
+        return None
+
+    # Merge next row if it looks like a column-header continuation
+    best_idx = rows.index(best_row)
+    header_words = list(best_row["words"])
+    if best_idx + 1 < len(rows):
+        next_row = rows[best_idx + 1]
+        next_text = " ".join(w["text"].upper() for w in next_row["words"])
+        if any(k in next_text for k in ["DATE", "AMOUNT", "NUMBER"]):
+            header_words.extend(next_row["words"])
+
+    sorted_words = sorted(header_words, key=lambda w: w["x0"])
+
+    def find_word(text_parts, start=0):
+        for i in range(start, len(sorted_words)):
+            t = sorted_words[i]["text"].upper()
+            for part in (text_parts if isinstance(text_parts, list) else [text_parts]):
+                if part in t:
+                    return i, sorted_words[i]
+        return -1, None
+
+    bounds = {}
+
+    _, w = find_word(["POSTING", "TRANS", "DATE"])
+    if w:
+        bounds["date"] = (w["x0"], w["x1"])
+
+    _, w = find_word(["VALUE"])
+    if w:
+        bounds["value_date"] = (w["x0"], w["x1"])
+
+    _, w = find_word(["DESCRIPTION", "NARRATION", "DETAILS", "PARTICULARS"])
+    if w:
+        bounds["description"] = (w["x0"], w["x1"])
+
+    _, w = find_word(["REFERENCE", "REF", "CHEQUE", "CHQ"])
+    if w:
+        bounds["reference"] = (w["x0"], w["x1"])
+
+    _, w = find_word(["DEBIT", "WITHDRAWAL", "WITHDRAW", "DR"])
+    if w:
+        bounds["debit"] = (w["x0"], w["x1"])
+
+    _, w = find_word(["CREDIT", "DEPOSIT", "CR"])
+    if w:
+        bounds["credit"] = (w["x0"], w["x1"])
+
+    _, w = find_word(["BALANCE"])
+    if w:
+        bounds["balance"] = (w["x0"], w["x1"])
+
+    if "date" not in bounds or "balance" not in bounds:
+        return None
+    if "debit" not in bounds and "credit" not in bounds:
+        return None
+
+    sorted_cols = sorted(bounds.items(), key=lambda item: item[1][0])
+    cuts = {}
+    for i, (col_name, (l, r)) in enumerate(sorted_cols):
+        start = 0.0 if i == 0 else (sorted_cols[i-1][1][1] + l) / 2
+        end = 1000.0 if i == len(sorted_cols) - 1 else (r + sorted_cols[i+1][1][0]) / 2
+        cuts[col_name] = (start, end)
+
+    print(f"DEBUG [StanChart]: Column cuts: {[(n, f'{a:.0f}-{b:.0f}') for n,(a,b) in cuts.items()]}")
+    return cuts
+
+
+def detect_stanbic_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
+    """
+    Detect column boundaries for Stanbic IBTC.
+    Typical headers: Date | Description | Reference | Debit | Credit | Balance
+    """
+    if not words:
+        return None
+
+    rows = group_words_to_rows(words, y_tol=3.0)
+    keywords = ["DATE", "DESCRIPTION", "REFERENCE", "DEBIT", "CREDIT", "BALANCE",
+                "NARRATION", "VALUE", "WITHDRAWAL", "DEPOSIT", "CHEQUE"]
+
+    best_row = None
+    max_score = 0
+
+    for r in rows:
+        row_text = " ".join(w["text"].upper() for w in r["words"])
+        if "DATE" not in row_text or "BALANCE" not in row_text:
+            continue
+        if not any(k in row_text for k in ["DEBIT", "CREDIT", "WITHDRAWAL", "DEPOSIT"]):
+            continue
+        score = sum(1 for k in keywords if k in row_text)
+        if score > max_score:
+            max_score = score
+            best_row = r
+
+    if not best_row or max_score < 3:
+        return None
+
+    sorted_words = sorted(best_row["words"], key=lambda w: w["x0"])
+
+    def fw(parts):
+        for w in sorted_words:
+            t = w["text"].upper()
+            for p in (parts if isinstance(parts, list) else [parts]):
+                if p in t:
+                    return w
+        return None
+
+    bounds = {}
+    w = fw(["DATE", "TRANS"])
+    if w: bounds["date"] = (w["x0"], w["x1"])
+    w = fw(["VALUE"])
+    if w: bounds["value_date"] = (w["x0"], w["x1"])
+    w = fw(["DESCRIPTION", "NARRATION", "DETAILS"])
+    if w: bounds["description"] = (w["x0"], w["x1"])
+    w = fw(["REFERENCE", "REF", "CHEQUE", "CHQ"])
+    if w: bounds["reference"] = (w["x0"], w["x1"])
+    w = fw(["DEBIT", "WITHDRAWAL", "DR"])
+    if w: bounds["debit"] = (w["x0"], w["x1"])
+    w = fw(["CREDIT", "DEPOSIT", "CR"])
+    if w: bounds["credit"] = (w["x0"], w["x1"])
+    w = fw(["BALANCE"])
+    if w: bounds["balance"] = (w["x0"], w["x1"])
+
+    if "date" not in bounds or "balance" not in bounds:
+        return None
+
+    sorted_cols = sorted(bounds.items(), key=lambda item: item[1][0])
+    cuts = {}
+    for i, (col_name, (l, r)) in enumerate(sorted_cols):
+        start = 0.0 if i == 0 else (sorted_cols[i-1][1][1] + l) / 2
+        end = 1000.0 if i == len(sorted_cols) - 1 else (r + sorted_cols[i+1][1][0]) / 2
+        cuts[col_name] = (start, end)
+
+    print(f"DEBUG [Stanbic]: Column cuts: {[(n, f'{a:.0f}-{b:.0f}') for n,(a,b) in cuts.items()]}")
     return cuts
 
 

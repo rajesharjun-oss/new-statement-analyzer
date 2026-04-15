@@ -8,6 +8,23 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Any
 from utils import parse_date_smart
 
+
+def _group_words_to_rows(words, y_tol=6.0):
+    """Local row grouper: groups words within y_tol into the same row."""
+    if not words:
+        return []
+    sorted_w = sorted(words, key=lambda w: (w["top"], w["x0"]))
+    rows = []
+    cur = {"top": sorted_w[0]["top"], "words": [sorted_w[0]]}
+    for w in sorted_w[1:]:
+        if abs(w["top"] - cur["top"]) <= y_tol:
+            cur["words"].append(w)
+        else:
+            rows.append(cur)
+            cur = {"top": w["top"], "words": [w]}
+    rows.append(cur)
+    return rows
+
 def parse_wema_money(text: str) -> float | None:
     """Converts text to float. Uses length and character filtering for Reference IDs."""
     if not text: return None
@@ -188,14 +205,14 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
             new_cuts = detect_wema_columns(p_words)
             if new_cuts: cuts = new_cuts
             
-            rows_dict = {}
-            for w in p_words:
-                y = int(w['top'] / 5) * 5 
-                if y not in rows_dict: rows_dict[y] = []
-                rows_dict[y].append(w)
-                
-            for y in sorted(rows_dict.keys()):
-                row_words = sorted(rows_dict[y], key=lambda x: x['x0'])
+            # Group words into visual rows using relative proximity (y_tol=6pt) instead
+            # of the old fixed 5px absolute bins.  Fixed bins split same-row words that
+            # differ by 6-9pt vertically (common with larger fonts / PDF baseline shifts),
+            # causing the balance or debit amount to land in a separate bucket from the
+            # date, which then gets dropped as "no date → not a transaction."
+            row_groups = _group_words_to_rows(p_words, y_tol=6.0)
+            for rg in row_groups:
+                row_words = sorted(rg["words"], key=lambda x: x['x0'])
                 
                 row_data = {k: "" for k in cuts.keys()}
                 for w in row_words:
