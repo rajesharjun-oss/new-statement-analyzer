@@ -271,6 +271,8 @@ def detect_column_cuts_from_header(words: List[Dict[str, Any]], bank_identifier:
         ("Wema", detect_wema_columns),
         ("FCMB", detect_fcmb_columns),
         ("FirstBank", detect_firstbank_columns),
+        ("stanchart", detect_stanchart_columns),
+        ("stanbic", detect_stanbic_columns),
         ("Ecobank", detect_ecobank_columns),
         ("UBA", detect_uba_columns),
         ("Access", detect_access_columns),
@@ -494,15 +496,26 @@ def detect_template(first_page_text: str) -> str:
     header_text = text[:1500]
     if "ecobank" in header_text:
         return "ecobank"
-    if "gtco" in header_text or "guaranty trust" in header_text:
-        return "gtbank"  # Route both to GTBank logic
+    # Split GTBank (old, single-stream 3-row date format) from GTCO (new, single-row format).
+    # Old GTBank PDFs say "Guaranty Trust Bank" but never "gtco".
+    # New GTCO PDFs say "GTCO" (rebranded) – detected by the explicit logo keyword.
+    if "gtco" in header_text:
+        return "gtco"
+    if "guaranty trust" in header_text:
+        return "gtbank"
     if "providus" in header_text:
         return "providus"
     if "zenith" in header_text:
         return "zenith"
     if "access bank" in header_text or "access diamond" in header_text:
         return "access"
-    if "united bank for africa" in header_text or " uba " in header_text or ("withdrawal" in header_text and "deposit" in header_text):
+    # UBA signals: explicit name OR word-boundary "UBA" OR column fingerprints.
+    # "date posted" is the column header used in UBA Naira statements (not other banks).
+    # "withdrawal"+"deposit" covers older UBA templates.
+    # re.search word-boundary avoids matching "/UBA" inside narrations.
+    _uba_name = bool(re.search(r'\buba\b', header_text)) or "united bank for africa" in header_text
+    _uba_cols = "date posted" in header_text or ("withdrawal" in header_text and "deposit" in header_text)
+    if _uba_name or _uba_cols:
         return "uba"
     if "first bank" in header_text or "firstbank" in header_text or " fbn " in header_text:
         return "firstbank"
@@ -514,8 +527,10 @@ def detect_template(first_page_text: str) -> str:
         return "wema"
     if "sterling" in header_text:
         return "sterling"
-    if "stanbic" in header_text or "standard chartered" in header_text:
-        return "generic"
+    if "standard chartered" in header_text or "stanchart" in header_text:
+        return "stanchart"
+    if "stanbic" in header_text:
+        return "stanbic"
 
     # --- Priority 2: Column-header fingerprints ---
     # GTBank requires BOTH structural signals to avoid false positives
@@ -558,6 +573,7 @@ def map_headers_to_columns(headers: list) -> dict:
     Purely keyword-driven - never relies on column position.
     Returns: {"date": 0, "description": 2, "debit": 4, ...}
     """
+    import re as _re
     mapping = {}
     for i, raw_header in enumerate(headers):
         # Normalize: collapse newlines + extra whitespace, lowercase
@@ -566,7 +582,13 @@ def map_headers_to_columns(headers: list) -> dict:
             if field in mapping:
                 continue  # Already resolved
             for variant in variants:
-                if variant in h:
+                # Short variants (≤3 chars, e.g. "cr", "dr") must match as whole words
+                # to avoid false substring matches (e.g. "cr" inside "description").
+                if len(variant) <= 3:
+                    matched = bool(_re.search(r'\b' + _re.escape(variant) + r'\b', h))
+                else:
+                    matched = variant in h
+                if matched:
                     mapping[field] = i
                     break
     short = [str(x or "")[:15] for x in headers]
@@ -682,16 +704,49 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 print("DEBUG: Corrupted or secured PDF layout detected. Forcing Vision OCR Fallback.")
                 is_searchable = False
                 first_text = ""
+                # Fallback: use pypdf to extract first-page text for bank detection.
+                # pypdf does not execute path-rendering code so it survives pdfplumber crashes.
+                if PYPDF_AVAILABLE:
+                    try:
+                        from pypdf import PdfReader as _PyReader
+                        _r = _PyReader(pdf_path)
+                        if _r.pages:
+                            first_text = _r.pages[0].extract_text() or ""
+                            if not first_text.strip() and len(_r.pages) > 1:
+                                first_text = _r.pages[1].extract_text() or ""
+                            print(f"DEBUG: pypdf bank-detection fallback: {len(first_text)} chars extracted")
+                    except Exception as _pe:
+                        print(f"DEBUG: pypdf bank-detection fallback also failed: {_pe}")
 
             # C) Auto-Detect Bank (if needed)
             combined_text = first_text  # Always initialize for guard checks below
             if bank_identifier == "auto":
-                if not combined_text.strip() and is_searchable:
-                    # Rare case: first page is blank but searchable exists deeper
+                if not combined_text.strip():
+                    # First page has no text — probe the next 2 pages.
+                    # This catches: (a) blank cover pages on digital PDFs,
+                    # (b) scanned docs where only page 2+ carries the bank header.
                     for p in pdf_pages[1:3]:
-                        combined_text += "\n" + (p.extract_text() or "")
-                
+                        try:
+                            combined_text += "\n" + (p.extract_text() or "")
+                        except Exception:
+                            pass
+
                 bank_identifier = detect_template(combined_text)
+
+                # D) If text-based detection still returned 'generic' (scanned / no text layer),
+                #    use a single cheap Gemini Vision call to read the bank logo/header from
+                #    the first page image.  This lets scanned UBA, Access, GTBank etc. be routed
+                #    to their dedicated engines instead of the generic Vision path.
+                if bank_identifier == "generic" and GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+                    print("DEBUG: Text detection → generic. Trying Gemini Vision bank identification...")
+                    try:
+                        from standard_ocr import detect_bank_from_scanned_image
+                        gemini_bank = detect_bank_from_scanned_image(str(pdf_path))
+                        if gemini_bank and gemini_bank != "generic":
+                            bank_identifier = gemini_bank
+                            print(f"DEBUG: Gemini Vision identified scanned bank as: '{bank_identifier}'")
+                    except Exception as _gbe:
+                        print(f"DEBUG: Gemini Vision bank ID failed: {_gbe}")
 
             # HARD GUARD: GTBank only allowed if positively detected (with 2+ signals OR explicit header name)
             if STRICT_TEMPLATE_MODE and bank_identifier == "gtbank":
@@ -754,12 +809,27 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                      print("DEBUG: UBA PDF is searchable - routing to dedicated coordinate engine")
                      uba_txns, uba_meta = extract_uba_via_coordinates(Path(pdf_path), metadata, pdf=pdf)
                      if uba_txns: return [{"transactions": normalize_remarks(uba_txns), "metadata": uba_meta}]
-                 
-                 # Scanned or coordinate failure -> AI fallback
-                 print("DEBUG: UBA PDF requires AI extraction...")
-                 txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='uba', max_pages=15)
-                 if txns: return [{"transactions": normalize_remarks(txns), "metadata": {"method": "gemini_vision"}}]
-                 return [{"transactions": [], "metadata": {"error": "UBA Gemini Vision returned 0 txns"}}]
+
+                 # Scanned or coordinate failure — use batched Vision so all pages are covered.
+                 # The old 15-page hard-cap dropped most transactions for multi-page UBA statements.
+                 print("DEBUG: UBA PDF requires AI extraction (batched, all pages)...")
+                 if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+                     try:
+                         from standard_ocr import extract_scanned_statement_batched
+                         uba_ai_txns = extract_scanned_statement_batched(
+                             str(pdf_path), bank_identifier="uba", batch_size=15
+                         )
+                         if uba_ai_txns:
+                             print(f"DEBUG: UBA batched AI returned {len(uba_ai_txns)} transactions")
+                             return [{"transactions": normalize_remarks(uba_ai_txns),
+                                      "metadata": {**metadata, "method": "gemini_vision_batched"}}]
+                     except Exception as _e:
+                         print(f"DEBUG: UBA batched AI failed ({_e}), trying single-call fallback...")
+                         txns = extract_transactions_via_ai(str(pdf_path), bank_identifier="uba", max_pages=15)
+                         if txns:
+                             return [{"transactions": normalize_remarks(txns),
+                                      "metadata": {**metadata, "method": "gemini_vision"}}]
+                 return [{"transactions": [], "metadata": {**metadata, "error": "UBA Gemini Vision returned 0 txns"}}]
 
             elif bank_identifier == "access":
                  from access_engine import extract_access_via_coordinates
@@ -795,21 +865,45 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 except Exception as e:
                      print(f"DEBUG: Ecobank table strategy failed: {e}. Trying Hybrid AI Fallback...")
                 
-                # Hardened Fallback: If 0 transactions found, trigger AI (Capped to 15 pages)
+                # Hardened Fallback: If 0 transactions found, trigger batched AI (all pages)
                 if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
-                    print(f"DEBUG: Ecobank table engine returned 0 txns. Triggering Hybrid AI Fallback...")
-                    txns = extract_transactions_via_ai(str(pdf_path), max_pages=15)
-                    if txns: return [{"transactions": normalize_remarks(txns), "metadata": metadata}]
+                    print(f"DEBUG: Ecobank table engine returned 0 txns. Triggering batched AI Fallback...")
+                    try:
+                        from standard_ocr import extract_scanned_statement_batched
+                        ai_txns = extract_scanned_statement_batched(
+                            str(pdf_path), bank_identifier=bank_identifier, batch_size=15
+                        )
+                        if ai_txns:
+                            return [{"transactions": normalize_remarks(ai_txns), "metadata": metadata}]
+                    except Exception as _e:
+                        print(f"DEBUG: Batched AI fallback failed ({_e}), trying single-call (15 pages)...")
+                        txns = extract_transactions_via_ai(str(pdf_path), max_pages=15)
+                        if txns: return [{"transactions": normalize_remarks(txns), "metadata": metadata}]
 
             # --- 0e) Special Case: Fidelity Table Strategy
             if bank_identifier == "fidelity":
                 try:
-                     fidelity_txns, _ = extract_fidelity_via_tables(Path(pdf_path), metadata, pdf=pdf)
+                     fidelity_txns = extract_fidelity_via_tables(Path(pdf_path), metadata, pdf=pdf)
                      if fidelity_txns:
                          return [{"transactions": normalize_remarks(fidelity_txns), "metadata": metadata}]
                 except Exception as e:
-                     print(f"DEBUG: Fidelity table strategy failed: {e}. Falling back to standard/pypdf...")
-                     # Let it fall through
+                     print(f"DEBUG: Fidelity table strategy failed: {e}. Trying batched AI fallback...")
+
+                # Batched Gemini Vision fallback: processes ALL pages, not capped at 15.
+                # Fidelity PDFs can be 30-50+ pages, and the 15-page cap loses most transactions.
+                if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+                    try:
+                        from standard_ocr import extract_scanned_statement_batched
+                        print("DEBUG: Fidelity — batched AI extraction (all pages)...")
+                        fid_ai_txns = extract_scanned_statement_batched(
+                            str(pdf_path), bank_identifier="fidelity", batch_size=15
+                        )
+                        if fid_ai_txns:
+                            print(f"DEBUG: Fidelity batched AI returned {len(fid_ai_txns)} transactions")
+                            return [{"transactions": normalize_remarks(fid_ai_txns), "metadata": metadata}]
+                    except Exception as e:
+                        print(f"DEBUG: Fidelity batched AI fallback failed: {e}. Falling through...")
+                    # Let remaining code try generic column detection as last resort
 
             # --- 1) Scan first 10 pages to detect header and column positions ---
             base_cuts = None
@@ -845,13 +939,23 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 
                 if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
                     try:
-                        # CRITICAL: Cap AI fallback to 15 pages to prevent 502 timeouts
-                        transactions = extract_transactions_via_ai(str(pdf_path), max_pages=15)
+                        from standard_ocr import extract_scanned_statement_batched
+                        print(f"DEBUG: Gemini batched fallback (all pages) for bank={bank_identifier}...")
+                        transactions = extract_scanned_statement_batched(
+                            str(pdf_path), bank_identifier=bank_identifier, batch_size=15
+                        )
                         if transactions:
-                             print(f"DEBUG: Gemini Multimodal extracted {len(transactions)} txns")
-                             return [{"transactions": transactions, "metadata": {}}]
+                            print(f"DEBUG: Gemini batched extracted {len(transactions)} txns")
+                            return [{"transactions": transactions, "metadata": {}}]
                     except Exception as e:
-                        print(f"DEBUG: Gemini Multimodal fallback failed: {e}")
+                        print(f"DEBUG: Gemini batched fallback failed ({e}), trying 15-page single-call...")
+                        try:
+                            transactions = extract_transactions_via_ai(str(pdf_path), max_pages=15)
+                            if transactions:
+                                print(f"DEBUG: Gemini single-call extracted {len(transactions)} txns")
+                                return [{"transactions": transactions, "metadata": {}}]
+                        except Exception as e2:
+                            print(f"DEBUG: Gemini single-call fallback also failed: {e2}")
 
                 # Claude fallback (between Gemini and legacy OCR)
                 if os.getenv("ANTHROPIC_API_KEY"):
@@ -896,11 +1000,63 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
             current_account_no = metadata.get("account_no")
             current_stmt_id = 0
 
+            # --- GTBank single-content-stream detection ---
+            # GTBank PDFs often embed all page content in ONE shared content stream.
+            # pdfplumber reports N logical pages, but page.extract_words() returns ALL words
+            # for every page (with shifted y-coordinates). This causes boundary duplicates
+            # when processing page-by-page. Detect and handle as a single-pass extraction.
+            _is_single_stream = False
+            if bank_identifier in ("gtbank", "gtco") and len(pdf_pages) > 1:
+                try:
+                    _p0_words = pdf_pages[0].extract_words(x_tolerance=2, y_tolerance=2)
+                    _p1_words = pdf_pages[1].extract_words(x_tolerance=2, y_tolerance=2) if len(pdf_pages) > 1 else []
+                    if _p0_words and _p1_words and len(_p0_words) == len(_p1_words):
+                        _is_single_stream = True
+                        print(f"DEBUG [GTBank]: Single content stream detected ({len(_p0_words)} words on every page). Using full-document single-pass extraction.")
+                except Exception as _e:
+                    pass
+
+            if _is_single_stream:
+                # Single-pass: use all words from page 0 (the full content stream) without any
+                # height clipping. Group all words into rows and process once.
+                try:
+                    _all_words = pdf_pages[0].extract_words(x_tolerance=2, y_tolerance=2)
+                    _all_words.sort(key=lambda w: (w["top"], w["x0"]))
+                    # Old GTBank date rows split across 3 physical sub-rows per transaction:
+                    #   day  (top=N)         — e.g. "24\xad"
+                    #   month+amounts (top=N+10.5) — e.g. "Aug\xad", "36,699.99"
+                    #   year (top=N+13.9 or N+20.9)
+                    # y_tol=12 keeps day+month together (10.5 < 12) while separating
+                    # year from day (13.9 > 12). Required for "gtbank" (old format).
+                    #
+                    # New GTCO PDFs use one row per transaction (no 3-row date split).
+                    # Their rows are only ~10pt apart, so y_tol=12 would incorrectly
+                    # merge adjacent transactions → high chain errors. Use y_tol=4.
+                    tol = 4.0 if bank_identifier == "gtco" else 12.0
+                    row_groups = group_words_to_rows(_all_words, y_tol=tol)
+                    for rg in row_groups:
+                        row = assign_row_to_cols(rg["words"], base_cuts)
+                        if is_noise_row(row):
+                            continue
+                        row["_page"] = 1
+                        row["_acc"] = current_account_no
+                        row["_stmt_id"] = current_stmt_id
+                        all_rows.append(row)
+                    print(f"DEBUG [GTBank]: Single-pass extracted {len(all_rows)} rows from full content stream.")
+                except Exception as _e:
+                    print(f"DEBUG [GTBank]: Single-pass extraction failed ({_e}). Falling back to page-by-page.")
+                    _is_single_stream = False  # fall through to normal processing
+
             # DETERMINISTIC RULE: If searchable (digital), process every single page.
             # If scanned (image-based), cap at 20 pages to prevent 502 timeout.
-            effective_page_limit = 9999 if is_searchable else 20
-            pages_to_process = pdf_pages[:effective_page_limit]
-            
+            # For single-stream GTBank PDFs, all_rows was already populated above, so
+            # set pages_to_process=[] to skip the per-page loop entirely.
+            if _is_single_stream:
+                pages_to_process = []
+            else:
+                effective_page_limit = 9999 if is_searchable else 20
+                pages_to_process = pdf_pages[:effective_page_limit]
+
             print(f"DEBUG: Processing {len(pages_to_process)} pages (Searchable={is_searchable})")
 
             for page_num, page in enumerate(pages_to_process, start=1):
@@ -946,9 +1102,25 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
 
                 # Filter out words drawn outside the printable page area.
                 page_height = page.height
-                words = [w for w in words if w["bottom"] >= -5 and w["top"] <= page_height + 5]
+                if bank_identifier in ("gtbank", "gtco"):
+                    # GTBank PDFs often use a single shared content stream across all logical
+                    # pages. Each page's coordinate system is shifted by page_height, so the
+                    # same content stream appears on every page with different top offsets.
+                    # Using the default ±5 tolerance creates a ~10pt overlap between adjacent
+                    # pages, causing boundary transactions to be extracted twice.
+                    # Use a strict [0, page_height) window to eliminate the overlap.
+                    words = [w for w in words if w["top"] >= 0 and w["top"] < page_height]
+                else:
+                    words = [w for w in words if w["bottom"] >= -5 and w["top"] <= page_height + 5]
 
-                tol = 15.0 if bank_identifier in ["gtbank", "gtco"] else 2.5
+                # y_tol=12 was designed for single-stream GTBank PDFs where the
+                # transaction date is split across 3 physical sub-rows (day / month+amounts
+                # / year, spaced ~10-14pt apart).  Those PDFs are handled by the
+                # single-pass path above and never reach this per-page loop.
+                # Non-single-stream GTBank/GTCO PDFs use a normal single-row-per-transaction
+                # layout; applying y_tol=12 here merges adjacent transactions into one row,
+                # causing ~77% chain errors.  Use 4pt for all per-page extraction.
+                tol = 4.0 if bank_identifier in ["gtbank", "gtco"] else 2.5
                 row_groups = group_words_to_rows(words, y_tol=tol)
 
                 for rg in row_groups:
@@ -1284,14 +1456,16 @@ def detect_zenith_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float,
     if w_td: 
         bounds["date"] = (w_td["x0"], w_td["x1"])
     
-    # 2. value_date (Look for "VALUE")
+    # 2. value_date (Look for "VALUE" or "VAL" — Zenith uses "VAL DATE")
     idx_vd, w_vd = find_word_x("VALUE")
+    if not w_vd: idx_vd, w_vd = find_word_x("VAL")
     if w_vd:
         bounds["value_date"] = (w_vd["x0"], w_vd["x1"])
 
-    # 3. description (NARRATION / DESCRIPTION)
+    # 3. description (NARRATION / DESCRIPTION / REMARKS — Zenith uses "REMARKS")
     idx_rem, w_rem = find_word_x("NARRATION")
     if not w_rem: idx_rem, w_rem = find_word_x("DESCRIPTION")
+    if not w_rem: idx_rem, w_rem = find_word_x("REMARKS")
     if not w_rem: idx_rem, w_rem = find_word_x("PARTICULARS")
     if w_rem: bounds["description"] = (w_rem["x0"], w_rem["x1"])
 
@@ -1974,16 +2148,25 @@ def assign_row_to_cols(row_words: List[Dict[str, Any]], cuts: Dict[str, Tuple[fl
     # Ensure words are sorted left-to-right
     row_words = sorted(row_words, key=lambda w: w["x0"])
 
+    # Pattern to identify monetary amounts (e.g. "19,000.00", "100.00", "1,234,567.89")
+    # Also matches \xad-prefixed amounts (GTBank negatives, e.g. "\xad3,398.20")
+    # and regular minus-prefixed negatives (First Bank, e.g. "-17,916,933,934.18")
+    _money_re = re.compile(r'^[-\xad\u00ad]?[\d,]+\.\d{2}$')
+
     # 1. Geometric Assignment
     for w in row_words:
         x0, x1 = w["x0"], w["x1"]
+        # For monetary amounts (e.g. "19,000.00"), always use x1 (the right edge) for column
+        # assignment. This serves two purposes:
+        #   (a) Amounts whose x0 falls just inside a text column (e.g. value_date) but whose
+        #       x1 falls in the correct numeric column are correctly placed.
+        #   (b) Text words (bank name, descriptions, dates) whose x1 happens to fall in a
+        #       numeric column are NOT misassigned because they aren't monetary.
+        # For non-monetary text, always use x0 so it lands in the leftmost matching column.
+        is_monetary = bool(_money_re.match(w["text"].strip()))
+        ref_point = x1 if is_monetary else x0
+
         for col, (l, r) in cuts.items():
-            # Use lowercase comparison for the column name
-            if col.lower() in right_aligned_cols:
-                ref_point = x1
-            else:
-                ref_point = x0
-            
             if l <= ref_point < r:
                 bucket[col].append(w["text"])
                 break
@@ -2106,7 +2289,66 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     out: List[Dict[str, Any]] = []
     current = None
-    
+
+    # Pending carry-forward amounts from "pre-date narration rows".
+    # In some UBA PDFs the narration line (which carries the debit/credit amount
+    # and sometimes the running balance) appears ABOVE the date line in the PDF's
+    # visual order, the reverse of the normal layout.  Because the narration row
+    # has no date it is treated as a non-anchor continuation and its amounts would
+    # normally be silently dropped.  We save them here and inject them into the
+    # very next anchor that is still missing those fields.
+    _pending_debit   = ""
+    _pending_credit  = ""
+    _pending_balance = ""
+    # Regex for a well-formed monetary amount (commas ok, optional leading minus).
+    # The 2-decimal variant is the standard form; the 1-decimal variant catches
+    # amounts whose last digit was physically split to a second line in the PDF
+    # (e.g. "1,000,000,000.0" + "0" across two rows).
+    _valid_money_re  = re.compile(r'^[-\xad]?[\d,]+\.\d{2}$')   # standard xx
+    _valid_money_re1 = re.compile(r'^[-\xad]?[\d,]+\.\d$')       # one-decimal
+
+    def _is_carry_amount(s: str) -> bool:
+        """Return True if s is a monetary value worth carrying forward.
+
+        Accepts the standard 2-decimal form AND large 1-decimal values that
+        result from a PDF splitting "1,000,000,000.00" across two physical
+        lines (e.g. "1,000,000,000.0" on one line, "0" on the next).
+        Rejects 0.00 and non-numeric strings like "Withdrawals".
+        """
+        if not s:
+            return False
+        if _valid_money_re.match(s):
+            try:
+                return float(s.replace(',', '')) != 0.0
+            except ValueError:
+                return False
+        if _valid_money_re1.match(s):
+            try:
+                return float(s.replace(',', '')) >= 1000.0  # must be a large amount
+            except ValueError:
+                return False
+        return False
+
+    def _pick_amount(anchor_val: str, pending_val: str) -> str:
+        """Return the more meaningful of the two amount strings.
+
+        Non-zero pending overrides a zero (or empty) anchor value; a non-zero
+        anchor value always wins over pending.
+        """
+        def _nonzero(s):
+            if not s:
+                return False
+            try:
+                return float(s.replace(',', '')) != 0.0
+            except ValueError:
+                return False
+
+        if _nonzero(anchor_val):
+            return anchor_val
+        if pending_val and _valid_money_re.match(pending_val):
+            return pending_val
+        return anchor_val or pending_val or ""
+
     def clean_as_float(s):
         if not s: return 0.0
         s = s.replace(" ", "").replace(",", "")
@@ -2144,7 +2386,14 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                  continue
 
             # --- FIX: SPLIT DECIMAL MERGE ---
-            if i + 1 < len(rows):
+            # Only attempt to merge split numbers when the current row has some
+            # transaction context (date, description, or reference).  Rows that
+            # are pure numbers with no text fields are statement header totals
+            # (e.g. "Total Debit: 45,567,533,642.72") that leak into all_rows;
+            # merging their truncated values with digits from the following
+            # address line produces wildly incorrect debit/credit figures.
+            _has_context = bool(tdate or rem or ref)
+            if _has_context and i + 1 < len(rows):
                 next_r = rows[i+1]
                 next_deb = (next_r.get("debit") or "").strip()
                 next_cred = (next_r.get("credit") or "").strip()
@@ -2154,10 +2403,22 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     if not curr_val or not next_val: return None
                     curr_val = curr_val.strip()
                     next_val = next_val.strip()
+                    # Case 1: Trailing decimal point (e.g., '59,910,642.' + '35')
                     if curr_val.endswith('.') and re.match(r'^\d{1,2}$', next_val):
                          return curr_val + next_val
+                    # Case 2: One decimal digit (e.g., '59,910,642.3' + '5')
                     if re.match(r'.*\.\d$', curr_val) and re.match(r'^\d$', next_val):
                          return curr_val + next_val
+                    # Case 3: Integer split with decimal continuation for very wide numbers
+                    # Handles wrapping in narrow PDF balance columns, e.g.:
+                    #   '1,084,293,1'  + '29.87' → '1,084,293,129.87'
+                    #   '784,293,025'  + '.87'   → '784,293,025.87'
+                    #   '-157,177,33'  + '6.69'  → '-157,177,336.69'
+                    if ('.' not in curr_val and
+                            len(curr_val) >= 7 and
+                            re.search(r'[\d,]', curr_val) and
+                            re.match(r'^-?\d{0,2}\.\d{2}$', next_val)):
+                        return curr_val + next_val
                     return None
 
                 m_d = try_merge_dec(deb, next_deb)
@@ -2187,31 +2448,116 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             if is_anchor:
                 if current:
                     out.append(current)
-                
+
                 current = {
                     "_page": r.get("_page"),
                     "_row": r.get("_row"),
                     "date": parse_date_smart(tdate),
                     "value_date": (r.get("value_date") or "").strip(),
                     "reference": ref,
-                    "debit": deb,
-                    "credit": cred,
-                    "balance": bal,
+                    "debit":   _pick_amount(deb,  _pending_debit),
+                    "credit":  _pick_amount(cred, _pending_credit),
+                    "balance": bal or _pending_balance,
                     "description": rem,
                     "branch": branch,
                     "raw_text": raw_text
                 }
+                # Consumed — clear pending carry-forward state
+                _pending_debit   = ""
+                _pending_credit  = ""
+                _pending_balance = ""
             else:
                 # Merging logic
                 if current:
+                    # --- FIX: GTBank year fragment repair ---
+                    # GTBank dates are split across 3 physical rows (day, month+amounts, year).
+                    # The year row (containing just "YYYY" in the date column) is a separate
+                    # group that is NOT an anchor (no amounts). Detect it and fix incomplete dates.
+                    # Allow "2026 18:27" (year + trailing time) in addition to bare "2026"
+                    year_only = re.match(r'^(20\d{2})(?:\s|$)', tdate.strip()) if tdate else None
+                    if year_only and current.get("date"):
+                        curr_date = current["date"]
+                        # Fix dates where year is "1" (parsed from "DD-Mon" without year)
+                        if re.search(r'-1$', curr_date):
+                            fixed = re.sub(r'-1$', f'-{year_only.group(1)}', curr_date)
+                            current["date"] = fixed
+                        # Also fix value_date if it has a similar incomplete form
+                        curr_vd = current.get("value_date", "")
+                        if curr_vd and re.search(r'-1$', curr_vd):
+                            current["value_date"] = re.sub(r'-1$', f'-{year_only.group(1)}', curr_vd)
+
+                    # --- FIX: GTBank amounts-in-continuation repair ---
+                    # In GTBank 4-row format, the "month row" has amounts but is not an
+                    # anchor because the date field contains "Jan '249607428GAP" (ref mixed
+                    # in). The value_date field however has "21 Jan" which is parseable.
+                    # If this continuation has amounts AND current already has amounts,
+                    # recover the date from value_date and start a new transaction.
+                    # GUARD: only fire when tdate looks like a bare month name (the
+                    # GTBank-specific pattern). This prevents false triggers on files
+                    # where continuation rows happen to have a parseable value_date.
+                    _MONTH_RE = re.compile(
+                        r'^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b',
+                        re.IGNORECASE
+                    )
+                    cont_has_amounts = bool(deb or cred)
+                    tdate_clean = tdate.replace("\xad", "").strip()
+                    if (cont_has_amounts
+                            and (current.get("debit") or current.get("credit"))
+                            and _MONTH_RE.match(tdate_clean)):
+                        vdate_raw = (r.get("value_date") or "").strip()
+                        recovered_date = parse_date_smart(vdate_raw) if vdate_raw else None
+                        if recovered_date:
+                            out.append(current)
+                            current = {
+                                "_page": r.get("_page"),
+                                "_row": r.get("_row"),
+                                "date": recovered_date,
+                                "value_date": vdate_raw,
+                                "reference": ref,
+                                "debit": deb,
+                                "credit": cred,
+                                "balance": bal,
+                                "description": rem,
+                                "branch": branch,
+                                "raw_text": raw_text
+                            }
+                            i += 1
+                            continue
+
+                    # --- FIX: UBA pre-date narration carry-forward ---
+                    # Some UBA statements place the narration (and its debit/credit
+                    # amount, sometimes the running balance too) on the line visually
+                    # ABOVE the transaction date line.  Because such a row has no
+                    # date it is not an anchor; without special handling its amounts
+                    # are silently dropped.  We detect valid monetary amounts on
+                    # these non-anchor rows and carry them forward into the next
+                    # anchor that is still missing those fields.
+                    # Guard: only fire for truly monetary values (not header words
+                    # like "Withdrawals") and skip the GTBank month-row path
+                    # (already handled above with its own `continue`).
+                    _carry_deb  = _is_carry_amount(deb)
+                    _carry_cred = _is_carry_amount(cred)
+                    _carry_bal  = bool(bal  and _valid_money_re.match(bal))
+                    if _carry_deb or _carry_cred or _carry_bal:
+                        if _carry_deb:  _pending_debit   = deb
+                        if _carry_cred: _pending_credit  = cred
+                        if _carry_bal:  _pending_balance = bal
+                        # Still append any description text to the current transaction
+                        if rem:
+                            current["description"] = (current["description"] + " " + rem).strip()
+                        if ref:
+                            current["reference"] = (current["reference"] + " " + ref).strip()
+                        i += 1
+                        continue
+
                     desc_dt = parse_date_smart(rem)
                     assigned_dt = False
                     if desc_dt and not current["value_date"]:
                          current["value_date"] = desc_dt
                          assigned_dt = True
-                    
+
                     if ref: current["reference"] = (current["reference"] + " " + ref).strip()
-                    if not assigned_dt and rem: 
+                    if not assigned_dt and rem:
                          current["description"] = (current["description"] + " " + rem).strip()
                     if branch: current["branch"] = (current["branch"] + " " + branch).strip()
                     
@@ -2230,7 +2576,50 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         # If Date+Bal but no Amt, we keep it (Fix 2).
         if txn["date"]:
              final_out.append(txn)
-    
+
+    # --- BALANCE INFERENCE: fill in invalid/missing balances ---
+    # When a transaction's balance was not captured (e.g. value overflowed the
+    # narrow PDF column and the partial string has no decimal point), parse_money
+    # will return 0 for it.  The NEXT transaction's balance IS correct (the PDF
+    # re-anchors there).  We can work backwards: B[i] = B[i+1] + D[i+1] - C[i+1].
+
+    def _is_valid_balance(raw) -> bool:
+        """Returns True only if the raw balance string will survive parse_money."""
+        if not raw:
+            return False
+        s = re.sub(r'[^\d.]', '', str(raw))
+        if not s:
+            return False
+        # Reject strings without a decimal point that are 6+ digits (parse_money does the same)
+        if '.' not in s and len(s) >= 6:
+            return False
+        try:
+            return float(s) != 0.0
+        except ValueError:
+            return False
+
+    for i in range(len(final_out) - 2, -1, -1):
+        txn = final_out[i]
+        bal_raw = txn.get("balance", "")
+        if _is_valid_balance(bal_raw):
+            continue  # Balance is present and valid; skip
+
+        next_txn = final_out[i + 1]
+        next_b_raw = next_txn.get("balance", "") or ""
+        if not _is_valid_balance(next_b_raw):
+            continue  # Next balance also invalid/missing; can't infer
+
+        next_b = clean_as_float(str(next_b_raw))
+        next_d = clean_as_float(str(next_txn.get("debit", "") or ""))
+        next_c = clean_as_float(str(next_txn.get("credit", "") or ""))
+
+        if next_b == 0.0:
+            continue  # Next balance is genuinely 0; skip
+
+        # Infer: B[i] such that B[i] - D[i+1] + C[i+1] = B[i+1]
+        inferred = round(next_b + next_d - next_c, 2)
+        final_out[i]["balance"] = str(inferred)
+
     return final_out
 
 
@@ -2244,23 +2633,26 @@ def parse_money(text: str) -> float:
         return 0.0
     text_str = str(text).strip()
     
-    # User Request: Robust cleaning: keep only digits and decimals
+    # Check for soft-hyphen negative sign (GTBank overdrawn balances, e.g. "\xad3,398.20")
+    is_negative = text_str.startswith('\xad') or text_str.startswith('\u00ad')
+
+    # Robust cleaning: keep only digits and decimals
     cleaned = re.sub(r'[^\d.]', '', text_str)
     if not cleaned:
         return 0.0
-        
+
     # Reject pure digit strings with no decimal point or comma formatting.
     # Real amounts always have '.XX' (e.g., '20,000.00' or '200.00').
     # Reference numbers (even those prefixed with REF:) become unformatted digit strings like '2027676474'.
     if '.' not in cleaned and len(cleaned) >= 6:
         # 6+ digits with no decimal = almost certainly a reference number
         return 0.0
-        
+
     try:
         val = float(cleaned)
         if abs(val) > 100000000000000.0:  # 100 Trillion safety clamp
             return 0.0
-        if "(" in text_str or "-" in text_str:
+        if is_negative or "(" in text_str or "-" in text_str:
              return -val
         return val
     except:
@@ -2342,44 +2734,56 @@ def detect_firstbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[flo
         return None
 
     # Keywords to identify header row
-    keywords = ["TRANS", "DATE", "REF", "NUMBER", "DETAILS", "VALUE", "WITHDRAWAL", "DEPOSIT", "BALANCE"]
-    
-    # Zenith/FirstBank often clearer with slightly larger tolerance? Or stick to 3.0?
+    keywords = ["TRANS", "DATE", "REF", "NUMBER", "DETAILS", "VALUE",
+                "WITHDRAWAL", "DEPOSIT", "DEBIT", "CREDIT", "BALANCE"]
+
     rows = group_words_to_rows(words, y_tol=3.0)
-    
+
     best_row = None
+    best_row_idx = -1
     max_score = 0
-    
-    for r in rows:
+
+    for idx, r in enumerate(rows):
         score = 0
         row_text_upper = " ".join([w["text"].upper() for w in r["words"]])
-        
+
         # Mandatory checks
         if "DATE" not in row_text_upper: continue
-        if not any(x in row_text_upper for x in ["WITHDRAWAL", "DEPOSIT", "BALANCE"]): continue
-        
+        if not any(x in row_text_upper for x in
+                   ["WITHDRAWAL", "DEPOSIT", "DEBIT", "CREDIT", "BALANCE"]): continue
+
         for w in r["words"]:
-            for k in keywords: 
+            for k in keywords:
                 if k in w["text"].upper():
                     score += 1
-        
+
         # Bonus for specific FirstBank phrases
         if "WITHDRAWAL" in row_text_upper and "(DR)" in row_text_upper: score += 3
         if "DEPOSIT" in row_text_upper and "(CR)" in row_text_upper: score += 3
         if "TRANSACTION DETAILS" in row_text_upper: score += 2
+        if "DEBIT" in row_text_upper and "CREDIT" in row_text_upper: score += 1
 
         if score > max_score:
             max_score = score
             best_row = r
+            best_row_idx = idx
 
     if not best_row or max_score < 3:
         return None
 
     print(f"DEBUG: Found FirstBank Header Row: {[w['text'] for w in best_row['words']]}")
 
+    # Merge next row if multi-line header (e.g. "WITHDRAWAL" on one line, "(DR)" on the next)
+    header_words = list(best_row["words"])
+    if best_row_idx + 1 < len(rows):
+        next_r = rows[best_row_idx + 1]
+        next_text = " ".join(w["text"].upper() for w in next_r["words"])
+        if any(k in next_text for k in ["(DR)", "(CR)", "NUMBER", "DATE", "AMOUNT"]):
+            header_words.extend(next_r["words"])
+
     # Extract columns
-    sorted_words = sorted(best_row["words"], key=lambda w: w["x0"])
-    
+    sorted_words = sorted(header_words, key=lambda w: w["x0"])
+
     # Use helper similar to Zenith
     def find_word_x(text_part, start_idx=0):
         for i in range(start_idx, len(sorted_words)):
@@ -2407,15 +2811,17 @@ def detect_firstbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[flo
     idx_vd, w_vd = find_word_x("VALUE")
     if w_vd: bounds["value_date"] = (w_vd["x0"], w_vd["x1"])
 
-    # 5. Withdrawal (Debit)
-    idx_deb, w_deb = find_word_x("WITHDRAWAL") 
+    # 5. Withdrawal / Debit
+    idx_deb, w_deb = find_word_x("WITHDRAWAL")
     if not w_deb: idx_deb, w_deb = find_word_x("WITHDRAW")
+    if not w_deb: idx_deb, w_deb = find_word_x("DEBIT")
     if not w_deb: idx_deb, w_deb = find_word_x("DR")
     if w_deb: bounds["debit"] = (w_deb["x0"], w_deb["x1"])
 
-    # 6. Deposit (Credit)
+    # 6. Deposit / Credit
     idx_cred, w_cred = find_word_x("DEPOSIT")
     if not w_cred: idx_cred, w_cred = find_word_x("LODGEMENT")
+    if not w_cred: idx_cred, w_cred = find_word_x("CREDIT")
     if not w_cred: idx_cred, w_cred = find_word_x("CR")
     if w_cred: bounds["credit"] = (w_cred["x0"], w_cred["x1"])
 
@@ -2423,8 +2829,10 @@ def detect_firstbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[flo
     idx_bal, w_bal = find_word_x("BALANCE")
     if w_bal: bounds["balance"] = (w_bal["x0"], w_bal["x1"])
 
-    # Mandatory
-    if "date" not in bounds or "debit" not in bounds:
+    # Mandatory: need date AND at least one amount column AND balance
+    if "date" not in bounds or ("debit" not in bounds and "credit" not in bounds):
+        return None
+    if "balance" not in bounds:
         return None
 
     # Construct cuts
@@ -2457,6 +2865,178 @@ def detect_firstbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[flo
             
         cuts[col_name] = (start, end)
 
+    return cuts
+
+
+def detect_stanchart_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
+    """
+    Detect column boundaries for Standard Chartered Nigeria.
+    Typical headers: Posting Date | Value Date | Description | Reference | Debit | Credit | Balance
+    """
+    if not words:
+        return None
+
+    keywords = ["DATE", "POSTING", "VALUE", "DESCRIPTION", "REFERENCE", "DEBIT", "CREDIT",
+                "BALANCE", "NARRATION", "WITHDRAWAL", "DEPOSIT", "CHEQUE", "DETAILS", "AMOUNT"]
+
+    rows = group_words_to_rows(words, y_tol=3.0)
+
+    best_row = None
+    max_score = 0
+
+    for r in rows:
+        row_text = " ".join(w["text"].upper() for w in r["words"])
+        if "DATE" not in row_text:
+            continue
+        if "BALANCE" not in row_text:
+            continue
+        if not any(k in row_text for k in ["DEBIT", "CREDIT", "WITHDRAWAL", "DEPOSIT"]):
+            continue
+
+        score = sum(1 for k in keywords if k in row_text)
+        if "POSTING" in row_text and "DATE" in row_text:
+            score += 2
+        if "STANDARD" in row_text or "CHARTERED" in row_text:
+            score -= 5  # header watermark rows, not the column header
+
+        if score > max_score:
+            max_score = score
+            best_row = r
+
+    if not best_row or max_score < 3:
+        return None
+
+    # Merge next row if it looks like a column-header continuation
+    best_idx = rows.index(best_row)
+    header_words = list(best_row["words"])
+    if best_idx + 1 < len(rows):
+        next_row = rows[best_idx + 1]
+        next_text = " ".join(w["text"].upper() for w in next_row["words"])
+        if any(k in next_text for k in ["DATE", "AMOUNT", "NUMBER"]):
+            header_words.extend(next_row["words"])
+
+    sorted_words = sorted(header_words, key=lambda w: w["x0"])
+
+    def find_word(text_parts, start=0):
+        for i in range(start, len(sorted_words)):
+            t = sorted_words[i]["text"].upper()
+            for part in (text_parts if isinstance(text_parts, list) else [text_parts]):
+                if part in t:
+                    return i, sorted_words[i]
+        return -1, None
+
+    bounds = {}
+
+    _, w = find_word(["POSTING", "TRANS", "DATE"])
+    if w:
+        bounds["date"] = (w["x0"], w["x1"])
+
+    _, w = find_word(["VALUE"])
+    if w:
+        bounds["value_date"] = (w["x0"], w["x1"])
+
+    _, w = find_word(["DESCRIPTION", "NARRATION", "DETAILS", "PARTICULARS"])
+    if w:
+        bounds["description"] = (w["x0"], w["x1"])
+
+    _, w = find_word(["REFERENCE", "REF", "CHEQUE", "CHQ"])
+    if w:
+        bounds["reference"] = (w["x0"], w["x1"])
+
+    _, w = find_word(["DEBIT", "WITHDRAWAL", "WITHDRAW", "DR"])
+    if w:
+        bounds["debit"] = (w["x0"], w["x1"])
+
+    _, w = find_word(["CREDIT", "DEPOSIT", "CR"])
+    if w:
+        bounds["credit"] = (w["x0"], w["x1"])
+
+    _, w = find_word(["BALANCE"])
+    if w:
+        bounds["balance"] = (w["x0"], w["x1"])
+
+    if "date" not in bounds or "balance" not in bounds:
+        return None
+    if "debit" not in bounds and "credit" not in bounds:
+        return None
+
+    sorted_cols = sorted(bounds.items(), key=lambda item: item[1][0])
+    cuts = {}
+    for i, (col_name, (l, r)) in enumerate(sorted_cols):
+        start = 0.0 if i == 0 else (sorted_cols[i-1][1][1] + l) / 2
+        end = 1000.0 if i == len(sorted_cols) - 1 else (r + sorted_cols[i+1][1][0]) / 2
+        cuts[col_name] = (start, end)
+
+    print(f"DEBUG [StanChart]: Column cuts: {[(n, f'{a:.0f}-{b:.0f}') for n,(a,b) in cuts.items()]}")
+    return cuts
+
+
+def detect_stanbic_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
+    """
+    Detect column boundaries for Stanbic IBTC.
+    Typical headers: Date | Description | Reference | Debit | Credit | Balance
+    """
+    if not words:
+        return None
+
+    rows = group_words_to_rows(words, y_tol=3.0)
+    keywords = ["DATE", "DESCRIPTION", "REFERENCE", "DEBIT", "CREDIT", "BALANCE",
+                "NARRATION", "VALUE", "WITHDRAWAL", "DEPOSIT", "CHEQUE"]
+
+    best_row = None
+    max_score = 0
+
+    for r in rows:
+        row_text = " ".join(w["text"].upper() for w in r["words"])
+        if "DATE" not in row_text or "BALANCE" not in row_text:
+            continue
+        if not any(k in row_text for k in ["DEBIT", "CREDIT", "WITHDRAWAL", "DEPOSIT"]):
+            continue
+        score = sum(1 for k in keywords if k in row_text)
+        if score > max_score:
+            max_score = score
+            best_row = r
+
+    if not best_row or max_score < 3:
+        return None
+
+    sorted_words = sorted(best_row["words"], key=lambda w: w["x0"])
+
+    def fw(parts):
+        for w in sorted_words:
+            t = w["text"].upper()
+            for p in (parts if isinstance(parts, list) else [parts]):
+                if p in t:
+                    return w
+        return None
+
+    bounds = {}
+    w = fw(["DATE", "TRANS"])
+    if w: bounds["date"] = (w["x0"], w["x1"])
+    w = fw(["VALUE"])
+    if w: bounds["value_date"] = (w["x0"], w["x1"])
+    w = fw(["DESCRIPTION", "NARRATION", "DETAILS"])
+    if w: bounds["description"] = (w["x0"], w["x1"])
+    w = fw(["REFERENCE", "REF", "CHEQUE", "CHQ"])
+    if w: bounds["reference"] = (w["x0"], w["x1"])
+    w = fw(["DEBIT", "WITHDRAWAL", "DR"])
+    if w: bounds["debit"] = (w["x0"], w["x1"])
+    w = fw(["CREDIT", "DEPOSIT", "CR"])
+    if w: bounds["credit"] = (w["x0"], w["x1"])
+    w = fw(["BALANCE"])
+    if w: bounds["balance"] = (w["x0"], w["x1"])
+
+    if "date" not in bounds or "balance" not in bounds:
+        return None
+
+    sorted_cols = sorted(bounds.items(), key=lambda item: item[1][0])
+    cuts = {}
+    for i, (col_name, (l, r)) in enumerate(sorted_cols):
+        start = 0.0 if i == 0 else (sorted_cols[i-1][1][1] + l) / 2
+        end = 1000.0 if i == len(sorted_cols) - 1 else (r + sorted_cols[i+1][1][0]) / 2
+        cuts[col_name] = (start, end)
+
+    print(f"DEBUG [Stanbic]: Column cuts: {[(n, f'{a:.0f}-{b:.0f}') for n,(a,b) in cuts.items()]}")
     return cuts
 
 
@@ -2876,19 +3456,27 @@ def extract_fidelity_via_tables(pdf_path: Path, metadata: Dict, pdf: pdfplumber.
                     for r_idx, r in enumerate(rows):
                         if is_noise_row(r): continue
                         
+                        _fid_money_re = re.compile(r'^-?[\d,]+\.\d{2}$')
                         row_data = {name: [] for name in cuts.keys()}
                         for w in r["words"]:
-                            x_mid = (w["x0"] + w["x1"]) / 2
+                            # Money values are right-aligned in their column; use x1 (right edge)
+                            # so that very wide amounts (e.g. 13,000,000,000.00) that start
+                            # left of their column header still land in the correct column.
+                            # Text/description words are left-aligned; use xmid for those.
+                            if _fid_money_re.match(w["text"]):
+                                x_probe = w["x1"]
+                            else:
+                                x_probe = (w["x0"] + w["x1"]) / 2
                             assigned = False
                             for name, (left, right) in cuts.items():
-                                if left <= x_mid <= right:
+                                if left <= x_probe <= right:
                                     row_data[name].append(w["text"])
                                     assigned = True
                                     break
-                            
+
                             if not assigned:
                                 for name, (left, right) in cuts.items():
-                                    if left - 5 <= x_mid <= right + 5:
+                                    if left - 5 <= x_probe <= right + 5:
                                         row_data[name].append(w["text"])
                                         break
 
@@ -3405,8 +3993,11 @@ def extract_ecobank_via_tables(pdf_path: Path, metadata: Dict = None, pdf: pdfpl
                                 "originating_branch": "",
                                 "description":       full_desc,
                                 "remarks":           full_desc, # ENSURE Remarks is not empty
-                                "debit":             parse_money(raw_debit),
-                                "credit":            parse_money(raw_cred),
+                                # Debit/credit are amounts in dedicated columns — always positive.
+                                # Some Ecobank PDFs store debit values with a leading minus sign;
+                                # abs() ensures the amount is always non-negative.
+                                "debit":             abs(parse_money(raw_debit)),
+                                "credit":            abs(parse_money(raw_cred)),
                                 "balance":           parse_money(raw_bal),
                                 "category":          "Unallocated",
                                 "is_reversal":       False,

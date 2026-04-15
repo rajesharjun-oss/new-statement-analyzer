@@ -18,9 +18,15 @@ def parse_date_smart(date_str: str) -> Optional[str]:
     """
     # Remove soft hyphens \xad often found in GTCO PDFs
     s = (date_str or "").replace("\xad", "").strip()
-    if not s or len(s) < 4: 
+    if not s or len(s) < 4:
         return None
-    
+
+    # Reject pure time strings (HH:MM or HH:MM:SS) which pd.to_datetime would
+    # interpret using today's date, producing a spurious anchor date.
+    import re as _re
+    if _re.match(r'^\d{1,2}:\d{2}(:\d{2})?$', s):
+        return None
+
     # Standard: 01-Jan-2023
     if DATE_DMY_RE.match(s):
         return s

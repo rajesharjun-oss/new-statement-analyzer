@@ -12,19 +12,24 @@ load_dotenv(dotenv_path=env_path)
 # Global index for rotation
 _current_key_index = 0
 
-def pdf_to_images(pdf_path: str, dpi: int = 150, max_pages: int = 20) -> List:
-    """Convert PDF pages to PIL Images using PyMuPDF (fitz), with a strict limit."""
+def pdf_to_images(pdf_path: str, dpi: int = 150, max_pages: int = 20, start_page: int = 0) -> List:
+    """Convert PDF pages to PIL Images using PyMuPDF (fitz), with a strict limit.
+
+    Args:
+        start_page: First page index to convert (0-based). Used for batched processing.
+    """
     import fitz
     from PIL import Image
     import io
-    
+
     images = []
     try:
         doc = fitz.open(pdf_path)
         total_pages = len(doc)
-        limit = min(total_pages, max_pages)
-        
-        for page_num in range(limit):
+        start = max(0, min(start_page, total_pages - 1))
+        end = min(start + max_pages, total_pages)
+
+        for page_num in range(start, end):
             page = doc.load_page(page_num)
             zoom = dpi / 72.0
             pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
@@ -43,7 +48,7 @@ def extract_text_with_gemini_vision(image_bytes: bytes) -> str:
     if not keys: return ""
     api_key = keys[_current_key_index % len(keys)]
     _current_key_index += 1
-    
+
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-2.0-flash')
@@ -55,11 +60,76 @@ def extract_text_with_gemini_vision(image_bytes: bytes) -> str:
     except:
         return ""
 
-def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic", max_pages: int = 20) -> List[Dict]:
+
+_KNOWN_BANKS = {
+    "uba", "gtbank", "access", "zenith", "wema", "fcmb",
+    "fidelity", "providus", "sterling", "firstbank", "ecobank",
+}
+
+def detect_bank_from_scanned_image(pdf_path: str) -> str:
+    """
+    Use Gemini Vision to identify the issuing bank from the first page of a scanned PDF.
+    Called only when text-based auto-detection returns 'generic' (i.e. no text layer).
+
+    Returns a lowercase bank identifier from _KNOWN_BANKS, or 'generic' on failure.
+    This is a cheap single-image call — much faster than full extraction.
+    """
+    global _current_key_index
+    raw_keys = os.getenv("GEMINI_API_KEY", "")
+    keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
+    if not keys:
+        return "generic"
+
+    api_key = keys[_current_key_index % len(keys)]
+    _current_key_index += 1
+
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-2.0-flash")
+
+        images = pdf_to_images(pdf_path, dpi=150, max_pages=1, start_page=0)
+        if not images:
+            return "generic"
+
+        prompt = (
+            "This is the first page of a Nigerian bank statement.\n"
+            "Identify which bank issued this statement.\n"
+            "Reply with ONLY one of these exact lowercase identifiers:\n"
+            "uba, gtbank, access, zenith, wema, fcmb, fidelity, providus, sterling, firstbank, ecobank\n"
+            "If you cannot determine the bank, reply: generic\n"
+            "Reply with just the single identifier word — no punctuation, no explanation."
+        )
+
+        response = model.generate_content([prompt, images[0]])
+        if not response or not response.text:
+            return "generic"
+
+        candidate = response.text.strip().lower().split()[0].rstrip(".,;:")
+        if candidate in _KNOWN_BANKS:
+            print(f"DEBUG: Gemini Vision identified scanned bank as: '{candidate}'")
+            return candidate
+
+        # Partial-match fallback (e.g. response was "gtbank nigeria")
+        for known in _KNOWN_BANKS:
+            if known in candidate:
+                print(f"DEBUG: Gemini Vision partial-match bank: '{known}' in '{candidate}'")
+                return known
+
+        print(f"DEBUG: Gemini Vision bank ID returned unrecognised value: '{candidate}'")
+        return "generic"
+
+    except Exception as e:
+        print(f"DEBUG: Gemini Vision bank detection failed: {e}")
+        return "generic"
+
+def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic", max_pages: int = 20, _start_page: int = 0) -> List[Dict]:
     """
     Overhauled 2-Phase OCR Pipeline:
     Phase 1: High-DPI Rendering -> Vision Transcriber (Literal Grid Extraction)
     Phase 2: Text Engineer -> PSV Formatter (Cleaning & Validation)
+
+    Args:
+        _start_page: Internal — first page index for batched processing. Do not set externally.
     """
     global _current_key_index
     
@@ -79,7 +149,7 @@ def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic", m
         
         # Phase 1: Convert PDF to high-quality images (150 DPI for speed and gateway timeout safety)
         # CRITICAL: Pass max_pages to pdf_to_images to avoid memory crashes
-        images = pdf_to_images(pdf_path, dpi=150, max_pages=max_pages)
+        images = pdf_to_images(pdf_path, dpi=150, max_pages=max_pages, start_page=_start_page)
         if not images:
             return []
             
@@ -238,6 +308,46 @@ def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic", m
         import traceback
         traceback.print_exc()
         return []
+
+def extract_scanned_statement_batched(pdf_path: str, bank_identifier: str = "generic", batch_size: int = 15) -> List[Dict]:
+    """
+    Batched Gemini Vision extraction for large PDFs.
+    Splits pages into chunks of `batch_size` and combines all results.
+    Avoids the 8192-token output limit that trips single-call extraction on long statements.
+    """
+    import fitz
+    try:
+        doc = fitz.open(pdf_path)
+        total_pages = len(doc)
+        doc.close()
+    except Exception as e:
+        print(f"DEBUG [Batched]: fitz failed to get page count ({e}). Using single-call fallback.")
+        return extract_scanned_statement(pdf_path, bank_identifier, max_pages=batch_size)
+
+    if total_pages <= batch_size:
+        # Small enough — no need to split
+        return extract_scanned_statement(pdf_path, bank_identifier, max_pages=total_pages)
+
+    num_batches = (total_pages + batch_size - 1) // batch_size
+    print(f"DEBUG [Batched]: {total_pages} pages → {num_batches} batches of ≤{batch_size} pages each")
+
+    all_txns: List[Dict] = []
+    for batch_idx in range(num_batches):
+        start = batch_idx * batch_size
+        count = min(batch_size, total_pages - start)
+        print(f"DEBUG [Batched]: Processing batch {batch_idx + 1}/{num_batches} (pages {start + 1}–{start + count})...")
+        try:
+            batch_txns = extract_scanned_statement(
+                pdf_path, bank_identifier, max_pages=count, _start_page=start
+            )
+            all_txns.extend(batch_txns)
+            print(f"DEBUG [Batched]: Batch {batch_idx + 1} → {len(batch_txns)} txns (running total: {len(all_txns)})")
+        except Exception as e:
+            print(f"DEBUG [Batched]: Batch {batch_idx + 1} failed: {e}. Skipping.")
+
+    print(f"DEBUG [Batched]: Complete — {len(all_txns)} total transactions across all batches.")
+    return all_txns
+
 
 # Aliases for backward compatibility with pdf_extractor.py and other modules
 extract_transactions_via_ai = extract_scanned_statement
