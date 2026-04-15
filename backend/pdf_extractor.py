@@ -496,8 +496,13 @@ def detect_template(first_page_text: str) -> str:
     header_text = text[:1500]
     if "ecobank" in header_text:
         return "ecobank"
-    if "gtco" in header_text or "guaranty trust" in header_text:
-        return "gtbank"  # Route both to GTBank logic
+    # Split GTBank (old, single-stream 3-row date format) from GTCO (new, single-row format).
+    # Old GTBank PDFs say "Guaranty Trust Bank" but never "gtco".
+    # New GTCO PDFs say "GTCO" (rebranded) – detected by the explicit logo keyword.
+    if "gtco" in header_text:
+        return "gtco"
+    if "guaranty trust" in header_text:
+        return "gtbank"
     if "providus" in header_text:
         return "providus"
     if "zenith" in header_text:
@@ -1017,15 +1022,17 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 try:
                     _all_words = pdf_pages[0].extract_words(x_tolerance=2, y_tolerance=2)
                     _all_words.sort(key=lambda w: (w["top"], w["x0"]))
-                    # GTBank date rows have 3 physical sub-rows per transaction:
-                    #   day  (top=N)       — e.g. "24\xad"
+                    # Old GTBank date rows split across 3 physical sub-rows per transaction:
+                    #   day  (top=N)         — e.g. "24\xad"
                     #   month+amounts (top=N+10.5) — e.g. "Aug\xad", "36,699.99"
                     #   year (top=N+13.9 or N+20.9)
-                    # With y_tol=15, year+day rows can merge (13.9 < 15), burying the day
-                    # inside the year row and leaving the month+amounts row without a date.
-                    # y_tol=12 keeps day+month together (10.5 < 12) while separating year
-                    # from day when they are only 13.9 pts apart (13.9 > 12).
-                    tol = 12.0
+                    # y_tol=12 keeps day+month together (10.5 < 12) while separating
+                    # year from day (13.9 > 12). Required for "gtbank" (old format).
+                    #
+                    # New GTCO PDFs use one row per transaction (no 3-row date split).
+                    # Their rows are only ~10pt apart, so y_tol=12 would incorrectly
+                    # merge adjacent transactions → high chain errors. Use y_tol=4.
+                    tol = 4.0 if bank_identifier == "gtco" else 12.0
                     row_groups = group_words_to_rows(_all_words, y_tol=tol)
                     for rg in row_groups:
                         row = assign_row_to_cols(rg["words"], base_cuts)
