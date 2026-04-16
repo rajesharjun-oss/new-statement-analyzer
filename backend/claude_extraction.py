@@ -218,6 +218,114 @@ def _parse_psv(text: str) -> List[Dict[str, Any]]:
     return transactions
 
 
+def extract_from_ocr_text(ocr_text: str, bank_hint: str = "") -> List[Dict[str, Any]]:
+    """
+    Stage 2 of 2-stage pipeline: structured extraction from Gemini-OCR'd plain text.
+    
+    Takes raw OCR text (from gemini_ocr_to_text) and asks Claude Sonnet to parse it
+    into structured PSV transactions. This separates OCR (Gemini's strength) from
+    context-aware extraction (Claude's strength).
+    
+    Args:
+        ocr_text: Concatenated plain text from Gemini OCR, with === PAGE N === markers.
+        bank_hint: Optional bank name/identifier for context.
+    
+    Returns: List of transaction dicts matching the standard format.
+    """
+    client = get_claude_client()
+    if not client:
+        print("DEBUG [claude_extraction]: No ANTHROPIC_API_KEY configured. Skipping.")
+        return []
+
+    if not ocr_text.strip():
+        print("DEBUG [claude_extraction]: Empty OCR text supplied.")
+        return []
+
+    bank_context = f"Bank: {bank_hint}\n" if bank_hint else ""
+
+    # Chunk large OCR text: Claude max_tokens=8192 output; cap input at ~80k chars (~20k tokens)
+    MAX_INPUT_CHARS = 80_000
+    chunks = []
+    if len(ocr_text) <= MAX_INPUT_CHARS:
+        chunks = [ocr_text]
+    else:
+        # Split on PAGE markers so we don't cut mid-row
+        import re as _re
+        pages = _re.split(r'(=== PAGE \d+ ===)', ocr_text)
+        current = ""
+        for part in pages:
+            if len(current) + len(part) > MAX_INPUT_CHARS and current:
+                chunks.append(current)
+                current = part
+            else:
+                current += part
+        if current:
+            chunks.append(current)
+        print(f"DEBUG [claude_extraction]: OCR text split into {len(chunks)} chunk(s) for Claude.")
+
+    prompt_template = (
+        "You are a high-precision Financial Extraction Engine specialised in Nigerian bank statements.\n"
+        "{bank_context}"
+        "Below is OCR-transcribed text from a bank statement PDF. Extract ALL transaction rows.\n\n"
+        "DIRECTIVES:\n"
+        "1. Extract EVERY transaction row. Do NOT skip any.\n"
+        "2. Ignore page headers, footers, watermarks, page numbers, and === PAGE N === markers.\n"
+        "3. Merge multi-line descriptions into a single clean row.\n"
+        "4. Numbers: Remove currency symbols and commas. Output raw floats (e.g. 100500.00). Use 0.00 for empty.\n"
+        "5. Reference/Chq No column: append its value to the DESCRIPTION field. "
+        "NEVER put reference numbers into DEBIT, CREDIT, or BALANCE.\n"
+        "6. Skip summary rows: OPENING BALANCE, CLOSING BALANCE, TOTAL DEBIT, TOTAL CREDIT, "
+        "BALANCE B/F, BALANCE C/F, PAGE TOTAL.\n"
+        "7. Multiple accounts: separate with a line containing only ---ACCOUNT_BREAK---\n\n"
+        "OUTPUT FORMAT: Raw PSV only (NO headers, NO markdown, NO explanations).\n"
+        "Each row must have exactly 6 columns: DATE|VALUE_DATE|DESCRIPTION|DEBIT|CREDIT|BALANCE\n"
+        "If VALUE_DATE is absent or equals DATE, leave it blank: "
+        "15-Jan-2024||NIP TRF TO JOHN DOE|50000.00|0.00|1250000.50\n\n"
+        "OCR TEXT:\n"
+        "{ocr_text}"
+    )
+
+    all_transactions: List[Dict[str, Any]] = []
+
+    for chunk_idx, chunk in enumerate(chunks, 1):
+        prompt = prompt_template.format(bank_context=bank_context, ocr_text=chunk)
+        try:
+            print(f"DEBUG [claude_extraction]: Sending OCR chunk {chunk_idx}/{len(chunks)} "
+                  f"({len(chunk):,} chars) to Claude for extraction...")
+            response = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=8192,
+                temperature=0,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw_text = response.content[0].text.strip()
+            raw_text = re.sub(r'^```(?:csv|psv|text)?\s*', '', raw_text, flags=re.I)
+            raw_text = re.sub(r'```$', '', raw_text, flags=re.I).strip()
+
+            # Debug: save raw PSV per chunk
+            debug_path = Path(f"/tmp/claude_ocr_chunk_{chunk_idx}.psv")
+            try:
+                debug_path.write_text(raw_text, encoding="utf-8")
+            except Exception:
+                pass
+
+            chunk_txns = _parse_psv(raw_text)
+            print(f"DEBUG [claude_extraction]: Chunk {chunk_idx} → {len(chunk_txns)} transactions.")
+            all_transactions.extend(chunk_txns)
+
+        except Exception as e:
+            print(f"ERROR [claude_extraction]: OCR chunk {chunk_idx} extraction failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+    if not all_transactions:
+        return []
+
+    all_transactions = _auto_correct_columns(all_transactions)
+    print(f"DEBUG [claude_extraction]: Total extracted from OCR text: {len(all_transactions)} transactions.")
+    return all_transactions
+
+
 def _auto_correct_columns(txns: List[Dict]) -> List[Dict]:
     """
     Mathematical column auto-correction.

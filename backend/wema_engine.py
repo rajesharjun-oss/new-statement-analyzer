@@ -8,23 +8,6 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Any
 from utils import parse_date_smart
 
-
-def _group_words_to_rows(words, y_tol=6.0):
-    """Local row grouper: groups words within y_tol into the same row."""
-    if not words:
-        return []
-    sorted_w = sorted(words, key=lambda w: (w["top"], w["x0"]))
-    rows = []
-    cur = {"top": sorted_w[0]["top"], "words": [sorted_w[0]]}
-    for w in sorted_w[1:]:
-        if abs(w["top"] - cur["top"]) <= y_tol:
-            cur["words"].append(w)
-        else:
-            rows.append(cur)
-            cur = {"top": w["top"], "words": [w]}
-    rows.append(cur)
-    return rows
-
 def parse_wema_money(text: str) -> float | None:
     """Converts text to float. Uses length and character filtering for Reference IDs."""
     if not text: return None
@@ -205,14 +188,14 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
             new_cuts = detect_wema_columns(p_words)
             if new_cuts: cuts = new_cuts
             
-            # Group words into visual rows using relative proximity (y_tol=6pt) instead
-            # of the old fixed 5px absolute bins.  Fixed bins split same-row words that
-            # differ by 6-9pt vertically (common with larger fonts / PDF baseline shifts),
-            # causing the balance or debit amount to land in a separate bucket from the
-            # date, which then gets dropped as "no date → not a transaction."
-            row_groups = _group_words_to_rows(p_words, y_tol=6.0)
-            for rg in row_groups:
-                row_words = sorted(rg["words"], key=lambda x: x['x0'])
+            rows_dict = {}
+            for w in p_words:
+                y = int(w['top'] / 5) * 5 
+                if y not in rows_dict: rows_dict[y] = []
+                rows_dict[y].append(w)
+                
+            for y in sorted(rows_dict.keys()):
+                row_words = sorted(rows_dict[y], key=lambda x: x['x0'])
                 
                 row_data = {k: "" for k in cuts.keys()}
                 for w in row_words:
@@ -269,6 +252,35 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
 
     finally:
         if not pdf: _pdf_handle.close()
+
+    # ── Balance inference: fill B=0 holes from known neighbours ──────────────
+    # Some multi-line narration rows have their balance on a different PDF line
+    # from the date/amount row, so balance arrives as 0.0.  We run alternating
+    # forward / backward passes until the chain converges (or we hit 20 iters).
+    def _infer_balances(txns, max_iter=20):
+        changed = True
+        itr = 0
+        while changed and itr < max_iter:
+            changed = False
+            itr += 1
+            # Forward: B[i] = B[i-1] - D[i] + C[i]
+            for i in range(1, len(txns)):
+                if txns[i]['balance'] == 0.0 and txns[i-1]['balance'] != 0.0:
+                    inferred = round(txns[i-1]['balance'] - txns[i]['debit'] + txns[i]['credit'], 2)
+                    txns[i]['balance'] = inferred
+                    changed = True
+            # Backward: B[i] = B[i+1] + D[i+1] - C[i+1]
+            for i in range(len(txns)-2, -1, -1):
+                if txns[i]['balance'] == 0.0 and txns[i+1]['balance'] != 0.0:
+                    inferred = round(txns[i+1]['balance'] + txns[i+1]['debit'] - txns[i+1]['credit'], 2)
+                    txns[i]['balance'] = inferred
+                    changed = True
+        n_zero = sum(1 for t in txns if t['balance'] == 0.0)
+        print(f"  [WEMA BAL-INFER] {itr} passes, {n_zero} still-zero balances remain")
+        return txns
+
+    if txns:
+        txns = _infer_balances(txns)
 
     _elapsed = time.time() - _start
     d = sum(t['debit'] for t in txns)

@@ -294,7 +294,7 @@ async def serve_spa(full_path: str):
 if __name__ == "__main__":
     import uvicorn
     import os
-    port = int(os.environ.get("PORT", 8001))
+    port = int(os.environ.get("PORT", 8000))
     print(f"\n{'='*40}")
     print(f"!!! STARTING BACKEND v2.3-ULTRA-STABLE !!!")
     print(f"!!! Listening on port: {port} (IPv4) !!!")

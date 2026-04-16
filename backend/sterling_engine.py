@@ -239,8 +239,12 @@ def extract_sterling_via_coordinates(pdf_path: Path, metadata: dict, pdf: pdfplu
                 parsed_date = parse_date_smart(date_str)
                 parsed_val_date = parse_date_smart(val_date_str)
                 
-                # Skip standalone year lines (they've been merged above)
-                if re.match(r'^\d{4}$', date_str.strip()) and not desc and not deb_str and not cred_str:
+                # Skip standalone year lines (continuation rows for split dates like "2024")
+                # Even if they have description text (narration continuation), fold into previous txn
+                if re.match(r'^\d{4}$', date_str.strip()):
+                    if desc and transactions:
+                        transactions[-1]['description'] = (transactions[-1]['description'] + " " + desc).strip()
+                        transactions[-1]['remarks'] = transactions[-1]['description']
                     continue
                 
                 has_money = first_money(deb_str) or first_money(cred_str)

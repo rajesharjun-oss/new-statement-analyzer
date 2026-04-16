@@ -12,24 +12,19 @@ load_dotenv(dotenv_path=env_path)
 # Global index for rotation
 _current_key_index = 0
 
-def pdf_to_images(pdf_path: str, dpi: int = 150, max_pages: int = 20, start_page: int = 0) -> List:
-    """Convert PDF pages to PIL Images using PyMuPDF (fitz), with a strict limit.
-
-    Args:
-        start_page: First page index to convert (0-based). Used for batched processing.
-    """
+def pdf_to_images(pdf_path: str, dpi: int = 150, max_pages: int = 20) -> List:
+    """Convert PDF pages to PIL Images using PyMuPDF (fitz), with a strict limit."""
     import fitz
     from PIL import Image
     import io
-
+    
     images = []
     try:
         doc = fitz.open(pdf_path)
         total_pages = len(doc)
-        start = max(0, min(start_page, total_pages - 1))
-        end = min(start + max_pages, total_pages)
-
-        for page_num in range(start, end):
+        limit = min(total_pages, max_pages)
+        
+        for page_num in range(limit):
             page = doc.load_page(page_num)
             zoom = dpi / 72.0
             pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
@@ -48,7 +43,7 @@ def extract_text_with_gemini_vision(image_bytes: bytes) -> str:
     if not keys: return ""
     api_key = keys[_current_key_index % len(keys)]
     _current_key_index += 1
-
+    
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-2.0-flash')
@@ -60,76 +55,11 @@ def extract_text_with_gemini_vision(image_bytes: bytes) -> str:
     except:
         return ""
 
-
-_KNOWN_BANKS = {
-    "uba", "gtbank", "access", "zenith", "wema", "fcmb",
-    "fidelity", "providus", "sterling", "firstbank", "ecobank",
-}
-
-def detect_bank_from_scanned_image(pdf_path: str) -> str:
-    """
-    Use Gemini Vision to identify the issuing bank from the first page of a scanned PDF.
-    Called only when text-based auto-detection returns 'generic' (i.e. no text layer).
-
-    Returns a lowercase bank identifier from _KNOWN_BANKS, or 'generic' on failure.
-    This is a cheap single-image call — much faster than full extraction.
-    """
-    global _current_key_index
-    raw_keys = os.getenv("GEMINI_API_KEY", "")
-    keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
-    if not keys:
-        return "generic"
-
-    api_key = keys[_current_key_index % len(keys)]
-    _current_key_index += 1
-
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.0-flash")
-
-        images = pdf_to_images(pdf_path, dpi=150, max_pages=1, start_page=0)
-        if not images:
-            return "generic"
-
-        prompt = (
-            "This is the first page of a Nigerian bank statement.\n"
-            "Identify which bank issued this statement.\n"
-            "Reply with ONLY one of these exact lowercase identifiers:\n"
-            "uba, gtbank, access, zenith, wema, fcmb, fidelity, providus, sterling, firstbank, ecobank\n"
-            "If you cannot determine the bank, reply: generic\n"
-            "Reply with just the single identifier word — no punctuation, no explanation."
-        )
-
-        response = model.generate_content([prompt, images[0]])
-        if not response or not response.text:
-            return "generic"
-
-        candidate = response.text.strip().lower().split()[0].rstrip(".,;:")
-        if candidate in _KNOWN_BANKS:
-            print(f"DEBUG: Gemini Vision identified scanned bank as: '{candidate}'")
-            return candidate
-
-        # Partial-match fallback (e.g. response was "gtbank nigeria")
-        for known in _KNOWN_BANKS:
-            if known in candidate:
-                print(f"DEBUG: Gemini Vision partial-match bank: '{known}' in '{candidate}'")
-                return known
-
-        print(f"DEBUG: Gemini Vision bank ID returned unrecognised value: '{candidate}'")
-        return "generic"
-
-    except Exception as e:
-        print(f"DEBUG: Gemini Vision bank detection failed: {e}")
-        return "generic"
-
-def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic", max_pages: int = 20, _start_page: int = 0) -> List[Dict]:
+def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic", max_pages: int = 20) -> List[Dict]:
     """
     Overhauled 2-Phase OCR Pipeline:
     Phase 1: High-DPI Rendering -> Vision Transcriber (Literal Grid Extraction)
     Phase 2: Text Engineer -> PSV Formatter (Cleaning & Validation)
-
-    Args:
-        _start_page: Internal — first page index for batched processing. Do not set externally.
     """
     global _current_key_index
     
@@ -149,7 +79,7 @@ def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic", m
         
         # Phase 1: Convert PDF to high-quality images (150 DPI for speed and gateway timeout safety)
         # CRITICAL: Pass max_pages to pdf_to_images to avoid memory crashes
-        images = pdf_to_images(pdf_path, dpi=150, max_pages=max_pages, start_page=_start_page)
+        images = pdf_to_images(pdf_path, dpi=150, max_pages=max_pages)
         if not images:
             return []
             
@@ -309,45 +239,77 @@ def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic", m
         traceback.print_exc()
         return []
 
-def extract_scanned_statement_batched(pdf_path: str, bank_identifier: str = "generic", batch_size: int = 15) -> List[Dict]:
-    """
-    Batched Gemini Vision extraction for large PDFs.
-    Splits pages into chunks of `batch_size` and combines all results.
-    Avoids the 8192-token output limit that trips single-call extraction on long statements.
-    """
-    import fitz
-    try:
-        doc = fitz.open(pdf_path)
-        total_pages = len(doc)
-        doc.close()
-    except Exception as e:
-        print(f"DEBUG [Batched]: fitz failed to get page count ({e}). Using single-call fallback.")
-        return extract_scanned_statement(pdf_path, bank_identifier, max_pages=batch_size)
-
-    if total_pages <= batch_size:
-        # Small enough — no need to split
-        return extract_scanned_statement(pdf_path, bank_identifier, max_pages=total_pages)
-
-    num_batches = (total_pages + batch_size - 1) // batch_size
-    print(f"DEBUG [Batched]: {total_pages} pages → {num_batches} batches of ≤{batch_size} pages each")
-
-    all_txns: List[Dict] = []
-    for batch_idx in range(num_batches):
-        start = batch_idx * batch_size
-        count = min(batch_size, total_pages - start)
-        print(f"DEBUG [Batched]: Processing batch {batch_idx + 1}/{num_batches} (pages {start + 1}–{start + count})...")
-        try:
-            batch_txns = extract_scanned_statement(
-                pdf_path, bank_identifier, max_pages=count, _start_page=start
-            )
-            all_txns.extend(batch_txns)
-            print(f"DEBUG [Batched]: Batch {batch_idx + 1} → {len(batch_txns)} txns (running total: {len(all_txns)})")
-        except Exception as e:
-            print(f"DEBUG [Batched]: Batch {batch_idx + 1} failed: {e}. Skipping.")
-
-    print(f"DEBUG [Batched]: Complete — {len(all_txns)} total transactions across all batches.")
-    return all_txns
-
-
 # Aliases for backward compatibility with pdf_extractor.py and other modules
 extract_transactions_via_ai = extract_scanned_statement
+
+
+def gemini_ocr_to_text(pdf_path: str, max_pages: int = 20) -> str:
+    """
+    Stage 1 of 2-stage pipeline: pure OCR only.
+    Converts each PDF page to a high-DPI image and asks Gemini Vision to
+    transcribe the text literally (no PSV formatting, no extraction).
+    Returns a concatenated plain-text string with PAGE markers.
+    """
+    global _current_key_index
+    raw_keys = os.getenv("GEMINI_API_KEY", "")
+    keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
+    if not keys:
+        print("DEBUG [gemini_ocr_to_text]: No GEMINI_API_KEY configured.")
+        return ""
+
+    images = pdf_to_images(pdf_path, dpi=200, max_pages=max_pages)
+    if not images:
+        print("DEBUG [gemini_ocr_to_text]: pdf_to_images returned no images.")
+        return ""
+
+    api_key = keys[_current_key_index % len(keys)]
+    _current_key_index += 1
+
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-2.0-flash")
+    except Exception as e:
+        print(f"DEBUG [gemini_ocr_to_text]: Gemini config failed: {e}")
+        return ""
+
+    ocr_prompt = (
+        "You are a high-precision OCR engine processing bank statement pages. "
+        "For each page image provided, transcribe ALL text exactly as printed. "
+        "Preserve relative column spacing using spaces. "
+        "Reproduce every number exactly (all digits, commas, decimal points). "
+        "Before each page's content output a marker line: === PAGE N === "
+        "(where N is the page number starting from 1). "
+        "Do NOT reformat, summarise, or skip any row. Output only raw transcribed text."
+    )
+
+    # Send ALL page images in a single batch request — much faster than one call per page.
+    payload = [ocr_prompt] + images
+    try:
+        response = model.generate_content(
+            payload,
+            generation_config=genai.types.GenerationConfig(max_output_tokens=8192),
+        )
+        combined = (response.text or "").strip()
+        print(f"DEBUG [gemini_ocr_to_text]: Batch OCR complete — {len(combined)} chars from {len(images)} pages.")
+        return combined
+    except Exception as e:
+        print(f"DEBUG [gemini_ocr_to_text]: Batch OCR failed ({e}). Falling back to per-page mode...")
+
+    # Per-page fallback if batch call fails
+    all_parts = []
+    for page_num, img in enumerate(images, 1):
+        try:
+            response = model.generate_content(
+                [ocr_prompt, img],
+                generation_config=genai.types.GenerationConfig(max_output_tokens=4096),
+            )
+            page_text = (response.text or "").strip()
+            all_parts.append(f"=== PAGE {page_num} ===\n{page_text}")
+            print(f"DEBUG [gemini_ocr_to_text]: Page {page_num} OCR'd ({len(page_text)} chars)")
+        except Exception as e2:
+            print(f"DEBUG [gemini_ocr_to_text]: Page {page_num} failed: {e2}")
+            all_parts.append(f"=== PAGE {page_num} ===\n[OCR FAILED]")
+
+    combined = "\n\n".join(all_parts)
+    print(f"DEBUG [gemini_ocr_to_text]: Per-page OCR done — {len(combined)} chars across {len(images)} pages.")
+    return combined

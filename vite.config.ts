@@ -6,18 +6,18 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '');
   return {
     server: {
-      port: 3000,
+      port: 5000,
       host: '0.0.0.0',
+      allowedHosts: true,
       proxy: {
-        // Proxy all backend API calls through Vite dev server to avoid CORS
         '/analyze': {
-          target: 'http://127.0.0.1:8001',
+          target: 'http://127.0.0.1:8000',
           changeOrigin: true,
           timeout: 1800000,
           proxyTimeout: 1800000,
         },
         '/download': {
-          target: 'http://127.0.0.1:8001',
+          target: 'http://127.0.0.1:8000',
           changeOrigin: true,
           timeout: 1800000,
           proxyTimeout: 1800000,

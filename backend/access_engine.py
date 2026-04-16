@@ -285,11 +285,10 @@ def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
                 row_dict = {name: [] for name in cuts.keys()}
                 for w in sorted(row_words, key=lambda w: w['x0']):
                     for col_name, (min_x, max_x) in cuts.items():
-                        # Use x0 (left edge) for all words.
-                        # Using x1 caused wide amounts (e.g. "2,687,500.00" with x1 > boundary)
-                        # to be misclassified into the next column (debit → credit).
+                        # Use x0 (left edge) for all words — Access amounts are left-to-right aligned;
+                        # using x1 shifts large amounts one column right (e.g. 2,687,500 credited as debit)
                         val = w['x0']
-
+                        
                         if min_x <= val < max_x:
                             row_dict[col_name].append(w['text'])
                             break
