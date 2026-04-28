@@ -779,8 +779,10 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                  if bank_identifier == "uba":
                      print("DEBUG: UBA PDF requires AI extraction...")
                      txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='uba', max_pages=15)
-                     if txns: return [{"transactions": normalize_remarks(txns), "metadata": {"method": "gemini_vision"}}]
-                     return [{"transactions": [], "metadata": {"error": "UBA Gemini Vision returned 0 txns"}}]
+                     if txns:
+                         return [{"transactions": normalize_remarks(txns), "metadata": {"method": "gemini_vision"}}]
+                     # Do not hard-return empty here. Let generic local extraction run as a final fallback.
+                     print("WARN: UBA AI fallback returned 0 txns. Falling through to generic extraction path.")
 
             elif bank_identifier == "access":
                  from access_engine import extract_access_via_coordinates
@@ -2253,7 +2255,49 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 if m_b: bal = m_b; rows[i+1]["balance"] = ""
 
             # --- FIX: ANCHOR LOGIC ---
-            has_date = bool(parse_date_smart(tdate))
+            # Extract embedded date token when date column includes serial/index text.
+            def _extract_date_token(text: str) -> str:
+                if not text:
+                    return ""
+                for pat in [
+                    r"\b\d{1,2}-[A-Za-z]{3}-\d{4}\b",
+                    r"\b\d{1,2}-[A-Za-z]{3}-\d{2}\b",
+                    r"\b\d{1,2}/\d{1,2}/\d{4}\b",
+                    r"\b\d{4}-\d{1,2}-\d{1,2}\b",
+                ]:
+                    m = re.search(pat, text)
+                    if m:
+                        return m.group(0)
+                return ""
+
+            parsed_tdate = parse_date_smart(tdate)
+            if not parsed_tdate:
+                token = _extract_date_token(tdate) or _extract_date_token(raw_text)
+                if token:
+                    parsed_tdate = parse_date_smart(token)
+            # UBA-style split date repair:
+            # e.g. row A has "01-Nov-" and row B has "2025" in the date column.
+            if not parsed_tdate:
+                partial_dm = re.search(r"\b(\d{1,2}-[A-Za-z]{3})-?\b", tdate or raw_text)
+                if partial_dm:
+                    year_token = ""
+                    if i + 1 < len(rows):
+                        next_date_raw = (rows[i + 1].get("date") or "").strip()
+                        m_year_next = re.match(r"^(20\d{2})$", next_date_raw)
+                        if m_year_next:
+                            year_token = m_year_next.group(1)
+                            # Consume orphan year row so it doesn't become a false continuation anchor
+                            rows[i + 1]["date"] = ""
+                    if not year_token:
+                        m_year_here = re.search(r"\b(20\d{2})\b", f"{(r.get('value_date') or '').strip()} {raw_text}")
+                        if m_year_here:
+                            year_token = m_year_here.group(1)
+                    if year_token:
+                        parsed_tdate = parse_date_smart(f"{partial_dm.group(1)}-{year_token}")
+                    else:
+                        parsed_tdate = parse_date_smart(partial_dm.group(1))
+
+            has_date = bool(parsed_tdate)
             has_amt = bool(deb or cred)
             has_bal = bool(bal)
             
@@ -2276,7 +2320,7 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 current = {
                     "_page": r.get("_page"),
                     "_row": r.get("_row"),
-                    "date": parse_date_smart(tdate),
+                    "date": parsed_tdate,
                     "value_date": (r.get("value_date") or "").strip(),
                     "reference": ref,
                     "debit": deb,

@@ -15,8 +15,12 @@ export interface BackendAnalysisResult {
         totalCredit: number;
         transactionCount: number;
         validationStatus: string;
+        totalsMatch?: boolean | null;
+        bank?: string;
     };
     downloadUrl: string;
+    transactions?: any[];
+    backend_version?: string;
 }
 
 export async function analyzeWithBackend(

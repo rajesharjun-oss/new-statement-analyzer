@@ -108,8 +108,8 @@ def detect_uba_columns(words: List[Dict], bank_identifier: str = "") -> Dict[str
     # --- Step 1: Find the header row by scoring ---
     keywords = [
         "TRANSACTION", "TRANS", "VALUE", "DATE", "NARRATION", "REMARKS",
-        "CHQ", "CHEQUE", "NUMBER", "DEBIT", "CREDIT", "BALANCE",
-        "WITHDRAWAL", "DEPOSIT", "DESCRIPTION", "DETAILS"
+        "CHQ", "CHEQUE", "NUMBER", "REF", "DEBIT", "CREDIT", "BALANCE",
+        "WITHDRAWAL", "DEPOSIT", "LODGEMENT", "DESCRIPTION", "DETAILS"
     ]
 
     rows = group_words_to_rows(words, y_tol=3.0)
@@ -169,10 +169,19 @@ def detect_uba_columns(words: List[Dict], bank_identifier: str = "") -> Dict[str
 
     bounds = {}
 
-    # 1. Transaction Date / Trans Date
-    idx_td, w_td = find_word("TRANS")
+    # 1. Transaction Date
+    # IMPORTANT: Prefer DATE tokens over TRANS to avoid accidentally using
+    # "TRANSACTION" as the date anchor in headers like:
+    # S/NO | DATE | TRANSACTION DETAILS | ...
+    date_candidates = [
+        w for w in sorted_words
+        if ("DATE" in w["text"].upper() and "VALUE" not in w["text"].upper())
+    ]
+    w_td = min(date_candidates, key=lambda w: w["x0"]) if date_candidates else None
     if not w_td:
-        idx_td, w_td = find_word("DATE")
+        idx_td, w_td = find_word("TRANS DATE")
+    if not w_td:
+        idx_td, w_td = find_word("TRANS")
     if w_td:
         bounds["date"] = (w_td["x0"], w_td["x1"])
 
@@ -192,10 +201,12 @@ def detect_uba_columns(words: List[Dict], bank_identifier: str = "") -> Dict[str
     if w_desc:
         bounds["description"] = (w_desc["x0"], w_desc["x1"])
 
-    # 4. Reference (CHQ NO / Cheque Number)
+    # 4. Reference (CHQ NO / Cheque Number / REF NO)
     idx_ref, w_ref = find_word("CHQ")
     if not w_ref:
         idx_ref, w_ref = find_word("CHEQUE")
+    if not w_ref:
+        idx_ref, w_ref = find_word("REF")
     if w_ref:
         bounds["reference"] = (w_ref["x0"], w_ref["x1"])
 
@@ -206,10 +217,12 @@ def detect_uba_columns(words: List[Dict], bank_identifier: str = "") -> Dict[str
     if w_deb:
         bounds["debit"] = (w_deb["x0"], w_deb["x1"])
 
-    # 6. Credit / Deposit
+    # 6. Credit / Deposit / Lodgement
     idx_cred, w_cred = find_word("CREDIT")
     if not w_cred:
         idx_cred, w_cred = find_word("DEPOSIT")
+    if not w_cred:
+        idx_cred, w_cred = find_word("LODG")
     if w_cred:
         bounds["credit"] = (w_cred["x0"], w_cred["x1"])
 
@@ -231,7 +244,9 @@ def detect_uba_columns(words: List[Dict], bank_identifier: str = "") -> Dict[str
         col_name, (l, r) = sorted_cols[i]
 
         if i == 0:
-            start = 0.0
+            # Don't force-start at x=0; this prevents serial/S-NO columns
+            # from contaminating the date field.
+            start = max(0.0, l - 5.0)
         else:
             prev_name, (prev_l, prev_r) = sorted_cols[i-1]
             # Tight boundary for description → give it max room

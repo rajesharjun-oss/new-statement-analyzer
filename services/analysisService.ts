@@ -20,11 +20,29 @@ export const analyzeDocument = async (
 
     const transactions = backendResult.transactions || [];
     const summary = backendResult.summary || {};
+    const validationStatus = String(summary.validationStatus || '').toLowerCase();
+    const totalsMatch = summary.totalsMatch;
+    const noTransactions = transactions.length === 0;
+
+    const reconciliationFailed =
+        noTransactions ||
+        totalsMatch === false ||
+        validationStatus.includes("mismatch") ||
+        validationStatus.includes("no transactions extracted");
+
+    const reconciliationWarnings: string[] = [];
+    if (reconciliationFailed) {
+        if (summary.validationStatus) {
+            reconciliationWarnings.push(String(summary.validationStatus));
+        } else if (noTransactions) {
+            reconciliationWarnings.push("No transactions extracted");
+        }
+    }
 
     return {
         transactions: transactions,
-        reconciliation_failed: summary.validationStatus === "Mismatch",
-        reconciliation_warnings: summary.validationStatus === "Mismatch" ? ["Tail mismatch found"] : [],
+        reconciliation_failed: reconciliationFailed,
+        reconciliation_warnings: reconciliationWarnings,
         error_indices: [],
         currency: "NGN",
         organizationName: summary.accountName || "Unknown Org",
