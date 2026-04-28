@@ -68,7 +68,12 @@ def detect_access_columns(words: List[Dict[str, Any]], bank_identifier: str = No
     sys.stdout.flush()
 
     # 1. FIND HEADER BANDS
-    keywords = ["DATE", "TRANSACTION", "DETAILS", "DESCRIPTION", "NARRATION", "REFERENCE", "REF", "VALUE", "WITHDRAWALS", "DEBIT", "LODGEMENTS", "CREDIT", "BALANCE", "BAL", "POSTED", "REMARKS"]
+    keywords = [
+        "DATE", "TRANSACTION", "DETAILS", "DESCRIPTION", "NARRATION",
+        "REFERENCE", "REF", "VALUE", "WITHDRAWAL", "WITHDRAWALS", "DEBIT",
+        "LODGEMENT", "LODGEMENTS", "CREDIT", "DEPOSIT", "DEPOSITS",
+        "BALANCE", "BAL", "POSTED", "REMARKS"
+    ]
     
     header_words = []
     for w in words:
@@ -143,8 +148,8 @@ def detect_access_columns(words: List[Dict[str, Any]], bank_identifier: str = No
     x_details = find_x(["Details", "Transaction", "Description", "Narration", "Remarks"])
     x_ref = find_x(["Ref", "Reference"])
     x_val = find_x(["Value"])
-    x_with = find_x(["Withdrawals", "Debit"], is_right=True)
-    x_lodge = find_x(["Lodgements", "Credit"], is_right=True)
+    x_with = find_x(["Withdrawal", "Withdrawals", "Debit"], is_right=True)
+    x_lodge = find_x(["Lodgement", "Lodgements", "Credit", "Deposit", "Deposits"], is_right=True)
     x_bal = find_x(["Balance", "Bal"], is_right=True)
 
     if not all([x_date, x_details, x_ref, x_with or x_lodge, x_bal]):
@@ -202,6 +207,29 @@ def detect_access_columns(words: List[Dict[str, Any]], bank_identifier: str = No
 def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: pdfplumber.PDF = None, max_pages: int = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     from pdf_extractor import parse_date_smart, first_money, is_noise_row
     import pandas as pd
+    money_token_re = re.compile(r"\(?-?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})\)?|\(?-?\d+(?:\.\d{1,2})\)?")
+
+    def _first_money_token(text: str) -> str:
+        tokens = money_token_re.findall((text or "").replace("?", ""))
+        return tokens[0] if tokens else ""
+
+    def _last_money_token(text: str) -> str:
+        tokens = money_token_re.findall((text or "").replace("?", ""))
+        return tokens[-1] if tokens else ""
+
+    def _money_to_float(tok: str) -> float:
+        s = (tok or "").strip()
+        if not s:
+            return 0.0
+        neg = s.startswith("(") and s.endswith(")")
+        if neg:
+            s = s[1:-1]
+        s = s.replace(",", "")
+        try:
+            val = float(s)
+            return -val if neg else val
+        except Exception:
+            return 0.0
     
     def _parse_access_date(date_str: str) -> str | None:
         """
@@ -212,6 +240,15 @@ def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
         s = (date_str or "").strip()
         if not s or len(s) < 6:
             return None
+
+        # Access rows often begin with serial numbers and trailing narration.
+        # Keep only the date-like token before parsing.
+        s = re.sub(r"^\s*\d+\s+", "", s)
+        for pat in [r"\b\d{1,2}/\d{1,2}/\d{2,4}\b", r"\b\d{1,2}-[A-Za-z]{3}-\d{2,4}\b"]:
+            m = re.search(pat, s)
+            if m:
+                s = m.group(0)
+                break
         
         # If it contains slashes, treat as M/D/YYYY (Access Bank US format)
         if "/" in s:
@@ -300,7 +337,9 @@ def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
                     continue
                     
                 date_str = row_dict.get("date", "")
-                parsed_date = _parse_access_date(date_str)
+                value_date_str = row_dict.get("value_date", "")
+                parsed_value_date = _parse_access_date(value_date_str)
+                parsed_date = _parse_access_date(date_str) or parsed_value_date
                 desc = row_dict.get("description", "")
                 ref = row_dict.get("reference", "")
                 
@@ -317,17 +356,19 @@ def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
                     continue
 
                 if parsed_date:
-                    debit_str = first_money(row_dict.get("debit", ""))
-                    credit_str = first_money(row_dict.get("credit", ""))
-                    bal_str = first_money(row_dict.get("balance", ""))
-                    
-                    debit = float(debit_str.replace(",", "")) if debit_str else 0.0
-                    credit = float(credit_str.replace(",", "")) if credit_str else 0.0
-                    bal = float(bal_str.replace(",", "")) if bal_str else 0.0
+                    debit_str = _first_money_token(row_dict.get("debit", "")) or first_money(row_dict.get("debit", ""))
+                    credit_str = _first_money_token(row_dict.get("credit", "")) or first_money(row_dict.get("credit", ""))
+                    # Balance cells in this Access format may contain both "0.00 <balance>".
+                    # Last token is the true running balance.
+                    bal_str = _last_money_token(row_dict.get("balance", "")) or first_money(row_dict.get("balance", ""))
+
+                    debit = _money_to_float(debit_str)
+                    credit = _money_to_float(credit_str)
+                    bal = _money_to_float(bal_str)
                     
                     txn = {
                         "date": parsed_date,
-                        "value_date": _parse_access_date(row_dict.get("value_date", "")) or parsed_date,
+                        "value_date": parsed_value_date or parsed_date,
                         "description": desc,
                         "reference": ref,
                         "debit": debit,
