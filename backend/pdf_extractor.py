@@ -784,11 +784,17 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                      # Fallback: OpenAI Vision page-wise extraction for scanned UBA statements
                      if os.getenv("OPENAI_API_KEY"):
                          try:
-                             from openai_vision import extract_transactions_from_pdf_with_openai
+                             from openai_vision import extract_transactions_from_pdf_with_openai, extract_statement_summary_with_openai
                              oa_txns = extract_transactions_from_pdf_with_openai(str(pdf_path), max_pages=15)
                              if oa_txns:
                                  print(f"DEBUG: UBA OpenAI fallback returned {len(oa_txns)} transactions")
-                                 return [{"transactions": normalize_remarks(oa_txns), "metadata": {"method": "openai_vision_fallback"}}]
+                                 oa_meta = {"method": "openai_vision_fallback"}
+                                 try:
+                                     oa_summary = extract_statement_summary_with_openai(str(pdf_path))
+                                     oa_meta.update({k: v for k, v in oa_summary.items() if v not in (None, "")})
+                                 except Exception as e_sum:
+                                     print(f"DEBUG: UBA OpenAI summary extraction failed: {e_sum}")
+                                 return [{"transactions": normalize_remarks(oa_txns), "metadata": oa_meta}]
                          except Exception as e:
                              print(f"WARN: UBA OpenAI fallback failed: {e}")
                      # Do not hard-return empty here. Let generic local extraction run as a final fallback.
@@ -961,11 +967,18 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 if os.getenv("OPENAI_API_KEY"):
                     print("DEBUG: Trying OpenAI Vision scanned fallback (max 15 pages)...")
                     try:
-                        from openai_vision import extract_transactions_from_pdf_with_openai
+                        from openai_vision import extract_transactions_from_pdf_with_openai, extract_statement_summary_with_openai
                         openai_txns = extract_transactions_from_pdf_with_openai(str(pdf_path), max_pages=15)
                         if openai_txns:
                             print(f"DEBUG: OpenAI Vision fallback extracted {len(openai_txns)} txns.")
                             meta_oa = {**metadata, "method": "openai_vision_fallback"}
+                            try:
+                                oa_summary = extract_statement_summary_with_openai(str(pdf_path))
+                                for k, v in oa_summary.items():
+                                    if v not in (None, ""):
+                                        meta_oa[k] = v
+                            except Exception as e_sum:
+                                print(f"DEBUG: OpenAI summary extraction failed: {e_sum}")
                             return [{"transactions": normalize_remarks(openai_txns), "metadata": meta_oa}]
                     except Exception as e:
                         print(f"DEBUG: OpenAI Vision fallback failed: {e}")

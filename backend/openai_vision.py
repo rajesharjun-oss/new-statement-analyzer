@@ -103,6 +103,150 @@ def _is_summary_row(desc_upper: str) -> bool:
     return any(re.search(p, desc_upper) for p in patterns)
 
 
+def _dedupe_transactions(transactions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    out: List[Dict[str, Any]] = []
+    for t in transactions:
+        key = (
+            (t.get("date") or "").strip(),
+            (t.get("value_date") or "").strip(),
+            (t.get("description") or "").strip(),
+            round(float(t.get("debit") or 0.0), 2),
+            round(float(t.get("credit") or 0.0), 2),
+            round(float(t.get("balance") or 0.0), 2),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(t)
+    return out
+
+
+def _repair_debit_credit_by_balance_chain(transactions: List[Dict[str, Any]], tol: float = 1.0) -> List[Dict[str, Any]]:
+    """
+    Fix likely debit/credit swaps using running balance direction.
+    """
+    if len(transactions) < 2:
+        return transactions
+
+    swaps = 0
+    prev_balance = None
+    for txn in transactions:
+        bal = float(txn.get("balance") or 0.0)
+        if prev_balance is None:
+            if bal != 0.0:
+                prev_balance = bal
+            continue
+        if bal == 0.0:
+            continue
+
+        delta = round(bal - prev_balance, 2)
+        d = float(txn.get("debit") or 0.0)
+        c = float(txn.get("credit") or 0.0)
+
+        # One-sided rows
+        if d > 0.0 and c == 0.0:
+            # Debit should decrease balance: delta ~= -d
+            if abs(delta - d) <= tol and abs(delta + d) > tol:
+                txn["credit"] = d
+                txn["debit"] = 0.0
+                swaps += 1
+        elif c > 0.0 and d == 0.0:
+            # Credit should increase balance: delta ~= +c
+            if abs(delta + c) <= tol and abs(delta - c) > tol:
+                txn["debit"] = c
+                txn["credit"] = 0.0
+                swaps += 1
+        elif d > 0.0 and c > 0.0:
+            # Keep the side that best matches delta and drop the other.
+            debit_err = abs(delta + d)
+            credit_err = abs(delta - c)
+            if debit_err <= tol and credit_err > tol:
+                txn["credit"] = 0.0
+            elif credit_err <= tol and debit_err > tol:
+                txn["debit"] = 0.0
+
+        prev_balance = bal
+
+    if swaps:
+        print(f"DEBUG [openai_vision]: Balance-chain repair swapped {swaps} rows.")
+    return transactions
+
+
+def extract_statement_summary_with_openai(pdf_path: str) -> Dict[str, Any]:
+    """
+    Read the account summary block from page 1 (scanned statements).
+    Returns keys aligned with metadata used by validation.
+    """
+    result = {
+        "statement_total_debit": None,
+        "statement_total_credit": None,
+        "opening_balance": None,
+        "closing_balance": None,
+        "account_number": None,
+        "account_name": None,
+        "period": None,
+    }
+    p = Path(pdf_path)
+    if not p.exists():
+        return result
+
+    try:
+        doc = fitz.open(str(p))
+        if len(doc) == 0:
+            return result
+        page = doc.load_page(0)
+        pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+        image_bytes = pix.tobytes("png")
+        doc.close()
+    except Exception as e:
+        print(f"DEBUG [openai_vision]: Summary render failed: {e}")
+        return result
+
+    client = get_openai_client()
+    if not client:
+        return result
+
+    model_name = os.getenv("OPENAI_OCR_MODEL", "gpt-4o")
+    prompt = (
+        "Extract only the account summary fields from this bank statement page. "
+        "Return strict JSON with keys: account_name, account_number, period, "
+        "opening_balance, closing_balance, statement_total_debit, statement_total_credit. "
+        "For missing values return null."
+    )
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encode_image(image_bytes)}"}},
+                    ],
+                }
+            ],
+            temperature=0,
+            max_tokens=1200,
+            response_format={"type": "json_object"},
+        )
+        content = response.choices[0].message.content or ""
+        parsed = json.loads(content) if content else {}
+        if not isinstance(parsed, dict):
+            return result
+        result["statement_total_debit"] = _safe_float(parsed.get("statement_total_debit"))
+        result["statement_total_credit"] = _safe_float(parsed.get("statement_total_credit"))
+        result["opening_balance"] = _safe_float(parsed.get("opening_balance"))
+        result["closing_balance"] = _safe_float(parsed.get("closing_balance"))
+        result["account_number"] = (str(parsed.get("account_number") or "").strip() or None)
+        result["account_name"] = (str(parsed.get("account_name") or "").strip() or None)
+        result["period"] = (str(parsed.get("period") or "").strip() or None)
+    except Exception as e:
+        print(f"DEBUG [openai_vision]: Summary extraction failed: {e}")
+
+    return result
+
+
 def extract_transactions_from_pdf_with_openai(pdf_path: str, max_pages: int = 15) -> List[Dict[str, Any]]:
     """
     Scanned-PDF fallback extraction using OpenAI Vision page-by-page.
@@ -198,5 +342,7 @@ def extract_transactions_from_pdf_with_openai(pdf_path: str, max_pages: int = 15
         doc.close()
     except Exception:
         pass
+    out = _dedupe_transactions(out)
+    out = _repair_debit_credit_by_balance_chain(out)
     print(f"DEBUG [openai_vision]: Total fallback transactions: {len(out)}")
     return out
