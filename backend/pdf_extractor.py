@@ -1327,7 +1327,23 @@ def parse_statement_metadata(text: str) -> Dict[str, Any]:
         m = re.search(pat, text, re.I | re.MULTILINE)
         if not m: 
             return None
-        return float(m.group(1).replace(",", ""))
+        raw = (m.group(1) or "").strip()
+        if not raw:
+            return None
+        neg = False
+        if raw.startswith("(") and raw.endswith(")"):
+            neg = True
+            raw = raw[1:-1]
+        raw = raw.replace(",", "").strip()
+        # Keep optional leading minus and decimal point only.
+        raw = re.sub(r"[^\d.\-]", "", raw)
+        if not raw:
+            return None
+        try:
+            val = float(raw)
+            return -abs(val) if neg else val
+        except Exception:
+            return None
 
     meta = {}
     
@@ -1372,30 +1388,30 @@ def parse_statement_metadata(text: str) -> Dict[str, Any]:
     # Try various patterns for totals
     # Pattern 1: "Total Debit 1,234,567.89"
     meta["statement_total_debit"] = (
-        find_money(r"Total\s+Debits?[:\s]*([\d,]+\.\d{2})") or
-        find_money(r"Debit\s+Total[:\s]*([\d,]+\.\d{2})") or
-        find_money(r"Total\s+Withdrawals?[:\s]*([\d,]+\.\d{2})") or
-        find_money(r"Total\s+Debit[:\s]*([\d,]+\.\d{2})") # Ecobank summary
+        find_money(r"Total\s+Debits?[:\s]*([()\-\d,]+\.\d{2})") or
+        find_money(r"Debit\s+Total[:\s]*([()\-\d,]+\.\d{2})") or
+        find_money(r"Total\s+Withdrawals?[:\s]*([()\-\d,]+\.\d{2})") or
+        find_money(r"Total\s+Debit[:\s]*([()\-\d,]+\.\d{2})") # Ecobank summary
     )
     
     meta["statement_total_credit"] = (
-        find_money(r"Total\s+Credits?[:\s]*([\d,]+\.\d{2})") or
-        find_money(r"Credit\s+Total[:\s]*([\d,]+\.\d{2})") or
-        find_money(r"Total\s+Deposits?[:\s]*([\d,]+\.\d{2})") or
-        find_money(r"Total\s+Credit[:\s]*([\d,]+\.\d{2})") # Ecobank summary
+        find_money(r"Total\s+Credits?[:\s]*([()\-\d,]+\.\d{2})") or
+        find_money(r"Credit\s+Total[:\s]*([()\-\d,]+\.\d{2})") or
+        find_money(r"Total\s+Deposits?[:\s]*([()\-\d,]+\.\d{2})") or
+        find_money(r"Total\s+Credit[:\s]*([()\-\d,]+\.\d{2})") # Ecobank summary
     )
     
     meta["opening_balance"] = (
-        find_money(r"Opening\s+Balance[:\s]*([\d,]+\.\d{2})") or
-        find_money(r"Balance\s+Brought\s+Forward[:\s]*([\d,]+\.\d{2})") or
-        find_money(r"Balance\s+(?:Brought|B/F)[:\s]*([\d,]+\.\d{2})") or
-        find_money(r"Opening\s+Balance[:\s]*([\d,]+\.\d{2})")
+        find_money(r"Opening\s+Balance[:\s]*([()\-\d,]+\.\d{2})") or
+        find_money(r"Balance\s+Brought\s+Forward[:\s]*([()\-\d,]+\.\d{2})") or
+        find_money(r"Balance\s+(?:Brought|B/F)[:\s]*([()\-\d,]+\.\d{2})") or
+        find_money(r"Opening\s+Balance[:\s]*([()\-\d,]+\.\d{2})")
     )
     
     meta["closing_balance"] = (
-        find_money(r"Closing\s+Balance[:\s]*([\d,]+\.\d{2})") or
-        find_money(r"Balance\s+(?:Carried|C/F)[:\s]*([\d,]+\.\d{2})") or
-        find_money(r"Closing\s+Balance[:\s]*([\d,]+\.\d{2})")
+        find_money(r"Closing\s+Balance[:\s]*([()\-\d,]+\.\d{2})") or
+        find_money(r"Balance\s+(?:Carried|C/F)[:\s]*([()\-\d,]+\.\d{2})") or
+        find_money(r"Closing\s+Balance[:\s]*([()\-\d,]+\.\d{2})")
     )
 
     # Account Number
@@ -2044,11 +2060,10 @@ def detect_gtbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float,
     """
     Detect column boundaries for GTBank from the header row.
     """
-    # GTCO (GTBank) headers can be multi-line (stacked).
-    # We group words by Y and find the "row" that has the MOST header keywords.
+    # GTBank headers can be multi-line (stacked).
+    # We group words by Y and find the row with the strongest header-keyword signal.
     rows = group_words_to_rows(words, y_tol=3.0)
-    # Removing boundaries entirely for maximum robustness
-    keyword_map = r"(Trans|Value|Ref|Deb|Cred|Bal|Particulars|Remarks|Details|Branch)"
+    keyword_map = r"(Trans|Value|Ref|Deb|Cred|Bal|Originat|Branch|Remarks)"
     
     best_row_idx = -1
     max_score = 0
@@ -2062,10 +2077,10 @@ def detect_gtbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float,
         print(f"DEBUG [detect_gtbank_columns]: No header row found. Max score: {max_score}")
         return None
 
-    # Found a header line. Expand to include +/- 25 pixels around it to capture stacked labels
-    header_top = rows[best_row_idx]["top"]
-    header_band = (header_top - 20, header_top + 20)
-    header_words = [w for w in words if header_band[0] <= w["top"] <= header_band[1]]
+    # Use ONLY the detected header row.
+    # Important: GTBank page-1 often contains "Balance as at Last Transaction",
+    # which can otherwise hijack the Balance x-position.
+    header_words = rows[best_row_idx]["words"]
 
     def find_x(regex: str):
         """Find left edge (x0) for left-aligned columns"""
@@ -2076,17 +2091,15 @@ def detect_gtbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float,
         """Find right edge (x1) for right-aligned numeric columns"""
         xs = [w["x1"] for w in header_words if re.search(regex, w["text"], re.I)]
         return max(xs) if xs else None
-    
-    # Left-aligned columns - use left edge
-    x_trans = find_x(r"Trans")
-    x_value = find_x(r"Value")
-    x_ref   = find_x(r"Refer")
-    
-    # Right-aligned numeric columns - use right edge
-    x_deb   = find_x_right(r"Deb")
-    x_cred  = find_x_right(r"Cred")
-    x_bal   = find_x_right(r"Bal")
-    
+
+    # Text-like columns
+    x_trans = find_x(r"^Trans")
+    x_value = find_x(r"^Value")
+    x_ref   = find_x(r"^Ref")
+    # Numeric columns
+    x_deb   = find_x_right(r"^Deb")
+    x_cred  = find_x_right(r"^Cred")
+    x_bal   = find_x_right(r"^Bal")
     x_branch = find_x(r"Originat|Branch")
     x_rem   = find_x(r"Remarks?|Particulars|Details")
 

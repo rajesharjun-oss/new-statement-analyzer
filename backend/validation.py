@@ -64,6 +64,40 @@ def validate_totals(transactions: List[Dict], metadata: Dict[str, Any]) -> Dict[
     credit_ok = abs(credit_diff) <= tolerance
     totals_match = debit_ok and credit_ok
 
+    # GTBank/GTCO sometimes ships mixed-account bundles where header summary
+    # totals/closing don't align with the visible ledger pages in the file.
+    # If the extracted ledger is internally coherent, prefer ledger validation.
+    if not totals_match and str(metadata.get("bank", "")).lower() in {"gtbank", "gtco"}:
+        opening_bal = _num(metadata.get("opening_balance"))
+        closing_bal = _num(metadata.get("closing_balance"))
+        last_bal = 0.0
+        for t in reversed(transactions):
+            b = _num(t.get("balance"))
+            if b != 0.0:
+                last_bal = b
+                break
+
+        implied_last = round(opening_bal + extracted_credit - extracted_debit, 2)
+        ledger_consistent = abs(implied_last - last_bal) <= 1.0 if last_bal != 0.0 else False
+        header_disagrees = abs(closing_bal - last_bal) > 1.0 if last_bal != 0.0 else False
+
+        if ledger_consistent and header_disagrees:
+            return {
+                "status": (
+                    "Ledger totals validated; header summary appears inconsistent with visible "
+                    f"transaction pages (header closing={closing_bal:.2f}, ledger closing={last_bal:.2f})."
+                ),
+                "totals_match": True,
+                "extracted_total_debit": extracted_debit,
+                "extracted_total_credit": extracted_credit,
+                "statement_total_debit": float(statement_debit),
+                "statement_total_credit": float(statement_credit),
+                "debit_diff": debit_diff,
+                "credit_diff": credit_diff,
+                "header_closing_balance": closing_bal,
+                "ledger_closing_balance": last_bal,
+            }
+
     if totals_match:
         status = "Totals match statement"
     else:
