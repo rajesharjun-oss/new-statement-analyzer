@@ -7,6 +7,7 @@ import os
 import re
 import base64
 import json
+import tempfile
 import anthropic
 from pathlib import Path
 from typing import List, Dict, Any
@@ -19,14 +20,67 @@ def get_claude_client():
     return anthropic.Anthropic(api_key=api_key)
 
 
+def _get_claude_models() -> List[str]:
+    """
+    Return ordered Claude models to try.
+    Env override:
+    - ANTHROPIC_MODELS="model_a,model_b,..."
+    - ANTHROPIC_MODEL="model_single"
+    """
+    raw_models = os.getenv("ANTHROPIC_MODELS", "").strip()
+    if raw_models:
+        models = [m.strip() for m in raw_models.split(",") if m.strip()]
+        if models:
+            return models
+
+    single_model = os.getenv("ANTHROPIC_MODEL", "").strip()
+    if single_model:
+        return [single_model]
+
+    return [
+        "claude-sonnet-4-20250514",
+        "claude-3-7-sonnet-latest",
+        "claude-3-5-sonnet-latest",
+    ]
+
+
+def _is_quota_or_rate_limit_error(err: Exception) -> bool:
+    msg = str(err).lower()
+    return (
+        "429" in msg
+        or "rate limit" in msg
+        or "quota" in msg
+        or "resource exhausted" in msg
+        or "overloaded" in msg
+    )
+
+
+def _is_model_or_request_error(err: Exception) -> bool:
+    msg = str(err).lower()
+    return (
+        "400" in msg
+        or "invalid_request_error" in msg
+        or "unsupported" in msg
+        or ("model" in msg and "not" in msg)
+    )
+
+
+def _extract_text_blocks(response: Any) -> str:
+    text_blocks = []
+    for block in getattr(response, "content", []) or []:
+        if getattr(block, "type", "") == "text":
+            text_blocks.append(getattr(block, "text", "") or "")
+    return "\n".join(text_blocks).strip()
+
+
 def extract_with_claude(pdf_path: str) -> List[Dict[str, Any]]:
     """
     Extract bank statement transactions using Claude's native PDF understanding.
-    
+
     Sends the full PDF as base64 to Claude, which reads all pages visually
     and returns structured PSV data. This is the ultimate fallback when
     pdfplumber column detection and Gemini Vision both fail.
-    
+
     Returns: List of transaction dicts matching the standard format.
     """
     client = get_claude_client()
@@ -46,13 +100,13 @@ def extract_with_claude(pdf_path: str) -> List[Dict[str, Any]]:
     max_pages = 15
     reader = PdfReader(pdf_file)
     total_orig_pages = len(reader.pages)
-    
+
     if total_orig_pages > max_pages:
         print(f"DEBUG [claude_extraction]: Slicing PDF from {total_orig_pages} to {max_pages} pages for safety.")
         writer = PdfWriter()
         for i in range(max_pages):
             writer.add_page(reader.pages[i])
-        
+
         output_buffer = io.BytesIO()
         writer.write(output_buffer)
         pdf_bytes = output_buffer.getvalue()
@@ -73,7 +127,7 @@ def extract_with_claude(pdf_path: str) -> List[Dict[str, Any]]:
         "3. Merge multi-line descriptions into a single clean string on one row.\n"
         "4. Numbers: Remove currency symbols and thousand separators. Output raw floats (e.g. 100500.00). Use 0.00 for empty amounts.\n"
         "5. If the statement has a Reference/Chq No column, append its value to the DESCRIPTION. NEVER put reference numbers into DEBIT, CREDIT, or BALANCE.\n"
-        "6. Skip summary/total rows like 'OPENING BALANCE', 'CLOSING BALANCE', 'TOTAL DEBIT', 'TOTAL CREDIT', 'BALANCE B/F', 'BALANCE C/F'.\n"
+        "6. Skip summary/total rows like OPENING BALANCE, CLOSING BALANCE, TOTAL DEBIT, TOTAL CREDIT, BALANCE B/F, BALANCE C/F.\n"
         "7. If the statement contains multiple accounts, separate them with a line: ---ACCOUNT_BREAK---\n\n"
         "OUTPUT FORMAT:\n"
         "Return ONLY raw PSV text with NO headers, NO markdown, NO explanations.\n"
@@ -83,61 +137,69 @@ def extract_with_claude(pdf_path: str) -> List[Dict[str, Any]]:
         "Example row: 15-Jan-2024||NIP TRF TO JOHN DOE|50000.00|0.00|1250000.50\n"
     )
 
-    try:
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=8192,
-            temperature=0,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "document",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "application/pdf",
-                                "data": pdf_base64,
-                            },
-                        },
-                        {
-                            "type": "text",
-                            "text": prompt,
-                        },
-                    ],
-                }
-            ],
-        )
+    models = _get_claude_models()
+    last_error = None
 
-        raw_text = response.content[0].text.strip()
-        
-        # Clean markdown fences if Claude wrapped the output
-        raw_text = re.sub(r'^```(?:csv|psv|text)?\s*', '', raw_text, flags=re.I)
-        raw_text = re.sub(r'```$', '', raw_text, flags=re.I).strip()
-
-        # Debug: save raw output for inspection
-        debug_path = pdf_file.with_suffix('.claude_raw.psv')
+    for model_name in models:
         try:
-            with open(debug_path, 'w', encoding='utf-8') as f:
-                f.write(raw_text)
-            print(f"DEBUG [claude_extraction]: Raw PSV saved to {debug_path}")
-        except Exception:
-            pass
+            print(f"DEBUG [claude_extraction]: Trying Claude model '{model_name}'...")
+            response = client.messages.create(
+                model=model_name,
+                max_tokens=8192,
+                temperature=0,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "document",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "application/pdf",
+                                    "data": pdf_base64,
+                                },
+                            },
+                            {
+                                "type": "text",
+                                "text": prompt,
+                            },
+                        ],
+                    }
+                ],
+            )
 
-        # Parse PSV into transaction dicts
-        transactions = _parse_psv(raw_text)
-        
-        # Apply column auto-correction (same logic as standard_ocr.py)
-        transactions = _auto_correct_columns(transactions)
+            raw_text = _extract_text_blocks(response)
+            raw_text = re.sub(r'^```(?:csv|psv|text|json)?\s*', '', raw_text, flags=re.I)
+            raw_text = re.sub(r'```$', '', raw_text, flags=re.I).strip()
 
-        print(f"DEBUG [claude_extraction]: Successfully extracted {len(transactions)} transactions via Claude.")
-        return transactions
+            debug_path = pdf_file.with_suffix('.claude_raw.psv')
+            try:
+                with open(debug_path, 'w', encoding='utf-8') as f:
+                    f.write(raw_text)
+                print(f"DEBUG [claude_extraction]: Raw PSV saved to {debug_path}")
+            except Exception:
+                pass
 
-    except Exception as e:
-        print(f"ERROR [claude_extraction]: Claude extraction failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return []
+            transactions = _parse_psv(raw_text)
+            transactions = _auto_correct_columns(transactions)
+
+            print(f"DEBUG [claude_extraction]: Successfully extracted {len(transactions)} transactions via Claude model '{model_name}'.")
+            return transactions
+
+        except Exception as e:
+            last_error = e
+            if _is_quota_or_rate_limit_error(e) or _is_model_or_request_error(e):
+                print(f"WARN [claude_extraction]: Model '{model_name}' failed ({e}). Trying next model...")
+                continue
+
+            print(f"ERROR [claude_extraction]: Claude extraction failed on model '{model_name}': {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
+    if last_error is not None:
+        print(f"ERROR [claude_extraction]: All Claude models failed. Last error: {last_error}")
+    return []
 
 
 def _safe_float(val: str) -> float:
@@ -157,6 +219,18 @@ def _safe_float(val: str) -> float:
         return parsed
     except (ValueError, TypeError):
         return 0.0
+
+
+def _is_summary_row(desc_upper: str) -> bool:
+    summary_patterns = [
+        r'\bPAGE\s+TOTAL\b',
+        r'\bTOTAL\s+(DEBIT|CREDIT|WITHDRAWAL|DEPOSIT|CHARGES?)\b',
+        r'^(TOTAL|GRAND\s+TOTAL)\b',
+        r'\bBALANCE\s+(B/F|C/F|BROUGHT\s+FORWARD|CARRIED\s+FORWARD)\b',
+        r'\bOPENING\s+BALANCE\b',
+        r'\bCLOSING\s+BALANCE\b',
+    ]
+    return any(re.search(pattern, desc_upper) for pattern in summary_patterns)
 
 
 def _parse_psv(text: str) -> List[Dict[str, Any]]:
@@ -193,14 +267,9 @@ def _parse_psv(text: str) -> List[Dict[str, Any]]:
         desc_upper = desc_val.upper()
         if 'DATE' in date_val.upper() and 'DESCRIPTION' in desc_upper:
             continue
-        
+
         # Skip summary rows
-        skip_keywords = [
-            'TOTAL', 'SUM', 'BROUGHT FORWARD', 'CARRIED FORWARD',
-            'BALANCE B/F', 'BALANCE C/F', 'OPENING BALANCE',
-            'CLOSING BALANCE', 'PAGE TOTAL'
-        ]
-        if any(kw in desc_upper for kw in skip_keywords):
+        if _is_summary_row(desc_upper):
             continue
 
         transactions.append({
@@ -221,15 +290,14 @@ def _parse_psv(text: str) -> List[Dict[str, Any]]:
 def extract_from_ocr_text(ocr_text: str, bank_hint: str = "") -> List[Dict[str, Any]]:
     """
     Stage 2 of 2-stage pipeline: structured extraction from Gemini-OCR'd plain text.
-    
-    Takes raw OCR text (from gemini_ocr_to_text) and asks Claude Sonnet to parse it
-    into structured PSV transactions. This separates OCR (Gemini's strength) from
-    context-aware extraction (Claude's strength).
-    
+
+    Takes raw OCR text (from gemini_ocr_to_text) and asks Claude to parse it
+    into structured PSV transactions. This separates OCR from extraction.
+
     Args:
         ocr_text: Concatenated plain text from Gemini OCR, with === PAGE N === markers.
         bank_hint: Optional bank name/identifier for context.
-    
+
     Returns: List of transaction dicts matching the standard format.
     """
     client = get_claude_client()
@@ -286,37 +354,51 @@ def extract_from_ocr_text(ocr_text: str, bank_hint: str = "") -> List[Dict[str, 
     )
 
     all_transactions: List[Dict[str, Any]] = []
+    models = _get_claude_models()
 
     for chunk_idx, chunk in enumerate(chunks, 1):
         prompt = prompt_template.format(bank_context=bank_context, ocr_text=chunk)
-        try:
-            print(f"DEBUG [claude_extraction]: Sending OCR chunk {chunk_idx}/{len(chunks)} "
-                  f"({len(chunk):,} chars) to Claude for extraction...")
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=8192,
-                temperature=0,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            raw_text = response.content[0].text.strip()
-            raw_text = re.sub(r'^```(?:csv|psv|text)?\s*', '', raw_text, flags=re.I)
-            raw_text = re.sub(r'```$', '', raw_text, flags=re.I).strip()
+        chunk_done = False
 
-            # Debug: save raw PSV per chunk
-            debug_path = Path(f"/tmp/claude_ocr_chunk_{chunk_idx}.psv")
+        for model_name in models:
             try:
-                debug_path.write_text(raw_text, encoding="utf-8")
-            except Exception:
-                pass
+                print(
+                    f"DEBUG [claude_extraction]: Sending OCR chunk {chunk_idx}/{len(chunks)} "
+                    f"({len(chunk):,} chars) to Claude model '{model_name}'..."
+                )
+                response = client.messages.create(
+                    model=model_name,
+                    max_tokens=8192,
+                    temperature=0,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                raw_text = _extract_text_blocks(response)
+                raw_text = re.sub(r'^```(?:csv|psv|text|json)?\s*', '', raw_text, flags=re.I)
+                raw_text = re.sub(r'```$', '', raw_text, flags=re.I).strip()
 
-            chunk_txns = _parse_psv(raw_text)
-            print(f"DEBUG [claude_extraction]: Chunk {chunk_idx} → {len(chunk_txns)} transactions.")
-            all_transactions.extend(chunk_txns)
+                debug_path = Path(tempfile.gettempdir()) / f"claude_ocr_chunk_{chunk_idx}.psv"
+                try:
+                    debug_path.write_text(raw_text, encoding="utf-8")
+                except Exception:
+                    pass
 
-        except Exception as e:
-            print(f"ERROR [claude_extraction]: OCR chunk {chunk_idx} extraction failed: {e}")
-            import traceback
-            traceback.print_exc()
+                chunk_txns = _parse_psv(raw_text)
+                print(f"DEBUG [claude_extraction]: Chunk {chunk_idx} -> {len(chunk_txns)} transactions (model={model_name}).")
+                all_transactions.extend(chunk_txns)
+                chunk_done = True
+                break
+
+            except Exception as e:
+                if _is_quota_or_rate_limit_error(e) or _is_model_or_request_error(e):
+                    print(f"WARN [claude_extraction]: OCR chunk {chunk_idx} model '{model_name}' failed ({e}). Trying next model...")
+                    continue
+                print(f"ERROR [claude_extraction]: OCR chunk {chunk_idx} extraction failed on model '{model_name}': {e}")
+                import traceback
+                traceback.print_exc()
+                break
+
+        if not chunk_done:
+            print(f"WARN [claude_extraction]: OCR chunk {chunk_idx} failed on all Claude models.")
 
     if not all_transactions:
         return []
@@ -360,7 +442,7 @@ def _auto_correct_columns(txns: List[Dict]) -> List[Dict]:
                     t['debit'] = 0.0
                     print(f"DEBUG [claude_extraction]: Auto-corrected DEBIT -> CREDIT for {t['credit']}")
                     break
-                elif t['credit'] > 0 and round(t['credit'] * -2, 2) == deficit:
+                if t['credit'] > 0 and round(t['credit'] * -2, 2) == deficit:
                     t['debit'] = t['credit']
                     t['credit'] = 0.0
                     print(f"DEBUG [claude_extraction]: Auto-corrected CREDIT -> DEBIT for {t['debit']}")
