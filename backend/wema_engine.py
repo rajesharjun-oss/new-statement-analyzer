@@ -13,7 +13,8 @@ def parse_wema_money(text: str) -> float | None:
     if not text: return None
     
     # Remove whitespace and punctuation for basic validation
-    clean = text.replace(",", "").replace("₦", "").replace("N", "").replace(" ", "").strip()
+    clean = text.replace(",", "").replace("₦", "").replace("N", "")
+    clean = re.sub(r"\s+", "", clean).strip()
     
     # Filter out obvious non-financial noise
     if not any(c.isdigit() for c in clean): return None
@@ -90,7 +91,7 @@ def extract_wema_summary(pages: List[pdfplumber.page.Page], existing_summary: Di
     Extract ground-truth summary totals across First 5 and Last 5 pages (Atomic Speed Scan).
     Keeps the absolute MAXIMUM values found to ignore 'Page Totals'.
     """
-    summary = existing_summary if existing_summary else {"statement_total_debit": 0.0, "statement_total_credit": 0.0}
+    summary = existing_summary if existing_summary else {"statement_total_debit": None, "statement_total_credit": None}
     
     # Speed Optimization (V6): Scan only head and tail pages for corporate totals
     # This bypasses the 10-minute scan bottleneck for 1,238-page PDFs
@@ -115,34 +116,49 @@ def extract_wema_summary(pages: List[pdfplumber.page.Page], existing_summary: Di
             match_debit = re.search(r"TOTAL\s+DEBIT.*?([0-9\s,.]+)", line_txt.upper())
             if match_debit:
                 val = parse_wema_money(match_debit.group(1))
-                if val and val > summary.get("statement_total_debit", 0.0):
+                cur_debit = summary.get("statement_total_debit")
+                if val is not None and (cur_debit is None or val > cur_debit):
                      summary["statement_total_debit"] = val
                      print(f"  !!! [WEMA-STABLE-PATH-A] Found Max Debit: {val:,.2f} !!!")
             
             match_credit = re.search(r"TOTAL\s+CREDIT.*?([0-9\s,.]+)", line_txt.upper())
             if match_credit:
                 val = parse_wema_money(match_credit.group(1))
-                if val and val > summary.get("statement_total_credit", 0.0):
+                cur_credit = summary.get("statement_total_credit")
+                if val is not None and (cur_credit is None or val > cur_credit):
                      summary["statement_total_credit"] = val
                      print(f"  !!! [WEMA-STABLE-PATH-A] Found Max Credit: {val:,.2f} !!!")
 
         # --- PATH B: Atomic Text Weld (Stream-Guided Backup) ---
         full_text = page.extract_text()
         if full_text:
+            full_text_u = full_text.upper()
+            # Whole-page resilient capture for wrapped decimals, e.g. 45,567,533,642.\n72
+            for label, key in [("TOTAL DEBIT", "statement_total_debit"), ("TOTAL CREDIT", "statement_total_credit")]:
+                m_full = re.search(rf"{label}[^\d]{{0,60}}([\d,\s]+\.\s*\d{{2}})", full_text_u, flags=re.S)
+                if m_full:
+                    val = parse_wema_money(m_full.group(1))
+                    cur = summary.get(key)
+                    if val is not None and (cur is None or val > cur):
+                        summary[key] = val
+                        print(f"  !!! [WEMA-STABLE-PATH-BLOCK] Found Max {label.title()}: {val:,.2f} !!!")
+
             text_lines = full_text.split('\n')
             for line in text_lines:
                 # FIX: Stricter summary total regex to avoid catching partial numbers
                 match_debit_b = re.search(r"TOTAL\s+DEBIT.*?([\d\s,]+\.\d{2})", line.upper())
                 if match_debit_b:
                     val = parse_wema_money(match_debit_b.group(1))
-                    if val and val > summary.get("statement_total_debit", 0.0):
+                    cur_debit = summary.get("statement_total_debit")
+                    if val is not None and (cur_debit is None or val > cur_debit):
                          summary["statement_total_debit"] = val
                          print(f"  !!! [WEMA-STABLE-PATH-B-WELD] Found Max Debit: {val:,.2f} !!!")
 
                 match_credit_b = re.search(r"TOTAL\s+CREDIT.*?([\d\s,]+\.\d{2})", line.upper())
                 if match_credit_b:
                     val = parse_wema_money(match_credit_b.group(1))
-                    if val and val > summary.get("statement_total_credit", 0.0):
+                    cur_credit = summary.get("statement_total_credit")
+                    if val is not None and (cur_credit is None or val > cur_credit):
                          summary["statement_total_credit"] = val
                          print(f"  !!! [WEMA-STABLE-PATH-B-WELD] Found Max Credit: {val:,.2f} !!!")
                           
