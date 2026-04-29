@@ -509,7 +509,13 @@ def detect_template(first_page_text: str) -> str:
     _wema_zone = text[:2500]
     if "withdrawals" in _wema_zone and "deposits" in _wema_zone and "narration" in _wema_zone:
         return "wema"
-    if "united bank for africa" in header_text or bool(re.search(r'\buba\b', header_text)) or "date posted" in header_text or ("withdrawal" in header_text and "deposit" in header_text):
+    # Tighten UBA detection to avoid false positives on Zenith-like layouts that
+    # also use "DATE POSTED / VALUE DATE / DEBIT / CREDIT / BALANCE".
+    uba_structural = (
+        ("chq no" in header_text or "cheque no" in header_text) and
+        ("narration" in header_text or "tran date" in header_text or "trans date" in header_text)
+    )
+    if "united bank for africa" in header_text or bool(re.search(r'\buba\b', header_text)) or uba_structural:
         return "uba"
     if "first bank" in header_text or "firstbank" in header_text or " fbn " in header_text:
         return "firstbank"
@@ -728,14 +734,20 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 
                 if gtbank_signals < 2 and not explicit_name:
                     print(f"WARN: GTBank detected but only {gtbank_signals} signal(s) and no explicit name. Downgrading to generic.")
-                    bank_identifier = "generic"
+                    # Auto-recover to detected template instead of forcing generic parser.
+                    # Prevents false GTBank selections from collapsing credits on non-GT files.
+                    recovered = detect_template(combined_text) if combined_text else "generic"
+                    bank_identifier = recovered if recovered != "gtbank" else "generic"
+                    print(f"DEBUG: Recovered bank template after GTBank guard: {bank_identifier}")
 
             # HARD GUARD: GTCO only allowed if positively detected
             if bank_identifier == "gtco":
                 low_text = combined_text.lower()
                 if "gtco" not in low_text:
                     print(f"WARN: GTCO detected by keyword but 'gtco' not in text. Downgrading to generic.")
-                    bank_identifier = "generic"
+                    recovered = detect_template(combined_text) if combined_text else "generic"
+                    bank_identifier = recovered if recovered != "gtco" else "generic"
+                    print(f"DEBUG: Recovered bank template after GTCO guard: {bank_identifier}")
 
             metadata["bank"] = bank_identifier
             print(f"DEBUG: Detected Template (Pre-Routing): {bank_identifier}")
@@ -1006,6 +1018,17 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
             
             column_debug = {col: f"{bounds[0]:.1f} to {bounds[1]:.1f}" for col, bounds in base_cuts.items()}
             print(f"DEBUG: Detected columns: {column_debug}")
+            # Guard GTBank/GTCO-specific heuristics so they only run on actual GT-like layouts.
+            # This prevents false template hints (e.g. selecting GTBank on a Zenith file)
+            # from forcing bad row merges or field repairs.
+            is_gt_layout = (
+                bank_identifier in ["gtbank", "gtco"] and
+                isinstance(base_cuts, dict) and
+                "reference" in base_cuts and
+                "branch" in base_cuts and
+                "debit" in base_cuts and
+                "credit" in base_cuts
+            )
 
             # --- 3) Extract all pages ---
             # We now support multiple statements in one PDF.
@@ -1065,7 +1088,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 page_height = page.height
                 words = [w for w in words if w["bottom"] >= -5 and w["top"] <= page_height + 5]
 
-                tol = 12.0 if bank_identifier in ["gtbank", "gtco"] else 2.5
+                tol = 12.0 if is_gt_layout else 2.5
                 row_groups = group_words_to_rows(words, y_tol=tol)
 
                 for rg in row_groups:
@@ -1101,7 +1124,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 
                 # Merge multiline rows
                 raw_txns = merge_multiline_rows(group)
-                if bank_identifier in ["gtbank", "gtco"]:
+                if is_gt_layout:
                     raw_txns = repair_fields_batch(raw_txns)
                 
                 # Normalize and build final txns
@@ -1149,7 +1172,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 # Some mixed-account GTBank/GTCO bundles start with empty summary pages.
                 # If the active account totals mismatch, re-extract only this group's pages
                 # and choose whichever candidate better matches statement totals.
-                if bank_identifier in ["gtbank", "gtco"] and os.getenv("OPENAI_API_KEY"):
+                if is_gt_layout and os.getenv("OPENAI_API_KEY"):
                     try:
                         def _num_or_none(v):
                             if v is None:
