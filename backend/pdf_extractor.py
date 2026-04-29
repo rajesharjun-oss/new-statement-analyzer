@@ -781,6 +781,16 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                      txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='uba', max_pages=15)
                      if txns:
                          return [{"transactions": normalize_remarks(txns), "metadata": {"method": "gemini_vision"}}]
+                     # Fallback: OpenAI Vision page-wise extraction for scanned UBA statements
+                     if os.getenv("OPENAI_API_KEY"):
+                         try:
+                             from openai_vision import extract_transactions_from_pdf_with_openai
+                             oa_txns = extract_transactions_from_pdf_with_openai(str(pdf_path), max_pages=15)
+                             if oa_txns:
+                                 print(f"DEBUG: UBA OpenAI fallback returned {len(oa_txns)} transactions")
+                                 return [{"transactions": normalize_remarks(oa_txns), "metadata": {"method": "openai_vision_fallback"}}]
+                         except Exception as e:
+                             print(f"WARN: UBA OpenAI fallback failed: {e}")
                      # Do not hard-return empty here. Let generic local extraction run as a final fallback.
                      print("WARN: UBA AI fallback returned 0 txns. Falling through to generic extraction path.")
 
@@ -946,6 +956,19 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                             return [{"transactions": normalize_remarks(claude_txns), "metadata": meta3}]
                     except Exception as e:
                         print(f"DEBUG: Claude direct extraction failed: {e}")
+
+                # ── STAGE 3B: OpenAI Vision scanned fallback ──
+                if os.getenv("OPENAI_API_KEY"):
+                    print("DEBUG: Trying OpenAI Vision scanned fallback (max 15 pages)...")
+                    try:
+                        from openai_vision import extract_transactions_from_pdf_with_openai
+                        openai_txns = extract_transactions_from_pdf_with_openai(str(pdf_path), max_pages=15)
+                        if openai_txns:
+                            print(f"DEBUG: OpenAI Vision fallback extracted {len(openai_txns)} txns.")
+                            meta_oa = {**metadata, "method": "openai_vision_fallback"}
+                            return [{"transactions": normalize_remarks(openai_txns), "metadata": meta_oa}]
+                    except Exception as e:
+                        print(f"DEBUG: OpenAI Vision fallback failed: {e}")
 
                 # ── STAGE 4: Legacy OCR (last resort) ──
                 print(f"DEBUG: All AI fallbacks exhausted. Falling back to legacy OCR engine...")
