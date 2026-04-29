@@ -195,9 +195,15 @@ async def analyze_statement(
             total_credit += sum(num(t.get("credit")) for t in s["transactions"])
             total_txns += len(s["transactions"])
 
-        # Pick first statement metadata for top-level summary display
-        primary_meta = processed_statements[0]["metadata"] if processed_statements else {}
-        primary_validation = processed_statements[0]["validation"] if processed_statements else {}
+        # Prefer the statement that actually has transactions for top-level display.
+        # Some merged PDFs contain cover/empty account sections as group[0].
+        primary_stmt = None
+        if processed_statements:
+            non_empty = [s for s in processed_statements if s.get("transactions")]
+            primary_stmt = max(non_empty, key=lambda s: len(s.get("transactions", []))) if non_empty else processed_statements[0]
+
+        primary_meta = primary_stmt["metadata"] if primary_stmt else {}
+        primary_validation = primary_stmt["validation"] if primary_stmt else {}
 
         # Robust period handling
         period = primary_meta.get("statement_period") or "N/A"
@@ -219,7 +225,10 @@ async def analyze_statement(
         }
 
         success = True
-        preview_txns = processed_statements[0]["transactions"] if processed_statements else []
+        # Return a combined preview so the frontend doesn't show 0 when first group is empty.
+        preview_txns = []
+        for s in processed_statements:
+            preview_txns.extend(s.get("transactions", []))
         
         # Step 5: Deep Audit Summary (Optional / Move to background)
         audit_summary = "Audit in progress... refresh in 30 seconds."
