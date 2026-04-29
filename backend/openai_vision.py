@@ -130,6 +130,7 @@ def _repair_debit_credit_by_balance_chain(transactions: List[Dict[str, Any]], to
         return transactions
 
     swaps = 0
+    amount_repairs = 0
     prev_balance = None
     for txn in transactions:
         bal = float(txn.get("balance") or 0.0)
@@ -143,6 +144,10 @@ def _repair_debit_credit_by_balance_chain(transactions: List[Dict[str, Any]], to
         delta = round(bal - prev_balance, 2)
         d = float(txn.get("debit") or 0.0)
         c = float(txn.get("credit") or 0.0)
+        expected_amt = round(abs(delta), 2)
+        if expected_amt <= tol:
+            prev_balance = bal
+            continue
 
         # One-sided rows
         if d > 0.0 and c == 0.0:
@@ -151,12 +156,23 @@ def _repair_debit_credit_by_balance_chain(transactions: List[Dict[str, Any]], to
                 txn["credit"] = d
                 txn["debit"] = 0.0
                 swaps += 1
+                d = 0.0
+                c = txn["credit"]
+            elif abs(delta + d) > tol:
+                # Amount drift: snap debit to chain amount when side is correct but amount isn't.
+                txn["debit"] = expected_amt
+                amount_repairs += 1
         elif c > 0.0 and d == 0.0:
             # Credit should increase balance: delta ~= +c
             if abs(delta + c) <= tol and abs(delta - c) > tol:
                 txn["debit"] = c
                 txn["credit"] = 0.0
                 swaps += 1
+                d = txn["debit"]
+                c = 0.0
+            elif abs(delta - c) > tol:
+                txn["credit"] = expected_amt
+                amount_repairs += 1
         elif d > 0.0 and c > 0.0:
             # Keep the side that best matches delta and drop the other.
             debit_err = abs(delta + d)
@@ -165,11 +181,29 @@ def _repair_debit_credit_by_balance_chain(transactions: List[Dict[str, Any]], to
                 txn["credit"] = 0.0
             elif credit_err <= tol and debit_err > tol:
                 txn["debit"] = 0.0
+            else:
+                # Neither side is consistent: rebuild from balance direction.
+                if delta < 0:
+                    txn["debit"] = expected_amt
+                    txn["credit"] = 0.0
+                else:
+                    txn["credit"] = expected_amt
+                    txn["debit"] = 0.0
+                amount_repairs += 1
+        elif d == 0.0 and c == 0.0:
+            # No parsed amount but balance moved: reconstruct from chain.
+            if delta < 0:
+                txn["debit"] = expected_amt
+            else:
+                txn["credit"] = expected_amt
+            amount_repairs += 1
 
         prev_balance = bal
 
     if swaps:
         print(f"DEBUG [openai_vision]: Balance-chain repair swapped {swaps} rows.")
+    if amount_repairs:
+        print(f"DEBUG [openai_vision]: Balance-chain repair adjusted amounts on {amount_repairs} rows.")
     return transactions
 
 
