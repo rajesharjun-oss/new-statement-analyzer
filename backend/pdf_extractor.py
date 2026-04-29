@@ -1144,8 +1144,82 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                         "_page": txn.get("_page"),
                         "_row": txn.get("_row")
                     })
+
+                # --- 4c) GTBank/GTCO mismatch rescue (page-scoped OpenAI Vision) ---
+                # Some mixed-account GTBank/GTCO bundles start with empty summary pages.
+                # If the active account totals mismatch, re-extract only this group's pages
+                # and choose whichever candidate better matches statement totals.
+                if bank_identifier in ["gtbank", "gtco"] and os.getenv("OPENAI_API_KEY"):
+                    try:
+                        def _num_or_none(v):
+                            if v is None:
+                                return None
+                            s = str(v).strip()
+                            if not s:
+                                return None
+                            try:
+                                return float(s.replace(",", ""))
+                            except Exception:
+                                return None
+
+                        def _totals(txns: List[Dict[str, Any]]) -> Tuple[float, float]:
+                            d = sum(parse_money(str(t.get("debit", ""))) for t in txns)
+                            c = sum(parse_money(str(t.get("credit", ""))) for t in txns)
+                            return d, c
+
+                        stmt_debit = _num_or_none(best_meta.get("statement_total_debit"))
+                        stmt_credit = _num_or_none(best_meta.get("statement_total_credit"))
+                        cur_debit, cur_credit = _totals(normalized)
+                        has_stmt_totals = (stmt_debit is not None and stmt_credit is not None)
+                        mismatch = (
+                            has_stmt_totals and
+                            (abs(cur_debit - stmt_debit) > 0.01 or abs(cur_credit - stmt_credit) > 0.01)
+                        )
+                        need_rescue = (not normalized) or mismatch
+
+                        if need_rescue:
+                            group_pages = sorted({int(r.get("_page")) for r in group if r.get("_page")})
+                            if group_pages:
+                                from openai_vision import extract_transactions_from_pdf_with_openai
+                                print(
+                                    f"DEBUG [GTBANK/GTCO Rescue]: Triggered on pages {group_pages[:3]}"
+                                    f"{'...' if len(group_pages) > 3 else ''} (rows={len(normalized)})."
+                                )
+                                oa_raw = extract_transactions_from_pdf_with_openai(
+                                    str(pdf_path),
+                                    max_pages=max(15, len(group_pages)),
+                                    page_numbers=group_pages,
+                                )
+                                oa_txns = normalize_remarks(oa_raw) if oa_raw else []
+                                if oa_txns:
+                                    for t in oa_txns:
+                                        if not t.get("account_no"):
+                                            t["account_no"] = acc
+
+                                    oa_debit, oa_credit = _totals(oa_txns)
+                                    if has_stmt_totals:
+                                        cur_score = abs(cur_debit - stmt_debit) + abs(cur_credit - stmt_credit)
+                                        oa_score = abs(oa_debit - stmt_debit) + abs(oa_credit - stmt_credit)
+                                        if oa_score + 0.01 < cur_score:
+                                            print(
+                                                f"DEBUG [GTBANK/GTCO Rescue]: Using OpenAI group candidate "
+                                                f"(score {oa_score:.2f} < {cur_score:.2f})."
+                                            )
+                                            normalized = oa_txns
+                                            best_meta["method"] = "openai_vision_group_rescue"
+                                            best_meta["rescue_score_before"] = round(cur_score, 2)
+                                            best_meta["rescue_score_after"] = round(oa_score, 2)
+                                    elif len(oa_txns) > len(normalized):
+                                        print(
+                                            f"DEBUG [GTBANK/GTCO Rescue]: Using OpenAI group candidate "
+                                            f"({len(oa_txns)} rows > {len(normalized)} rows)."
+                                        )
+                                        normalized = oa_txns
+                                        best_meta["method"] = "openai_vision_group_rescue"
+                    except Exception as e:
+                        print(f"DEBUG [GTBANK/GTCO Rescue]: Failed: {e}")
                 
-                # --- 4c) Mathematical Self-Repair & VLM Check ---
+                # --- 4d) Mathematical Self-Repair & VLM Check ---
                 # Achieve 100% perfection by auditing the extracted results against statement totals
                 if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
                     try:
@@ -2434,10 +2508,24 @@ def merge_multiline_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     # --- FIX 14 & 2: FILTER & REPAIR ---
     final_out = []
+    prev_valid_date = ""
     for txn in out:
-        # If Date+Bal but no Amt, we keep it (Fix 2).
-        if txn["date"]:
-             final_out.append(txn)
+        txn_date = (txn.get("date") or "").strip()
+        if txn_date:
+            prev_valid_date = txn_date
+            final_out.append(txn)
+            continue
+
+        # Rescue orphan amount rows that lost date during line-wrap merges.
+        # Common in GTBank multi-account bundles where one row has amount/description
+        # but the date token was detached in the previous continuation line.
+        deb_val = parse_money(txn.get("debit", ""))
+        cred_val = parse_money(txn.get("credit", ""))
+        has_amount = (deb_val != 0.0 or cred_val != 0.0)
+        has_text = bool((txn.get("description") or "").strip() or (txn.get("reference") or "").strip())
+        if has_amount and has_text and prev_valid_date:
+            txn["date"] = prev_valid_date
+            final_out.append(txn)
     
     return final_out
 
@@ -2456,13 +2544,27 @@ def parse_money(text: str) -> float:
     cleaned = re.sub(r'[^\d.]', '', text_str)
     if not cleaned:
         return 0.0
-        
-    # Reject pure digit strings with no decimal point or comma formatting.
-    # Real amounts always have '.XX' (e.g., '20,000.00' or '200.00').
-    # Reference numbers (even those prefixed with REF:) become unformatted digit strings like '2027676474'.
-    if '.' not in cleaned and len(cleaned) >= 6:
-        # 6+ digits with no decimal = almost certainly a reference number
-        return 0.0
+
+    # GTBank OCR sometimes drops decimal dots inside amount columns:
+    # e.g. "1,290,00000" instead of "1,290,000.00".
+    # If we see thousands-format commas but no dot, treat the last 2 digits as kobo.
+    if '.' not in cleaned:
+        if re.search(r'\d{1,3}(?:,\d{3})+', text_str):
+            digits_only = re.sub(r'\D', '', text_str)
+            if len(digits_only) >= 3:
+                try:
+                    val = float(digits_only) / 100.0
+                    if abs(val) > 100000000000000.0:
+                        return 0.0
+                    if "(" in text_str or text_str.lstrip().startswith("-") or text_str.lstrip().startswith("\xad"):
+                        return -val
+                    return val
+                except Exception:
+                    pass
+        # Reject pure long digit strings with no decimal and no thousands separators
+        # (typically reference IDs captured in amount columns).
+        if len(cleaned) >= 6:
+            return 0.0
         
     try:
         val = float(cleaned)

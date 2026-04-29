@@ -3,7 +3,7 @@ import os
 import httpx
 import json
 import re
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from pathlib import Path
 import fitz
 from openai import OpenAI
@@ -281,7 +281,11 @@ def extract_statement_summary_with_openai(pdf_path: str) -> Dict[str, Any]:
     return result
 
 
-def extract_transactions_from_pdf_with_openai(pdf_path: str, max_pages: int = 15) -> List[Dict[str, Any]]:
+def extract_transactions_from_pdf_with_openai(
+    pdf_path: str,
+    max_pages: int = 15,
+    page_numbers: Optional[List[int]] = None
+) -> List[Dict[str, Any]]:
     """
     Scanned-PDF fallback extraction using OpenAI Vision page-by-page.
     Returns standard transaction dicts.
@@ -298,6 +302,18 @@ def extract_transactions_from_pdf_with_openai(pdf_path: str, max_pages: int = 15
         return out
 
     page_limit = min(len(doc), max_pages)
+    if page_numbers:
+        page_idx_list = [p - 1 for p in page_numbers if isinstance(p, int) and 1 <= p <= len(doc)]
+        # Preserve order and uniqueness
+        seen = set()
+        page_indices = []
+        for idx in page_idx_list:
+            if idx in seen:
+                continue
+            seen.add(idx)
+            page_indices.append(idx)
+    else:
+        page_indices = list(range(page_limit))
     model_name = os.getenv("OPENAI_OCR_MODEL", "gpt-4o")
 
     prompt = (
@@ -308,7 +324,7 @@ def extract_transactions_from_pdf_with_openai(pdf_path: str, max_pages: int = 15
         "Do NOT include opening/closing balance summary lines or page totals."
     )
 
-    for idx in range(page_limit):
+    for idx in page_indices:
         try:
             page = doc.load_page(idx)
             pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
@@ -367,7 +383,7 @@ def extract_transactions_from_pdf_with_openai(pdf_path: str, max_pages: int = 15
                         "category": "Uncategorized",
                     }
                 )
-            print(f"DEBUG [openai_vision]: Page {idx+1}/{page_limit} -> {len(rows)} raw rows")
+            print(f"DEBUG [openai_vision]: Page {idx+1}/{len(doc)} -> {len(rows)} raw rows")
         except Exception as e:
             print(f"DEBUG [openai_vision]: Page {idx+1} extraction failed: {e}")
             continue
