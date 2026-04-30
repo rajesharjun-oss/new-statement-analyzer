@@ -1198,7 +1198,11 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                             has_stmt_totals and
                             (abs(cur_debit - stmt_debit) > 0.01 or abs(cur_credit - stmt_credit) > 0.01)
                         )
-                        need_rescue = (not normalized) or mismatch
+                        # Only trigger expensive GT rescue when it can materially improve output:
+                        # 1) totals mismatch against known statement totals, or
+                        # 2) no rows extracted for a group that actually has statement totals.
+                        # This avoids pointless rescue calls on empty cover/zero-summary groups.
+                        need_rescue = mismatch or (not normalized and has_stmt_totals)
 
                         if need_rescue:
                             group_pages = sorted({int(r.get("_page")) for r in group if r.get("_page")})

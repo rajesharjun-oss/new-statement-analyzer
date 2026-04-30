@@ -66,7 +66,7 @@ def validate_totals(transactions: List[Dict], metadata: Dict[str, Any]) -> Dict[
 
     # GTBank/GTCO sometimes ships mixed-account bundles where header summary
     # totals/closing don't align with the visible ledger pages in the file.
-    # If the extracted ledger is internally coherent, prefer ledger validation.
+    # In this conflict case, surface an explicit mismatch reason (do not mark pass).
     if not totals_match and str(metadata.get("bank", "")).lower() in {"gtbank", "gtco"}:
         opening_bal = _num(metadata.get("opening_balance"))
         closing_bal = _num(metadata.get("closing_balance"))
@@ -84,10 +84,11 @@ def validate_totals(transactions: List[Dict], metadata: Dict[str, Any]) -> Dict[
         if ledger_consistent and header_disagrees:
             return {
                 "status": (
-                    "Ledger totals validated; header summary appears inconsistent with visible "
-                    f"transaction pages (header closing={closing_bal:.2f}, ledger closing={last_bal:.2f})."
+                    "Header totals and transaction ledger conflict: ledger rows are internally "
+                    "consistent, but they do not reconcile to statement header totals "
+                    f"(header closing={closing_bal:.2f}, ledger closing={last_bal:.2f})."
                 ),
-                "totals_match": True,
+                "totals_match": False,
                 "extracted_total_debit": extracted_debit,
                 "extracted_total_credit": extracted_credit,
                 "statement_total_debit": float(statement_debit),
