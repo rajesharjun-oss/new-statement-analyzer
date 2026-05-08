@@ -1099,6 +1099,9 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                     row["_page"] = page_num
                     row["_acc"] = current_account_no
                     row["_stmt_id"] = current_stmt_id
+                    # Preserve the full physical row text so multiline/amount rescue logic
+                    # can reason on tokens that may not map cleanly into a single column.
+                    row["_raw_text"] = " ".join((w.get("text") or "").strip() for w in rg["words"]).strip()
                     all_rows.append(row)
 
             # --- 4) Split all_rows by Statement ID and merge ---
@@ -1246,7 +1249,104 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                     except Exception as e:
                         print(f"DEBUG [GTBANK/GTCO Rescue]: Failed: {e}")
                 
-                # --- 4d) Mathematical Self-Repair & VLM Check ---
+                # --- 4d) GT header/closing reconciliation fallback ---
+                # Some GT bundles can have a trailing movement implied by header totals/closing
+                # but absent from extracted table rows in the source PDF text layer.
+                # When we have a single-sided delta that exactly equals the closing gap,
+                # infer one explicit adjustment row so totals and closing reconcile.
+                if is_gt_layout and normalized:
+                    try:
+                        def _num_or_none_local(v):
+                            if v is None:
+                                return None
+                            s = str(v).strip()
+                            if not s:
+                                return None
+                            try:
+                                return float(s.replace(",", ""))
+                            except Exception:
+                                return None
+
+                        stmt_debit = _num_or_none_local(best_meta.get("statement_total_debit"))
+                        stmt_credit = _num_or_none_local(best_meta.get("statement_total_credit"))
+                        stmt_closing = _num_or_none_local(best_meta.get("closing_balance"))
+
+                        if stmt_debit is not None and stmt_credit is not None and stmt_closing is not None:
+                            cur_debit = sum(parse_money(str(t.get("debit", ""))) for t in normalized)
+                            cur_credit = sum(parse_money(str(t.get("credit", ""))) for t in normalized)
+                            last_bal = parse_money(str(normalized[-1].get("balance", "")))
+
+                            debit_diff = round(stmt_debit - cur_debit, 2)
+                            credit_diff = round(stmt_credit - cur_credit, 2)
+                            closing_gap = round(last_bal - stmt_closing, 2)
+
+                            inferred_side = None
+                            inferred_amt = 0.0
+                            inferred_debit = 0.0
+                            inferred_credit = 0.0
+
+                            # Missing trailing debit: ledger closing sits above header closing
+                            # by exactly the debit shortfall; credits already match.
+                            if (
+                                debit_diff > 0.01
+                                and abs(credit_diff) <= 0.01
+                                and abs(debit_diff - closing_gap) <= 0.05
+                            ):
+                                inferred_side = "debit"
+                                inferred_amt = debit_diff
+                                inferred_debit = inferred_amt
+                            # Missing trailing credit: ledger closing sits below header closing
+                            # by exactly the credit shortfall; debits already match.
+                            elif (
+                                credit_diff > 0.01
+                                and abs(debit_diff) <= 0.01
+                                and abs(credit_diff + closing_gap) <= 0.05
+                            ):
+                                inferred_side = "credit"
+                                inferred_amt = credit_diff
+                                inferred_credit = inferred_amt
+
+                            if inferred_side and inferred_amt > 0.0:
+                                inferred_date = (
+                                    parse_date_smart(str(best_meta.get("period_end") or ""))
+                                    or normalized[-1].get("date")
+                                    or ""
+                                )
+                                inferred_page = normalized[-1].get("_page")
+                                inferred_acc = acc
+
+                                inferred_desc = (
+                                    "Inferred GT adjustment from statement header totals/closing "
+                                    "(source PDF row likely missing in text extraction)."
+                                )
+                                normalized.append({
+                                    "account_no": inferred_acc,
+                                    "date": inferred_date,
+                                    "value_date": "",
+                                    "reference": "INFERRED_HEADER_ADJUSTMENT",
+                                    "originating_branch": "",
+                                    "remarks": inferred_desc,
+                                    "description": inferred_desc,
+                                    "debit": inferred_debit,
+                                    "credit": inferred_credit,
+                                    "balance": stmt_closing,
+                                    "category": "Unallocated",
+                                    "is_reversal": False,
+                                    "_page": inferred_page,
+                                    "_row": None,
+                                    "_inferred": True,
+                                })
+                                best_meta["inferred_header_adjustment"] = True
+                                best_meta["inferred_adjustment_side"] = inferred_side
+                                best_meta["inferred_adjustment_amount"] = round(inferred_amt, 2)
+                                print(
+                                    f"DEBUG [GTBANK/GTCO Inference]: Added inferred {inferred_side} "
+                                    f"adjustment of {inferred_amt:,.2f} for account {inferred_acc}."
+                                )
+                    except Exception as e:
+                        print(f"DEBUG [GTBANK/GTCO Inference]: Skipped due to error: {e}")
+
+                # --- 4e) Mathematical Self-Repair & VLM Check ---
                 # Achieve 100% perfection by auditing the extracted results against statement totals
                 if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
                     try:
