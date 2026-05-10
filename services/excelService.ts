@@ -11,7 +11,8 @@ export const generateExcel = (
   reconciliationFailed: boolean,
   currency: string,
   organizationName: string,
-  bankName: string
+  bankName: string,
+  fileNameOverride?: string
 ) => {
   const wb = XLSX.utils.book_new();
 
@@ -117,7 +118,11 @@ export const generateExcel = (
 
   // Generate Filename
   const sanitize = (str: string) => str.replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_');
-  const filename = `${sanitize(organizationName)}_${sanitize(bankName)}_Statement.xlsx`;
+  const defaultFilename = `${sanitize(organizationName)}_${sanitize(bankName)}_Statement.xlsx`;
+  let filename = (fileNameOverride || "").trim() || defaultFilename;
+  if (!filename.toLowerCase().endsWith(".xlsx")) {
+    filename = `${filename}.xlsx`;
+  }
 
   // Write file
   XLSX.writeFile(wb, filename);

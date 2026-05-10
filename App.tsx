@@ -383,6 +383,21 @@ export default function App() {
       const targetName = `${org} - ${bank}.xlsx`;
 
       try {
+         generateExcel(
+            analysisResult.transactions,
+            analysisResult.reconciliation_warnings,
+            analysisResult.reconciliation_failed,
+            analysisResult.currency,
+            analysisResult.organizationName,
+            analysisResult.bankName,
+            targetName
+         );
+         return;
+      } catch (localExportError: any) {
+         console.error("Local export failed, falling back to server download.", localExportError);
+      }
+
+      try {
          if (analysisResult.downloadUrl) {
             const response = await fetch(analysisResult.downloadUrl);
             if (!response.ok) {
@@ -400,17 +415,10 @@ export default function App() {
             return;
          }
       } catch (downloadError: any) {
-         console.error("Download endpoint failed, falling back to local export.", downloadError);
+         console.error("Server download fallback failed.", downloadError);
       }
 
-      generateExcel(
-         analysisResult.transactions,
-         analysisResult.reconciliation_warnings,
-         analysisResult.reconciliation_failed,
-         analysisResult.currency,
-         analysisResult.organizationName,
-         analysisResult.bankName
-      );
+      setError("Export failed. Please retry.");
    };
 
    return (
@@ -461,7 +469,7 @@ export default function App() {
          </header>
 
          <main className="pt-28 pb-20 px-6 mx-auto max-w-[1200px]">
-            <div className="mb-5 flex items-center gap-2">
+            <div className="mb-5 flex flex-wrap items-center gap-2">
                <button
                   type="button"
                   onClick={() => setActiveTab("workspace")}
