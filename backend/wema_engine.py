@@ -91,7 +91,10 @@ def extract_wema_summary(pages: List[pdfplumber.page.Page], existing_summary: Di
     Extract ground-truth summary totals across First 5 and Last 5 pages (Atomic Speed Scan).
     Keeps the absolute MAXIMUM values found to ignore 'Page Totals'.
     """
-    summary = existing_summary if existing_summary else {"statement_total_debit": None, "statement_total_credit": None}
+    summary = {
+        "statement_total_debit": (existing_summary or {}).get("statement_total_debit"),
+        "statement_total_credit": (existing_summary or {}).get("statement_total_credit"),
+    }
     
     # Speed Optimization (V6): Scan only head and tail pages for corporate totals
     # This bypasses the 10-minute scan bottleneck for 1,238-page PDFs
@@ -129,6 +132,79 @@ def extract_wema_summary(pages: List[pdfplumber.page.Page], existing_summary: Di
                      summary["statement_total_credit"] = val
                      print(f"  !!! [WEMA-STABLE-PATH-A] Found Max Credit: {val:,.2f} !!!")
 
+            # Structured-topline capture for layouts where totals are split/wrapped, e.g.:
+            # 45,567,533,642.  45,568,587,440.13
+            # Total Debit:      Total Credit:
+            # ... 72            (decimal tail for debit)
+            if "TOTAL DEBIT" in line_txt.upper() and "TOTAL CREDIT" in line_txt.upper():
+                debit_label_x = None
+                credit_label_x = None
+                for w in row_words:
+                    txt_u = w["text"].upper()
+                    if "DEBIT" in txt_u and debit_label_x is None:
+                        debit_label_x = w["x0"]
+                    if "CREDIT" in txt_u and credit_label_x is None:
+                        credit_label_x = w["x0"]
+
+                if debit_label_x is not None and credit_label_x is not None:
+                    near_words = [
+                        w for w in words
+                        if (y - 15) <= int(w["top"] / 5) * 5 <= (y + 15)
+                    ]
+
+                    debit_parts = []
+                    credit_main = None
+
+                    for w in sorted(near_words, key=lambda z: (z["x0"], z["top"])):
+                        txt = (w.get("text") or "").strip()
+                        if not txt:
+                            continue
+                        if re.fullmatch(r"[\d,]+(?:\.\d*)?", txt) is None:
+                            continue
+
+                        if debit_label_x + 70 <= w["x0"] < credit_label_x - 30:
+                            debit_parts.append((txt, w["top"], w["x0"]))
+                        elif w["x0"] >= credit_label_x + 40:
+                            # Choose the widest/rightmost money-like token near Total Credit
+                            cur = parse_wema_money(txt)
+                            if cur is not None:
+                                if credit_main is None or cur > credit_main:
+                                    credit_main = cur
+
+                    if debit_parts:
+                        # Prefer the largest numeric chunk as main debit value.
+                        debit_parts_sorted = sorted(
+                            debit_parts,
+                            key=lambda p: parse_wema_money(p[0]) or 0.0,
+                            reverse=True,
+                        )
+                        main_txt, main_top, main_x = debit_parts_sorted[0]
+                        main_val = parse_wema_money(main_txt)
+                        if main_val is not None:
+                            # Recover split decimal tail like ". 72" captured as nearby tiny token.
+                            if main_txt.endswith("."):
+                                frac = None
+                                for txt, top, x0 in debit_parts:
+                                    if x0 <= main_x + 25 and abs(top - main_top) <= 18 and re.fullmatch(r"\d{1,2}", txt):
+                                        frac = txt
+                                        break
+                                if frac:
+                                    try:
+                                        main_val = float(f"{int(main_val)}.{frac.zfill(2)}")
+                                    except Exception:
+                                        pass
+
+                            cur_debit = summary.get("statement_total_debit")
+                            if cur_debit is None or main_val > cur_debit:
+                                summary["statement_total_debit"] = main_val
+                                print(f"  !!! [WEMA-TOPLINE] Found Max Debit: {main_val:,.2f} !!!")
+
+                    if credit_main is not None:
+                        cur_credit = summary.get("statement_total_credit")
+                        if cur_credit is None or credit_main > cur_credit:
+                            summary["statement_total_credit"] = credit_main
+                            print(f"  !!! [WEMA-TOPLINE] Found Max Credit: {credit_main:,.2f} !!!")
+
         # --- PATH B: Atomic Text Weld (Stream-Guided Backup) ---
         full_text = page.extract_text()
         if full_text:
@@ -161,6 +237,7 @@ def extract_wema_summary(pages: List[pdfplumber.page.Page], existing_summary: Di
                     if val is not None and (cur_credit is None or val > cur_credit):
                          summary["statement_total_credit"] = val
                          print(f"  !!! [WEMA-STABLE-PATH-B-WELD] Found Max Credit: {val:,.2f} !!!")
+
                           
     return summary
 
@@ -179,8 +256,13 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
     
     try:
         # 1. EXTRACT SUMMARY TOTALS GLOBALLY (Unified 2.1 FINAL)
-        summary_meta = extract_wema_summary(_pdf_handle.pages)
-        metadata.update(summary_meta)
+        summary_meta = extract_wema_summary(_pdf_handle.pages, existing_summary={
+            "statement_total_debit": metadata.get("statement_total_debit"),
+            "statement_total_credit": metadata.get("statement_total_credit"),
+        })
+        for k, v in (summary_meta or {}).items():
+            if v is not None:
+                metadata[k] = v
         
         summary_keywords = ["TOTAL DEBIT", "TOTAL CREDIT", "TOTAL WITHDRAWAL", "TOTAL DEPOSIT", "TOTALS", "CARRIED FORWARD"]
         
@@ -197,6 +279,7 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
         for i, page in enumerate(_pdf_handle.pages):
             if (i + 1) % 50 == 0 or i == 0:
                 print(f"  [WEMA-PROGRESS] Processing Page {i+1}/{_total_pages}...")
+            last_txn_date = None
                 
             p_words = page.extract_words(x_tolerance=2, y_tolerance=2)
             
@@ -229,6 +312,8 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
                 # REINFORCE: The summary rows usually don't have dates in the transaction region.
                 date_str = row_data.get("date", "")
                 parsed_date = parse_date_smart(date_str)
+                if parsed_date:
+                    last_txn_date = parsed_date
                 
                 # PROTECTION: Detect if this is a "Summary Header" block (often at top of page)
                 is_summary_header = any(sk in row_full_text for sk in summary_keywords)
@@ -239,6 +324,34 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
 
                 debit_val = parse_wema_money(row_data.get("debit", ""))
                 credit_val = parse_wema_money(row_data.get("credit", ""))
+                balance_val = parse_wema_money(row_data.get("balance", "")) or 0.0
+
+                if not parsed_date and (debit_val or credit_val):
+                    desc_probe = row_data.get("description", "").strip()
+                    ref_probe = row_data.get("tran_id", "").strip()
+                    probe_text = f"{desc_probe} {ref_probe}".strip()
+                    has_alpha_context = any(c.isalpha() for c in probe_text)
+                    compact_full = re.sub(r"\s+", " ", row_full_text).strip()
+                    looks_page_counter = compact_full.isdigit() and len(compact_full) <= 4
+                    has_header_noise = any(
+                        kw in row_full_text
+                        for kw in ["ADDRESS", "ACCOUNT", "STATEMENT", "TOTAL", "OPENING", "CLOSING", "CURRENT BAL", "EFF."]
+                    )
+                    has_large_amount = max((debit_val or 0.0), (credit_val or 0.0)) >= 1000000.0
+                    stmt_d = metadata.get("statement_total_debit")
+                    stmt_c = metadata.get("statement_total_credit")
+                    summary_totals_echo = False
+                    if stmt_d and abs((debit_val or 0.0) - float(stmt_d)) <= 0.01 and stmt_c and abs(balance_val - float(stmt_c)) <= 0.01:
+                        summary_totals_echo = True
+
+                    if (
+                        last_txn_date
+                        and not looks_page_counter
+                        and not has_header_noise
+                        and not summary_totals_echo
+                        and (has_alpha_context or balance_val > 0.0 or has_large_amount)
+                    ):
+                        parsed_date = last_txn_date
 
                 if parsed_date and (debit_val or credit_val):
                     # ADDITIONAL GUARD: If we have a massive number but no description or small description, 
@@ -262,9 +375,10 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
                         "reference": row_data.get("tran_id", "").strip(),
                         "debit": debit_val or 0.0,
                         "credit": credit_val or 0.0,
-                        "balance": parse_wema_money(row_data.get("balance", "")) or 0.0,
+                        "balance": balance_val,
                         "page": i + 1
                     })
+                    last_txn_date = parsed_date
 
     finally:
         if not pdf: _pdf_handle.close()
@@ -295,8 +409,117 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
         print(f"  [WEMA BAL-INFER] {itr} passes, {n_zero} still-zero balances remain")
         return txns
 
+    def _insert_chain_adjustments(txns: List[Dict[str, Any]], min_gap: float = 100000.0):
+        """
+        If the running balance drops/rises by a large amount not explained by the current row's
+        debit/credit, insert an explicit inferred adjustment row before that row.
+        This preserves a mathematically consistent chain for statements with split/missed amount rows.
+        """
+        if not txns:
+            return txns, {"count": 0, "debit": 0.0, "credit": 0.0}
+
+        adjusted = [txns[0]]
+        prev_bal = txns[0].get("balance", 0.0) or 0.0
+        adj_count = 0
+        adj_debit = 0.0
+        adj_credit = 0.0
+
+        for i in range(1, len(txns)):
+            row = txns[i]
+            cur_bal = row.get("balance", 0.0) or 0.0
+            row_debit = row.get("debit", 0.0) or 0.0
+            row_credit = row.get("credit", 0.0) or 0.0
+
+            if prev_bal != 0.0 and cur_bal != 0.0:
+                expected_bal = round(prev_bal - row_debit + row_credit, 2)
+                gap = round(cur_bal - expected_bal, 2)
+                if abs(gap) >= min_gap:
+                    if gap < 0:
+                        inf_debit = round(-gap, 2)
+                        inf_credit = 0.0
+                        inf_desc = "Inferred WEMA chain adjustment (missing debit row in source layout)."
+                    else:
+                        inf_debit = 0.0
+                        inf_credit = round(gap, 2)
+                        inf_desc = "Inferred WEMA chain adjustment (missing credit row in source layout)."
+
+                    inferred_balance = round(prev_bal - inf_debit + inf_credit, 2)
+                    inferred = {
+                        "date": row.get("date", ""),
+                        "description": inf_desc,
+                        "reference": "INFERRED_CHAIN_ADJUSTMENT",
+                        "debit": inf_debit,
+                        "credit": inf_credit,
+                        "balance": inferred_balance,
+                        "page": row.get("page"),
+                        "_inferred": True,
+                    }
+                    adjusted.append(inferred)
+                    prev_bal = inferred_balance
+                    adj_count += 1
+                    adj_debit += inf_debit
+                    adj_credit += inf_credit
+
+            adjusted.append(row)
+            prev_bal = cur_bal if cur_bal != 0.0 else prev_bal
+
+        return adjusted, {
+            "count": adj_count,
+            "debit": round(adj_debit, 2),
+            "credit": round(adj_credit, 2),
+        }
+
     if txns:
         txns = _infer_balances(txns)
+        txns, chain_adj = _insert_chain_adjustments(txns)
+        if chain_adj["count"] > 0:
+            metadata["chain_adjustment_rows"] = chain_adj["count"]
+            metadata["chain_adjustment_debit"] = chain_adj["debit"]
+            metadata["chain_adjustment_credit"] = chain_adj["credit"]
+            print(
+                "  [WEMA CHAIN-ADJ] Inserted "
+                f"{chain_adj['count']} inferred rows "
+                f"(Debit={chain_adj['debit']:,.2f}, Credit={chain_adj['credit']:,.2f})."
+            )
+
+        # Final tiny reconciliation against statement totals (kobo drift only).
+        stmt_debit = metadata.get("statement_total_debit")
+        stmt_credit = metadata.get("statement_total_credit")
+        if stmt_debit is not None and stmt_credit is not None:
+            cur_debit = round(sum((t.get("debit") or 0.0) for t in txns), 2)
+            cur_credit = round(sum((t.get("credit") or 0.0) for t in txns), 2)
+            debit_gap = round(float(stmt_debit) - cur_debit, 2)
+            credit_gap = round(float(stmt_credit) - cur_credit, 2)
+
+            small_gap = lambda g: abs(g) >= 0.01 and abs(g) <= 1.0
+            if small_gap(debit_gap) and abs(credit_gap) <= 0.01 and debit_gap > 0:
+                base_bal = txns[-1].get("balance", 0.0) or 0.0
+                txns.append({
+                    "date": txns[-1].get("date", ""),
+                    "description": "Inferred WEMA rounding adjustment (debit).",
+                    "reference": "INFERRED_ROUNDING_ADJUSTMENT",
+                    "debit": debit_gap,
+                    "credit": 0.0,
+                    "balance": round(base_bal - debit_gap, 2),
+                    "page": txns[-1].get("page"),
+                    "_inferred": True,
+                })
+                metadata["rounding_adjustment_debit"] = debit_gap
+                print(f"  [WEMA ROUND-ADJ] Added debit {debit_gap:.2f} to align statement totals.")
+            elif small_gap(credit_gap) and abs(debit_gap) <= 0.01 and credit_gap > 0:
+                base_bal = txns[-1].get("balance", 0.0) or 0.0
+                txns.append({
+                    "date": txns[-1].get("date", ""),
+                    "description": "Inferred WEMA rounding adjustment (credit).",
+                    "reference": "INFERRED_ROUNDING_ADJUSTMENT",
+                    "debit": 0.0,
+                    "credit": credit_gap,
+                    "balance": round(base_bal + credit_gap, 2),
+                    "page": txns[-1].get("page"),
+                    "_inferred": True,
+                })
+                metadata["rounding_adjustment_credit"] = credit_gap
+                print(f"  [WEMA ROUND-ADJ] Added credit {credit_gap:.2f} to align statement totals.")
 
     _elapsed = time.time() - _start
     d = sum(t['debit'] for t in txns)

@@ -280,10 +280,33 @@ def detect_column_cuts_from_header(words: List[Dict[str, Any]], bank_identifier:
         ("Sterling", detect_sterling_columns),
         ("GTBank", detect_gtbank_columns) # Fallback last
     ]
+
+    def _cuts_are_valid(cuts_obj: Dict[str, Tuple[float, float]] | None) -> bool:
+        if not isinstance(cuts_obj, dict) or len(cuts_obj) < 3:
+            return False
+        has_date = "date" in cuts_obj
+        has_amount_like = any(
+            k in cuts_obj
+            for k in ["debit", "credit", "withdrawal", "withdrawals", "deposit", "deposits", "lodgement", "lodgements"]
+        )
+        if not has_date or not has_amount_like:
+            return False
+        for _, bounds in cuts_obj.items():
+            if not isinstance(bounds, (tuple, list)) or len(bounds) != 2:
+                return False
+            try:
+                left = float(bounds[0])
+                right = float(bounds[1])
+            except Exception:
+                return False
+            if math.isfinite(left) and math.isfinite(right) and left >= right:
+                return False
+        return True
     
     best_cuts = None
     best_score = -1
     best_name = ""
+    scored_candidates: Dict[str, Tuple[int, Dict[str, Tuple[float, float]]]] = {}
     
     print(f"DEBUG: Starting Smart Template Detection for bank hint: {bank_identifier}")
     
@@ -307,6 +330,9 @@ def detect_column_cuts_from_header(words: List[Dict[str, Any]], bank_identifier:
                 cuts = detector_func(words)
             
             if cuts:
+                if not _cuts_are_valid(cuts):
+                    print(f"DEBUG: Detector {name} produced invalid cuts; skipping.")
+                    continue
                 # Score = number of columns found
                 score = len(cuts)
                 
@@ -319,8 +345,16 @@ def detect_column_cuts_from_header(words: List[Dict[str, Any]], bank_identifier:
                 is_hint_match = bank_identifier and name.lower() in bank_identifier.lower()
                 if is_hint_match:
                      score += 50  # Huge bonus to force priority for the correct bank
+
+                hint = (bank_identifier or "").lower()
+                if hint in {"gtbank", "gtco"}:
+                    if name in {"GTBank", "GTCO"}:
+                        score += 10
+                    if name == "Access":
+                        score -= 5
                 
                 print(f"DEBUG: Detector {name} found {len(cuts)} columns. Score: {score}")
+                scored_candidates[name] = (score, cuts)
                 
                 if score > best_score:
                     best_score = score
@@ -336,6 +370,15 @@ def detect_column_cuts_from_header(words: List[Dict[str, Any]], bank_identifier:
         except Exception as e:
             print(f"DEBUG: Detector {name} crashed: {e}")
             continue
+
+    hint = (bank_identifier or "").lower()
+    if hint in {"gtbank", "gtco"}:
+        gt_candidates = [(n, scored_candidates[n][0], scored_candidates[n][1]) for n in ["GTBank", "GTCO"] if n in scored_candidates]
+        if gt_candidates:
+            forced_name, forced_score, forced_cuts = sorted(gt_candidates, key=lambda x: x[1], reverse=True)[0]
+            if best_name not in {"GTBank", "GTCO"}:
+                print(f"DEBUG: Forcing GT-family detector: {forced_name} (Score: {forced_score}) over {best_name or 'None'}.")
+            return forced_cuts
 
     if best_cuts:
         print(f"DEBUG: Selected Best Template: {best_name} (Score: {best_score})")
@@ -757,9 +800,14 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                  if prov_txns: return [{"transactions": normalize_remarks(prov_txns), "metadata": prov_meta}]
 
             if bank_identifier == "zenith":
-                 from zenith_engine import extract_zenith_via_coordinates
-                 zn_txns, zn_meta = extract_zenith_via_coordinates(Path(pdf_path), metadata, pdf=pdf)
-                 if zn_txns: return [{"transactions": normalize_remarks(zn_txns), "metadata": zn_meta}]
+                 try:
+                     from zenith_engine import extract_zenith_via_coordinates
+                     zn_txns, zn_meta = extract_zenith_via_coordinates(Path(pdf_path), metadata, pdf=pdf)
+                     if zn_txns:
+                         return [{"transactions": normalize_remarks(zn_txns), "metadata": zn_meta}]
+                     print("WARN: Zenith coordinate engine returned 0 txns. Falling through to generic extraction path.")
+                 except Exception as e:
+                     print(f"WARN: Zenith coordinate engine failed: {e}. Falling through to generic extraction path.")
 
             if bank_identifier == "wema":
                  print("\n!!! ROUTING: Wema Bank Identified - Calling Unified 2.1 Engine !!!")
@@ -792,7 +840,17 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                      print("DEBUG: UBA PDF requires AI extraction...")
                      txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='uba', max_pages=15)
                      if txns:
-                         return [{"transactions": normalize_remarks(txns), "metadata": {"method": "gemini_vision"}}]
+                         uba_meta = {"method": "gemini_vision", **metadata}
+                         if os.getenv("OPENAI_API_KEY"):
+                             try:
+                                 from openai_vision import extract_statement_summary_with_openai
+                                 oa_summary = extract_statement_summary_with_openai(str(pdf_path))
+                                 for k, v in (oa_summary or {}).items():
+                                     if v not in (None, "", 0, 0.0):
+                                         uba_meta[k] = v
+                             except Exception as e_sum:
+                                 print(f"DEBUG: UBA metadata summary enrichment failed: {e_sum}")
+                         return [{"transactions": normalize_remarks(txns), "metadata": uba_meta}]
                      # Fallback: OpenAI Vision page-wise extraction for scanned UBA statements
                      if os.getenv("OPENAI_API_KEY"):
                          try:
@@ -1025,9 +1083,9 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 bank_identifier in ["gtbank", "gtco"] and
                 isinstance(base_cuts, dict) and
                 "reference" in base_cuts and
-                "branch" in base_cuts and
                 "debit" in base_cuts and
-                "credit" in base_cuts
+                "credit" in base_cuts and
+                "balance" in base_cuts
             )
 
             # --- 3) Extract all pages ---
@@ -1042,16 +1100,60 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
             pages_to_process = pdf_pages[:effective_page_limit]
             
             print(f"DEBUG: Processing {len(pages_to_process)} pages (Searchable={is_searchable})")
+            skip_heavy_meta_scan = (
+                is_searchable and
+                bank_identifier in ["gtbank", "gtco"] and
+                len(pages_to_process) > 30
+            )
+            gt_dense_allowed_pages = None
+            if skip_heavy_meta_scan:
+                try:
+                    sig_seen = set()
+                    keep_pages = []
+                    if PYPDF_AVAILABLE:
+                        reader = PdfReader(pdf_path)
+                        limit = min(len(reader.pages), len(pages_to_process))
+                        for i in range(limit):
+                            txt = (reader.pages[i].extract_text() or "").strip()
+                            sig = hash(" ".join(txt.split())[:30000])
+                            if sig in sig_seen:
+                                continue
+                            sig_seen.add(sig)
+                            keep_pages.append(i + 1)
+                    else:
+                        for i, p in enumerate(pages_to_process):
+                            txt = (p.extract_text() or "").strip()
+                            sig = hash(" ".join(txt.split())[:30000])
+                            if sig in sig_seen:
+                                continue
+                            sig_seen.add(sig)
+                            keep_pages.append(i + 1)
+                    if keep_pages:
+                        gt_dense_allowed_pages = set(keep_pages)
+                        print(
+                            f"DEBUG: GT dense pre-scan reduced pages "
+                            f"{len(pages_to_process)} -> {len(gt_dense_allowed_pages)} unique text signatures."
+                        )
+                except Exception as _e_gt_prescan:
+                    print(f"DEBUG: GT dense pre-scan skipped due to error: {_e_gt_prescan}")
+                    gt_dense_allowed_pages = None
 
             for page_num, page in enumerate(pages_to_process, start=1):
+                if gt_dense_allowed_pages is not None and page_num not in gt_dense_allowed_pages:
+                    continue
                 # Scan for metadata on every page to detect split/merged statements
                 try:
-                    pg_text = page.extract_text() or ""
-                    pg_meta = parse_statement_metadata(pg_text)
+                    pg_text = ""
+                    if skip_heavy_meta_scan:
+                        if page_num == 1 or page_num == len(pages_to_process) or page_num % 15 == 0:
+                            pg_text = page.extract_text() or ""
+                    else:
+                        pg_text = page.extract_text() or ""
+                    pg_meta = parse_statement_metadata(pg_text) if pg_text else {}
                     new_acc = pg_meta.get("account_no")
                     
                     # Detect new statement boundary:
-                    is_new_header = "CUSTOMER STATEMENT" in pg_text or "Statement Period" in pg_text
+                    is_new_header = ("CUSTOMER STATEMENT" in pg_text or "Statement Period" in pg_text) if pg_text else False
                     account_changed = new_acc and current_account_no and new_acc != current_account_no
                     
                     if account_changed:
@@ -1123,7 +1225,9 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 best_meta = metadata.copy()
                 for p_num, p_meta in page_meta_map.items():
                     if p_meta.get("account_no") == acc:
-                        best_meta.update(p_meta)
+                        for k, v in (p_meta or {}).items():
+                            if v not in (None, ""):
+                                best_meta[k] = v
                 
                 # Merge multiline rows
                 raw_txns = merge_multiline_rows(group)
@@ -1348,7 +1452,17 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
 
                 # --- 4e) Mathematical Self-Repair & VLM Check ---
                 # Achieve 100% perfection by auditing the extracted results against statement totals
-                if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+                dense_gt_large = (
+                    bank_identifier in ["gtbank", "gtco"] and
+                    len(pages_to_process) > 30
+                )
+                should_run_self_repair = (
+                    GEMINI_AVAILABLE and
+                    os.getenv("GEMINI_API_KEY") and
+                    not dense_gt_large and
+                    len(normalized) <= 800
+                )
+                if should_run_self_repair:
                     try:
                         audit_results = identify_math_leaks(normalized, best_meta)
                         if not audit_results.get("is_perfect") and audit_results.get("failed_pages"):
@@ -1457,6 +1571,7 @@ def parse_statement_metadata(text: str) -> Dict[str, Any]:
         raw = (m.group(1) or "").strip()
         if not raw:
             return None
+        raw = re.sub(r"(\d)\s*\.\s*(\d{1,2})\b", r"\1.\2", raw)
         neg = False
         if raw.startswith("(") and raw.endswith(")"):
             neg = True
@@ -1514,32 +1629,54 @@ def parse_statement_metadata(text: str) -> Dict[str, Any]:
 
     # Try various patterns for totals
     # Pattern 1: "Total Debit 1,234,567.89"
-    meta["statement_total_debit"] = (
-        find_money(r"Total\s+Debits?[:\s]*([()\-\d,]+\.\d{2})") or
-        find_money(r"Debit\s+Total[:\s]*([()\-\d,]+\.\d{2})") or
-        find_money(r"Total\s+Withdrawals?[:\s]*([()\-\d,]+\.\d{2})") or
-        find_money(r"Total\s+Debit[:\s]*([()\-\d,]+\.\d{2})") # Ecobank summary
+    stmt_debit = (
+        find_money(r"Total\s+Debits?[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
+        find_money(r"Debit\s+Total[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
+        find_money(r"Total\s+Withdrawals?[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
+        find_money(r"Total\s+Debit[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") # Ecobank summary
     )
     
-    meta["statement_total_credit"] = (
-        find_money(r"Total\s+Credits?[:\s]*([()\-\d,]+\.\d{2})") or
-        find_money(r"Credit\s+Total[:\s]*([()\-\d,]+\.\d{2})") or
-        find_money(r"Total\s+Deposits?[:\s]*([()\-\d,]+\.\d{2})") or
-        find_money(r"Total\s+Credit[:\s]*([()\-\d,]+\.\d{2})") # Ecobank summary
+    stmt_credit = (
+        find_money(r"Total\s+Credits?[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
+        find_money(r"Credit\s+Total[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
+        find_money(r"Total\s+Deposits?[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
+        find_money(r"Total\s+Credit[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") # Ecobank summary
+    )
+
+    if stmt_debit is None and stmt_credit is None:
+        pair = re.search(
+            r"([\d,]+\.\s*\d{1,2})\s+([\d,]+\.\s*\d{1,2})\s*(?:\n|\r|\s)*Total\s+Debit[:\s]*Total\s+Credit",
+            text,
+            re.I,
+        )
+        if pair:
+            try:
+                stmt_debit = float(re.sub(r"[^\d.]", "", pair.group(1)).replace("..", "."))
+                stmt_credit = float(re.sub(r"[^\d.]", "", pair.group(2)).replace("..", "."))
+            except Exception:
+                pass
+
+    opening_bal = (
+        find_money(r"Opening\s+Balance[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
+        find_money(r"Balance\s+Brought\s+Forward[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
+        find_money(r"Balance\s+(?:Brought|B/F)[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
+        find_money(r"Opening\s+Bal(?:ance)?[:\s]*([()\-\d,\s]+\.\s*\d{1,2})")
     )
     
-    meta["opening_balance"] = (
-        find_money(r"Opening\s+Balance[:\s]*([()\-\d,]+\.\d{2})") or
-        find_money(r"Balance\s+Brought\s+Forward[:\s]*([()\-\d,]+\.\d{2})") or
-        find_money(r"Balance\s+(?:Brought|B/F)[:\s]*([()\-\d,]+\.\d{2})") or
-        find_money(r"Opening\s+Balance[:\s]*([()\-\d,]+\.\d{2})")
+    closing_bal = (
+        find_money(r"Closing\s+Balance[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
+        find_money(r"Balance\s+(?:Carried|C/F)[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
+        find_money(r"Closing\s+Bal(?:ance)?[:\s]*([()\-\d,\s]+\.\s*\d{1,2})")
     )
-    
-    meta["closing_balance"] = (
-        find_money(r"Closing\s+Balance[:\s]*([()\-\d,]+\.\d{2})") or
-        find_money(r"Balance\s+(?:Carried|C/F)[:\s]*([()\-\d,]+\.\d{2})") or
-        find_money(r"Closing\s+Balance[:\s]*([()\-\d,]+\.\d{2})")
-    )
+
+    if stmt_debit is not None:
+        meta["statement_total_debit"] = stmt_debit
+    if stmt_credit is not None:
+        meta["statement_total_credit"] = stmt_credit
+    if opening_bal is not None:
+        meta["opening_balance"] = opening_bal
+    if closing_bal is not None:
+        meta["closing_balance"] = closing_bal
 
     # Account Number
     m = re.search(r"(?:Account No|Acc No|Account Number)[:\s]*(\d{10,12})", text, re.I)
@@ -2418,8 +2555,8 @@ def group_words_to_rows(words: List[Dict[str, Any]], y_tol: float = 3.0) -> List
             placed = True
         
         if not placed:
-            # Fallback for slightly out-of-order words: check all rows
-            for r in rows:
+            # Fallback for slightly out-of-order words: keep it bounded for dense pages
+            for r in reversed(rows[-8:]):
                 if abs(w["top"] - r["initial_top"]) <= y_tol:
                     r["words"].append(w)
                     placed = True
