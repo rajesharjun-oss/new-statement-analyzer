@@ -50,6 +50,37 @@ function formatTime(seconds: number) {
    return `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
 }
 
+function sanitizeFilenamePart(value: string, fallback: string) {
+   const cleaned = (value || "")
+      .replace(/[<>:"/\\|?*\u0000-\u001F]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+   return cleaned || fallback;
+}
+
+function prettifyBankName(rawBank: string) {
+   const bank = (rawBank || "").toLowerCase().trim();
+   const map: Record<string, string> = {
+      auto: "Auto Detect",
+      gtbank: "GTBank",
+      gtco: "GTCO",
+      ecobank: "Ecobank",
+      access: "Access Bank",
+      accessbank: "Access Bank",
+      fidelity: "Fidelity Bank",
+      apt_securities: "APT",
+      uba: "UBA",
+      firstbank: "First Bank",
+      zenith: "Zenith Bank",
+      wema: "Wema Bank",
+      providus: "Providus Bank",
+      fcmb: "FCMB",
+      sterling: "Sterling Bank",
+      standard_chartered: "Standard Chartered",
+   };
+   return map[bank] || (rawBank || "Bank");
+}
+
 // Quiet Status Pill
 function StatusPill({ state }: { state: 'idle' | 'busy' | 'ready' }) {
    if (state === 'busy') {
@@ -109,6 +140,7 @@ export default function App() {
    const [isSettingsOpen, setIsSettingsOpen] = useState(false);
    const [userApiKey, setUserApiKey] = useState<string>('');
    const [useDeepScan, setUseDeepScan] = useState(false);
+   const [activeTab, setActiveTab] = useState<"workspace" | "converter">("workspace");
 
    useEffect(() => {
       const storedKey = localStorage.getItem('gemini_custom_key');
@@ -343,6 +375,44 @@ export default function App() {
       return "Validating balances...";
    }, [processingTime, batchStatus]);
 
+   const handleExportReport = async () => {
+      if (!analysisResult) return;
+
+      const org = sanitizeFilenamePart(analysisResult.organizationName || "Statement", "Statement");
+      const bank = sanitizeFilenamePart(prettifyBankName(analysisResult.bankName || selectedBank), "Bank");
+      const targetName = `${org} - ${bank}.xlsx`;
+
+      try {
+         if (analysisResult.downloadUrl) {
+            const response = await fetch(analysisResult.downloadUrl);
+            if (!response.ok) {
+               throw new Error(`Download failed (${response.status})`);
+            }
+            const blob = await response.blob();
+            const objectUrl = window.URL.createObjectURL(blob);
+            const anchor = document.createElement("a");
+            anchor.href = objectUrl;
+            anchor.download = targetName;
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            window.URL.revokeObjectURL(objectUrl);
+            return;
+         }
+      } catch (downloadError: any) {
+         console.error("Download endpoint failed, falling back to local export.", downloadError);
+      }
+
+      generateExcel(
+         analysisResult.transactions,
+         analysisResult.reconciliation_warnings,
+         analysisResult.reconciliation_failed,
+         analysisResult.currency,
+         analysisResult.organizationName,
+         analysisResult.bankName
+      );
+   };
+
    return (
       <div className="min-h-screen font-sans text-zinc-300">
          <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} onSave={handleSaveSettings} currentKey={userApiKey} />
@@ -391,7 +461,50 @@ export default function App() {
          </header>
 
          <main className="pt-28 pb-20 px-6 mx-auto max-w-[1200px]">
-            {!hasFile ? (
+            <div className="mb-5 flex items-center gap-2">
+               <button
+                  type="button"
+                  onClick={() => setActiveTab("workspace")}
+                  className={cn(
+                     "px-3 py-1.5 rounded-md text-xs font-medium border transition-colors",
+                     activeTab === "workspace"
+                        ? "bg-[#9B87FF]/20 text-[#C6B8FF] border-[#9B87FF]/30"
+                        : "bg-white/[0.02] text-zinc-400 border-white/[0.08] hover:text-white"
+                  )}
+               >
+                  Reconciliation Workspace
+               </button>
+               <button
+                  type="button"
+                  onClick={() => setActiveTab("converter")}
+                  className={cn(
+                     "px-3 py-1.5 rounded-md text-xs font-medium border transition-colors",
+                     activeTab === "converter"
+                        ? "bg-[#9B87FF]/20 text-[#C6B8FF] border-[#9B87FF]/30"
+                        : "bg-white/[0.02] text-zinc-400 border-white/[0.08] hover:text-white"
+                  )}
+               >
+                  AI Converter
+               </button>
+               <Badge variant="warning" className="text-[10px]">Under Maintenance</Badge>
+            </div>
+
+            {activeTab === "converter" ? (
+               <div className="animate-enter space-y-4">
+                  <Card className="p-6 border-amber-500/20 bg-amber-500/5">
+                     <div className="flex items-start gap-3">
+                        <AlertTriangle className="w-5 h-5 text-amber-300 mt-0.5" />
+                        <div>
+                           <h2 className="text-lg font-semibold text-white mb-1">AI Converter Under Maintenance</h2>
+                           <p className="text-sm text-zinc-300">
+                              The AI Converter is temporarily unavailable while we complete stability upgrades.
+                              Reconciliation Workspace remains fully available.
+                           </p>
+                        </div>
+                     </div>
+                  </Card>
+               </div>
+            ) : !hasFile ? (
                /* --- STATE: UPLOAD WORKSPACE --- */
                <div className="animate-enter">
 
@@ -583,13 +696,7 @@ export default function App() {
                      </div>
                      <div className="flex gap-3">
                         <Button variant="outline" size="sm" onClick={() => setHasFile(false)}>Reset</Button>
-                        <Button variant="primary" size="sm" onClick={() => {
-                           if (analysisResult?.downloadUrl) {
-                              window.location.href = analysisResult.downloadUrl;
-                           } else {
-                              generateExcel(analysisResult!.transactions, analysisResult!.reconciliation_warnings, analysisResult!.reconciliation_failed, analysisResult!.currency, analysisResult!.organizationName, analysisResult!.bankName);
-                           }
-                        }}>
+                        <Button variant="primary" size="sm" onClick={handleExportReport}>
                            Export Report
                         </Button>
                      </div>
