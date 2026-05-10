@@ -498,16 +498,96 @@ export default function App() {
             </div>
 
             {activeTab === "converter" ? (
-               <div className="animate-enter space-y-4">
+               <div className="animate-enter space-y-6">
                   <Card className="p-6 border-amber-500/20 bg-amber-500/5">
                      <div className="flex items-start gap-3">
                         <AlertTriangle className="w-5 h-5 text-amber-300 mt-0.5" />
                         <div>
                            <h2 className="text-lg font-semibold text-white mb-1">AI Converter Under Maintenance</h2>
                            <p className="text-sm text-zinc-300">
-                              The AI Converter is temporarily unavailable while we complete stability upgrades.
-                              Reconciliation Workspace remains fully available.
+                              You can view the full converter interface below. Conversion actions are temporarily paused while we complete stability upgrades.
                            </p>
+                        </div>
+                     </div>
+                  </Card>
+
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
+                     <Card className="md:col-span-8 overflow-hidden flex flex-col">
+                        <div className="px-6 py-5 border-b border-white/[0.06] flex items-center justify-between">
+                           <span className="text-[14px] font-semibold text-white">AI converter workflow</span>
+                           <Badge variant="warning" className="font-mono">Paused</Badge>
+                        </div>
+                        <div className="p-6 space-y-5">
+                           <div className="border border-dashed border-white/10 rounded-[12px] bg-white/[0.01] p-6">
+                              <h3 className="text-[15px] font-medium text-white mb-2">Upload statement</h3>
+                              <p className="text-[13px] text-zinc-500 mb-4">PDF or image • full-document AI extraction • preview before export</p>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                 <Button variant="outline" className="w-full" disabled>
+                                    <Upload className="w-4 h-4 mr-2" /> Select file
+                                 </Button>
+                                 <Button variant="primary" className="w-full" disabled>
+                                    Convert With AI
+                                 </Button>
+                              </div>
+                           </div>
+
+                           <div className="space-y-3">
+                              <label className="text-[12px] text-zinc-400 font-semibold uppercase tracking-wider">Hints For AI (Optional)</label>
+                              <textarea
+                                 disabled
+                                 className="w-full min-h-[110px] rounded-lg border border-white/10 bg-[#0B0C0E] px-3 py-2 text-sm text-zinc-500 resize-none"
+                                 placeholder="e.g. Debit is column 3, credit is column 4. Ignore first header rows. Date format is DD/MM/YYYY."
+                              />
+                              <div className="flex flex-wrap gap-2">
+                                 {["Col order", "Skip headers", "Date format", "Currency", "Wrapped rows", "Number format", "No balance"].map((chip) => (
+                                    <Button key={chip} variant="ghost" size="sm" className="text-xs h-7 px-3" disabled>{chip}</Button>
+                                 ))}
+                              </div>
+                           </div>
+                        </div>
+                     </Card>
+
+                     <Card className="md:col-span-4 bg-[#0B0C0E] border-white/[0.04]">
+                        <div className="px-6 py-5 border-b border-white/[0.04]">
+                           <span className="text-[14px] font-semibold text-zinc-400">Expected Output</span>
+                        </div>
+                        <div className="p-6">
+                           <ul className="space-y-5">
+                              {[
+                                 "All transactions extracted from the full document",
+                                 "Preview table with debit, credit, balance, narration",
+                                 "One-click Excel export named by organization and bank"
+                              ].map((item, i) => (
+                                 <li key={i} className="flex items-start gap-3">
+                                    <div className="mt-1.5 w-1.5 h-1.5 rounded-full bg-[#9B87FF]" />
+                                    <span className="text-[13px] text-zinc-500 leading-relaxed">{item}</span>
+                                 </li>
+                              ))}
+                           </ul>
+                           <div className="mt-6 p-3 rounded-lg border border-amber-400/20 bg-amber-500/10 text-[12px] text-amber-200">
+                              Under maintenance: conversion endpoint is temporarily disabled.
+                           </div>
+                        </div>
+                     </Card>
+                  </div>
+
+                  <Card className="overflow-hidden">
+                     <div className="px-6 py-5 border-b border-white/[0.06] flex items-center justify-between">
+                        <span className="text-[14px] font-semibold text-white">Preview table</span>
+                        <Badge variant="outline">Read-only while paused</Badge>
+                     </div>
+                     <div className="p-6">
+                        <div className="border border-white/[0.06] rounded-lg overflow-hidden">
+                           <div className="grid grid-cols-5 bg-[#111318] text-[10px] font-bold text-zinc-500 uppercase tracking-wider font-mono">
+                              <div className="px-4 py-3">Date</div>
+                              <div className="px-4 py-3">Description</div>
+                              <div className="px-4 py-3 text-right">Debit</div>
+                              <div className="px-4 py-3 text-right">Credit</div>
+                              <div className="px-4 py-3 text-right">Balance</div>
+                           </div>
+                           <div className="px-4 py-10 text-center text-zinc-500 text-sm">
+                              Preview will appear here when maintenance is lifted.
+                           </div>
                         </div>
                      </div>
                   </Card>
