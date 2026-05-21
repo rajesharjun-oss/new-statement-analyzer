@@ -204,6 +204,15 @@ async def analyze_statement(
 
         primary_meta = primary_stmt["metadata"] if primary_stmt else {}
         primary_validation = primary_stmt["validation"] if primary_stmt else {}
+        statement_debit_total = sum(num(s["metadata"].get("statement_total_debit")) for s in processed_statements)
+        statement_credit_total = sum(num(s["metadata"].get("statement_total_credit")) for s in processed_statements)
+        all_have_statement_totals = bool(processed_statements) and all(
+            s["metadata"].get("statement_total_debit") is not None and
+            s["metadata"].get("statement_total_credit") is not None
+            for s in processed_statements
+        )
+        display_total_debit = statement_debit_total if all_have_statement_totals else total_debit
+        display_total_credit = statement_credit_total if all_have_statement_totals else total_credit
 
         # Robust period handling
         period = primary_meta.get("statement_period") or "N/A"
@@ -214,8 +223,14 @@ async def analyze_statement(
         summary = {
             "accountName": primary_meta.get("account_name", "Detected Organization"),
             "period": period,
-            "totalDebit": total_debit,
-            "totalCredit": total_credit,
+            "totalDebit": display_total_debit,
+            "totalCredit": display_total_credit,
+            "extractedTotalDebit": total_debit,
+            "extractedTotalCredit": total_credit,
+            "statementTotalDebit": primary_meta.get("statement_total_debit"),
+            "statementTotalCredit": primary_meta.get("statement_total_credit"),
+            "openingBalance": primary_meta.get("opening_balance"),
+            "closingBalance": primary_meta.get("closing_balance"),
             "transactionCount": total_txns,
             "validationStatus": primary_validation.get("status", "Unknown"),
             "totalsMatch": primary_validation.get("totals_match", None),

@@ -390,4 +390,9 @@ def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
         if _auto_close:
             _pdf_handle.close()
 
+    txns = [
+        txn for txn in txns
+        if (txn.get("debit") or txn.get("credit") or txn.get("balance") or (txn.get("description") or "").strip())
+    ]
+
     return txns, metadata

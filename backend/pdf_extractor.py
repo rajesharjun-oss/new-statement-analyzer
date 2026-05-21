@@ -1564,6 +1564,21 @@ def parse_statement_metadata(text: str) -> Dict[str, Any]:
     """
     Minimal metadata parser (for validation)
     """
+    def clean_text(value: str) -> str:
+        return re.sub(r"\s+", " ", (value or "").strip())
+
+    def find_access_field(label: str, next_labels: List[str]) -> str | None:
+        label_pat = r"\b" + re.escape(label).replace(r"\ ", r"\s+") + r"\b"
+        stop = "|".join(
+            r"\b" + re.escape(item).replace(r"\ ", r"\s+") + r"\b"
+            for item in next_labels
+        )
+        m = re.search(label_pat + r"\s*([\s\S]*?)(?=" + stop + r"|$)", text, re.I)
+        if not m:
+            return None
+        value = clean_text(m.group(1))
+        return value or None
+
     def find_money(pat):
         m = re.search(pat, text, re.I | re.MULTILINE)
         if not m: 
@@ -1588,6 +1603,47 @@ def parse_statement_metadata(text: str) -> Dict[str, Any]:
             return None
 
     meta = {}
+
+    # Access Bank summary fields are rendered as labels on one line and values
+    # on following lines, so parse these before the generic one-line patterns.
+    if re.search(r"\bAccount\s+Statement\b", text, re.I) and re.search(r"\bTOTAL\s+LODGEMENTS\b", text, re.I):
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        access_name_parts = []
+        in_name = False
+        for line in lines:
+            if re.fullmatch(r"Account\s+Name", line, re.I):
+                in_name = True
+                continue
+            if in_name and re.match(r"Address\b", line, re.I):
+                break
+            if not in_name:
+                continue
+            if re.search(
+                r"\b(TOTAL\s+WITHDRAWALS|TOTAL\s+LODGEMENTS|CLOSING\s+BALANCE|CLEARED\s+BALANCE|UNCLEARED\s+BALANCE|OPENING\s+BALANCE|ALT\.\s+ACCOUNT\s+NO\.?)\b",
+                line,
+                re.I,
+            ):
+                continue
+            access_name_parts.append(line)
+
+        if access_name_parts:
+            meta["account_name"] = clean_text(" ".join(access_name_parts))
+
+        m = re.search(
+            r"Summary\s+Statement\s+for\s+(.+?)\s+To\s+(.+?)(?:\s+ACCOUNT\s+NO\.|\s*\n)",
+            text,
+            re.I,
+        )
+        if m:
+            start = clean_text(m.group(1))
+            end = clean_text(m.group(2))
+            if start and end:
+                start_dt = pd.to_datetime(start, errors="coerce", dayfirst=False)
+                end_dt = pd.to_datetime(end, errors="coerce", dayfirst=False)
+                if pd.notna(start_dt) and pd.notna(end_dt):
+                    meta["statement_period"] = f"{start_dt.strftime('%d-%b-%Y')} to {end_dt.strftime('%d-%b-%Y')}"
+                else:
+                    meta["statement_period"] = f"{start} to {end}"
     
     # GTBank format: Account name is usually before "Trans. Date" header
     # GTBank format: Account name is usually before "Trans. Date" header
@@ -1595,7 +1651,7 @@ def parse_statement_metadata(text: str) -> Dict[str, Any]:
     if not m:
         # Alternative: look for account name pattern
         m = re.search(r"(?:Account Name|Name)[:\s]*(.*?)(?:\n|$)", text, re.I)
-    if m:
+    if m and not meta.get("account_name"):
         raw_name = m.group(1)
         # Clean up: stop at "Total Debit" or "Total Credit" or "Currency", "Account No", or a bare date keyword
         stop_patterns = [
@@ -1640,6 +1696,7 @@ def parse_statement_metadata(text: str) -> Dict[str, Any]:
         find_money(r"Total\s+Credits?[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
         find_money(r"Credit\s+Total[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
         find_money(r"Total\s+Deposits?[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
+        find_money(r"Total\s+Lodgements?[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
         find_money(r"Total\s+Credit[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") # Ecobank summary
     )
 

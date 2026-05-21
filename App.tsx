@@ -205,6 +205,7 @@ export default function App() {
 
       const totalDebits = txns.reduce((a, t) => a + (t.debit ?? 0), 0);
       const totalCredits = txns.reduce((a, t) => a + (t.credit ?? 0), 0);
+      const statementSummary = analysisResult.statement_summary;
 
       // Use the backend's definitive flag for status
       let checkStatus = "Passed";
@@ -213,10 +214,10 @@ export default function App() {
       }
 
       return {
-         opening: calculatedOpening,
-         closing,
-         totalDebits,
-         totalCredits,
+         opening: statementSummary?.opening_balance ?? calculatedOpening,
+         closing: statementSummary?.closing_balance ?? closing,
+         totalDebits: statementSummary?.total_debit ?? totalDebits,
+         totalCredits: statementSummary?.total_credit ?? totalCredits,
          anomalies: analysisResult.error_indices?.length || 0,
          reviews: txns.filter((t) => t.flag === "review").length,
          currency: analysisResult.currency,

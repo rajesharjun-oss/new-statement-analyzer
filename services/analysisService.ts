@@ -47,6 +47,14 @@ export const analyzeDocument = async (
         currency: "NGN",
         organizationName: summary.accountName || "Unknown Org",
         bankName: summary.bank || bankId,
+        statement_summary: {
+            total_debit: summary.statementTotalDebit ?? summary.totalDebit ?? 0,
+            total_credit: summary.statementTotalCredit ?? summary.totalCredit ?? 0,
+            opening_balance: summary.openingBalance ?? null,
+            closing_balance: summary.closingBalance ?? null,
+            extracted_total_debit: summary.extractedTotalDebit ?? summary.totalDebit ?? 0,
+            extracted_total_credit: summary.extractedTotalCredit ?? summary.totalCredit ?? 0,
+        },
         downloadUrl: backendResult.downloadUrl,
         backend_version: backendResult.backend_version,
         stats: {

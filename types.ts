@@ -33,6 +33,14 @@ export interface AnalysisResult {
   transactions: Transaction[];
   organizationName: string;
   bankName: string;
+  statement_summary?: {
+    total_debit?: number;
+    total_credit?: number;
+    opening_balance?: number | null;
+    closing_balance?: number | null;
+    extracted_total_debit?: number;
+    extracted_total_credit?: number;
+  };
   downloadUrl?: string;
   stats?: AnalysisStatistics;
   backend_version?: string;
