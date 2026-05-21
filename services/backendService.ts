@@ -16,6 +16,12 @@ export interface BackendAnalysisResult {
         transactionCount: number;
         validationStatus: string;
         totalsMatch?: boolean | null;
+        statementTotalDebit?: number | null;
+        statementTotalCredit?: number | null;
+        extractedTotalDebit?: number | null;
+        extractedTotalCredit?: number | null;
+        openingBalance?: number | null;
+        closingBalance?: number | null;
         bank?: string;
     };
     downloadUrl: string;

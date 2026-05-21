@@ -34,6 +34,10 @@ export interface AnalysisResult {
   organizationName: string;
   bankName: string;
   statement_summary?: {
+    period?: string;
+    transaction_count?: number;
+    validation_status?: string;
+    totals_match?: boolean | null;
     total_debit?: number;
     total_credit?: number;
     opening_balance?: number | null;

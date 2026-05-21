@@ -197,6 +197,7 @@ export default function App() {
    const summary = useMemo(() => {
       if (!analysisResult) return { opening: 0, closing: 0, totalDebits: 0, totalCredits: 0, anomalies: 0, reviews: 0, currency: "USD", checkStatus: "Passed" };
 
+      const statementSummary = analysisResult.statement_summary;
       const first = txns[0];
       const last = txns[txns.length - 1];
 
@@ -205,7 +206,6 @@ export default function App() {
 
       const totalDebits = txns.reduce((a, t) => a + (t.debit ?? 0), 0);
       const totalCredits = txns.reduce((a, t) => a + (t.credit ?? 0), 0);
-      const statementSummary = analysisResult.statement_summary;
 
       // Use the backend's definitive flag for status
       let checkStatus = "Passed";
@@ -218,6 +218,8 @@ export default function App() {
          closing: statementSummary?.closing_balance ?? closing,
          totalDebits: statementSummary?.total_debit ?? totalDebits,
          totalCredits: statementSummary?.total_credit ?? totalCredits,
+         period: statementSummary?.period,
+         transactionCount: statementSummary?.transaction_count ?? txns.length,
          anomalies: analysisResult.error_indices?.length || 0,
          reviews: txns.filter((t) => t.flag === "review").length,
          currency: analysisResult.currency,
@@ -768,7 +770,7 @@ export default function App() {
                               <Hash className="w-3.5 h-3.5 text-zinc-500" />
                               <div className="flex flex-col leading-none">
                                  <span className="text-[10px] text-zinc-500 font-bold uppercase">Records</span>
-                                 <span className="text-sm font-mono text-white">{txns.length}</span>
+                                 <span className="text-sm font-mono text-white">{summary.transactionCount}</span>
                               </div>
                            </div>
 
@@ -802,9 +804,9 @@ export default function App() {
                         <div>
                            <p className="text-[11px] text-zinc-500 font-semibold uppercase tracking-wider mb-1">Period</p>
                            <p className="text-[15px] font-bold text-white tracking-tight font-mono">
-                              {txns.length > 0
+                              {summary.period || (txns.length > 0
                                  ? `${txns[0].date} to ${txns[txns.length - 1].date}`
-                                 : "N/A"}
+                                 : "N/A")}
                            </p>
                         </div>
                         <div>
@@ -832,7 +834,7 @@ export default function App() {
                         </div>
                         <div>
                            <p className="text-[11px] text-zinc-500 font-semibold uppercase tracking-wider mb-1">Transactions</p>
-                           <p className="text-[20px] font-bold text-white font-mono tracking-tight">{txns.length}</p>
+                           <p className="text-[20px] font-bold text-white font-mono tracking-tight">{summary.transactionCount}</p>
                         </div>
                      </div>
                   </div>

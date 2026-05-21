@@ -27,8 +27,10 @@ export const analyzeDocument = async (
     const reconciliationFailed =
         noTransactions ||
         totalsMatch === false ||
-        validationStatus.includes("mismatch") ||
-        validationStatus.includes("no transactions extracted");
+        (totalsMatch !== true && (
+            validationStatus.includes("mismatch") ||
+            validationStatus.includes("no transactions extracted")
+        ));
 
     const reconciliationWarnings: string[] = [];
     if (reconciliationFailed) {
@@ -48,6 +50,10 @@ export const analyzeDocument = async (
         organizationName: summary.accountName || "Unknown Org",
         bankName: summary.bank || bankId,
         statement_summary: {
+            period: summary.period || undefined,
+            transaction_count: summary.transactionCount ?? transactions.length,
+            validation_status: summary.validationStatus || undefined,
+            totals_match: summary.totalsMatch ?? null,
             total_debit: summary.statementTotalDebit ?? summary.totalDebit ?? 0,
             total_credit: summary.statementTotalCredit ?? summary.totalCredit ?? 0,
             opening_balance: summary.openingBalance ?? null,
