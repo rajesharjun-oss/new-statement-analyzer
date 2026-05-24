@@ -149,7 +149,7 @@ def detect_sterling_columns(words):
     return cuts
 
 def extract_sterling_via_coordinates(pdf_path: Path, metadata: dict, pdf: pdfplumber.PDF = None):
-    from pdf_extractor import parse_date_smart, first_money, is_noise_row
+    from pdf_extractor import parse_date_smart, first_money, is_noise_row, parse_statement_metadata
     
     transactions = []
     
@@ -162,6 +162,13 @@ def extract_sterling_via_coordinates(pdf_path: Path, metadata: dict, pdf: pdfplu
         _auto_close = False
         
     try:
+        try:
+            first_text = _pdf_handle.pages[0].extract_text() or ""
+            parsed_meta = parse_statement_metadata(first_text)
+            metadata.update({k: v for k, v in parsed_meta.items() if v not in (None, "")})
+        except Exception as e:
+            print(f"DEBUG: Sterling metadata parse skipped: {e}")
+
         cuts = None
         for i in range(min(5, len(_pdf_handle.pages))):
             words = _pdf_handle.pages[i].extract_words()
@@ -312,4 +319,4 @@ def extract_sterling_via_coordinates(pdf_path: Path, metadata: dict, pdf: pdfplu
         if _auto_close:
             _pdf_handle.close()
 
-    return transactions, {}
+    return transactions, metadata

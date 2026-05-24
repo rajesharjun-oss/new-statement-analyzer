@@ -1740,18 +1740,18 @@ def parse_statement_metadata(text: str) -> Dict[str, Any]:
     # Try various patterns for totals
     # Pattern 1: "Total Debit 1,234,567.89"
     stmt_debit = (
-        find_money(r"Total\s+Debits?[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
+        find_money(r"Total\s+Debits?(?:\s*\(\d+\))?[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
         find_money(r"Debit\s+Total[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
         find_money(r"Total\s+Withdrawals?[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
-        find_money(r"Total\s+Debit[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") # Ecobank summary
+        find_money(r"Total\s+Debit(?:\s*\(\d+\))?[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") # Ecobank/Sterling summary
     )
     
     stmt_credit = (
-        find_money(r"Total\s+Credits?[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
+        find_money(r"Total\s+Credits?(?:\s*\(\d+\))?[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
         find_money(r"Credit\s+Total[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
         find_money(r"Total\s+Deposits?[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
         find_money(r"Total\s+Lodgements?[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") or
-        find_money(r"Total\s+Credit[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") # Ecobank summary
+        find_money(r"Total\s+Credit(?:\s*\(\d+\))?[:\s]*([()\-\d,\s]+\.\s*\d{1,2})") # Ecobank/Sterling summary
     )
 
     if stmt_debit is None and stmt_credit is None:
@@ -1790,7 +1790,7 @@ def parse_statement_metadata(text: str) -> Dict[str, Any]:
         meta["closing_balance"] = closing_bal
 
     # Account Number
-    m = re.search(r"(?:Account No|Acc No|Account Number)[:\s]*(\d{10,12})", text, re.I)
+    m = re.search(r"(?:Account No|Acc No|Account Number|Account)[:\s]*(\d{10,12})", text, re.I)
     if m:
         meta["account_no"] = m.group(1).strip()
 
@@ -3542,6 +3542,23 @@ def extract_fidelity_via_tables(pdf_path: Path, metadata: Dict, pdf: pdfplumber.
         _auto_close = False
         
     try:
+        try:
+            first_text = ""
+            try:
+                first_text = _pdf_handle.pages[0].extract_text() or ""
+            except Exception:
+                first_text = ""
+            if not first_text and PYPDF_AVAILABLE:
+                reader = PdfReader(str(pdf_path))
+                first_text = "\n".join(
+                    (reader.pages[i].extract_text() or "")
+                    for i in range(min(2, len(reader.pages)))
+                )
+            parsed_meta = parse_statement_metadata(first_text)
+            metadata.update({k: v for k, v in parsed_meta.items() if v not in (None, "")})
+        except Exception as e:
+            print(f"DEBUG: Fidelity metadata parse skipped: {e}")
+
         try:
             page1 = _pdf_handle.pages[0]
             words = page1.extract_words()
