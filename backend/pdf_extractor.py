@@ -1065,8 +1065,16 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                     raise ValueError("Could not detect column header and all AI fallbacks are unavailable.")
 
                 try:
+                    page_limit = min(20, len(pdf_pages))
+                    if bank_identifier == "uba":
+                        from local_ocr_parsers import parse_uba_tesseract_pdf
+                        local_txns, local_meta = parse_uba_tesseract_pdf(str(pdf_path), max_pages=page_limit)
+                        if local_txns:
+                            print(f"DEBUG: Tesseract UBA parser extracted {len(local_txns)} txns.")
+                            return [{"transactions": normalize_remarks(local_txns), "metadata": {**metadata, **local_meta}}]
+
                     ocr_text_legacy = ""
-                    for i in range(min(2, len(pdf_pages))):
+                    for i in range(page_limit):
                         print(f"DEBUG: Attempting legacy OCR on page {i}...")
                         ocr_text_legacy += "\n" + extract_text_with_ocr(str(pdf_path), i)
 

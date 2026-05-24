@@ -118,6 +118,23 @@ def extract_text_with_tesseract(pdf_path: str, page_num: int = 0) -> str:
     print(f"DEBUG: Tesseract extracted {len(text)} chars")
     return text
 
+
+def extract_pdf_text_with_tesseract(pdf_path: str, max_pages: int = 20) -> str:
+    """OCR multiple PDF pages with local Tesseract and return page-delimited text."""
+    parts = []
+    try:
+        doc = fitz.open(pdf_path)
+        limit = min(len(doc), max_pages)
+        doc.close()
+    except Exception:
+        limit = max_pages
+
+    for page_num in range(limit):
+        text = extract_text_with_tesseract(pdf_path, page_num)
+        if text.strip():
+            parts.append(f"=== PAGE {page_num + 1} ===\n{text}")
+    return "\n".join(parts)
+
 def extract_text_with_gemini(pdf_path: str, page_num: int = 0) -> str:
     """Gemini Implementation"""
     if not GEMINI_AVAILABLE:
