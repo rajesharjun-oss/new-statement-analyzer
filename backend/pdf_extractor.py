@@ -828,7 +828,14 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                      print(f"DEBUG: FCMB engine returned {len(fc_txns)} transactions")
                      return [{"transactions": normalize_remarks(fc_txns), "metadata": fc_meta}]
 
-            elif bank_identifier in ["uba", "firstbank"]:
+            elif bank_identifier == "firstbank":
+                 if is_searchable:
+                     from firstbank_engine import extract_firstbank_via_coordinates
+                     print("DEBUG: FIRSTBANK PDF is searchable - routing to dedicated coordinate engine")
+                     fb_txns, fb_meta = extract_firstbank_via_coordinates(Path(pdf_path), metadata, pdf=pdf)
+                     if fb_txns: return [{"transactions": normalize_remarks(fb_txns), "metadata": fb_meta}]
+
+            elif bank_identifier == "uba":
                  if is_searchable:
                      from uba_engine import extract_uba_via_coordinates
                      print(f"DEBUG: {bank_identifier.upper()} PDF is searchable - routing to dedicated coordinate engine")
@@ -836,39 +843,38 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                      if uba_txns: return [{"transactions": normalize_remarks(uba_txns), "metadata": uba_meta}]
                  
                  # Scanned or coordinate failure -> AI fallback (UBA only; First Bank has no AI path)
-                 if bank_identifier == "uba":
-                     print("DEBUG: UBA PDF requires AI extraction...")
-                     txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='uba', max_pages=15)
-                     if txns:
-                         uba_meta = {"method": "gemini_vision", **metadata}
-                         if os.getenv("OPENAI_API_KEY"):
-                             try:
-                                 from openai_vision import extract_statement_summary_with_openai
-                                 oa_summary = extract_statement_summary_with_openai(str(pdf_path))
-                                 for k, v in (oa_summary or {}).items():
-                                     if v not in (None, "", 0, 0.0):
-                                         uba_meta[k] = v
-                             except Exception as e_sum:
-                                 print(f"DEBUG: UBA metadata summary enrichment failed: {e_sum}")
-                         return [{"transactions": normalize_remarks(txns), "metadata": uba_meta}]
-                     # Fallback: OpenAI Vision page-wise extraction for scanned UBA statements
+                 print("DEBUG: UBA PDF requires AI extraction...")
+                 txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='uba', max_pages=15)
+                 if txns:
+                     uba_meta = {"method": "gemini_vision", **metadata}
                      if os.getenv("OPENAI_API_KEY"):
                          try:
-                             from openai_vision import extract_transactions_from_pdf_with_openai, extract_statement_summary_with_openai
-                             oa_txns = extract_transactions_from_pdf_with_openai(str(pdf_path), max_pages=15)
-                             if oa_txns:
-                                 print(f"DEBUG: UBA OpenAI fallback returned {len(oa_txns)} transactions")
-                                 oa_meta = {"method": "openai_vision_fallback"}
-                                 try:
-                                     oa_summary = extract_statement_summary_with_openai(str(pdf_path))
-                                     oa_meta.update({k: v for k, v in oa_summary.items() if v not in (None, "")})
-                                 except Exception as e_sum:
-                                     print(f"DEBUG: UBA OpenAI summary extraction failed: {e_sum}")
-                                 return [{"transactions": normalize_remarks(oa_txns), "metadata": oa_meta}]
-                         except Exception as e:
-                             print(f"WARN: UBA OpenAI fallback failed: {e}")
-                     # Do not hard-return empty here. Let generic local extraction run as a final fallback.
-                     print("WARN: UBA AI fallback returned 0 txns. Falling through to generic extraction path.")
+                             from openai_vision import extract_statement_summary_with_openai
+                             oa_summary = extract_statement_summary_with_openai(str(pdf_path))
+                             for k, v in (oa_summary or {}).items():
+                                 if v not in (None, "", 0, 0.0):
+                                     uba_meta[k] = v
+                         except Exception as e_sum:
+                             print(f"DEBUG: UBA metadata summary enrichment failed: {e_sum}")
+                     return [{"transactions": normalize_remarks(txns), "metadata": uba_meta}]
+                 # Fallback: OpenAI Vision page-wise extraction for scanned UBA statements
+                 if os.getenv("OPENAI_API_KEY"):
+                     try:
+                         from openai_vision import extract_transactions_from_pdf_with_openai, extract_statement_summary_with_openai
+                         oa_txns = extract_transactions_from_pdf_with_openai(str(pdf_path), max_pages=15)
+                         if oa_txns:
+                             print(f"DEBUG: UBA OpenAI fallback returned {len(oa_txns)} transactions")
+                             oa_meta = {"method": "openai_vision_fallback"}
+                             try:
+                                 oa_summary = extract_statement_summary_with_openai(str(pdf_path))
+                                 oa_meta.update({k: v for k, v in oa_summary.items() if v not in (None, "")})
+                             except Exception as e_sum:
+                                 print(f"DEBUG: UBA OpenAI summary extraction failed: {e_sum}")
+                             return [{"transactions": normalize_remarks(oa_txns), "metadata": oa_meta}]
+                     except Exception as e:
+                         print(f"WARN: UBA OpenAI fallback failed: {e}")
+                 # Do not hard-return empty here. Let generic local extraction run as a final fallback.
+                 print("WARN: UBA AI fallback returned 0 txns. Falling through to generic extraction path.")
 
             elif bank_identifier == "access":
                  from access_engine import extract_access_via_coordinates

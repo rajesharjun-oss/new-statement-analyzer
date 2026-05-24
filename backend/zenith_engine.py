@@ -98,6 +98,12 @@ def detect_zenith_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float,
 def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: pdfplumber.PDF = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     from pdf_extractor import parse_date_smart, first_money, is_noise_row
     txns = []
+
+    def _num(value) -> float:
+        try:
+            return float(str(value or "0").replace(",", ""))
+        except Exception:
+            return 0.0
     
     # If pdf handle is provided, use it, otherwise open
     if pdf is None:
@@ -222,5 +228,22 @@ def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
     finally:
         if _auto_close:
             _pdf_handle.close()
+
+    # Zenith PDFs sometimes render debit amounts slightly outside the detected
+    # money column, but the running balance remains reliable. Repair only rows
+    # with no captured movement and a clear balance delta.
+    prev_balance = _num(metadata.get("opening_balance"))
+    for txn in txns:
+        bal = _num(txn.get("balance"))
+        debit = _num(txn.get("debit"))
+        credit = _num(txn.get("credit"))
+        if bal and prev_balance and debit == 0.0 and credit == 0.0:
+            movement = round(bal - prev_balance, 2)
+            if movement > 0:
+                txn["credit"] = movement
+            elif movement < 0:
+                txn["debit"] = abs(movement)
+        if bal:
+            prev_balance = bal
 
     return txns, metadata

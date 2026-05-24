@@ -152,7 +152,7 @@ def detect_access_columns(words: List[Dict[str, Any]], bank_identifier: str = No
     x_lodge = find_x(["Lodgement", "Lodgements", "Credit", "Deposit", "Deposits"], is_right=True)
     x_bal = find_x(["Balance", "Bal"], is_right=True)
 
-    if not all([x_date, x_details, x_ref, x_with or x_lodge, x_bal]):
+    if not all([x_date, x_details, x_with or x_lodge, x_bal]):
         if pdf_path:
             print(f"DEBUG [Access]: Missing core columns. Trying AI Vision Fallback...")
             sys.stdout.flush()
