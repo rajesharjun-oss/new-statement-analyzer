@@ -3636,14 +3636,34 @@ def extract_fidelity_via_tables(pdf_path: Path, metadata: Dict, pdf: pdfplumber.
         txns = merge_multiline_rows(all_rows)
         
         final_txns = []
+
+        def _parse_fidelity_balance(raw_value: str) -> float:
+            raw = str(raw_value or "").strip()
+            if not raw:
+                return 0.0
+            if "." not in raw and re.search(r"\d{1,3}(?:,\d{3})+", raw):
+                sign = -1.0 if raw.lstrip().startswith(("-", "\xad")) or "(" in raw else 1.0
+                digits = re.sub(r"\D", "", raw)
+                if digits:
+                    try:
+                        return sign * float(digits)
+                    except Exception:
+                        return 0.0
+            return parse_money(raw)
+
         for t in txns:
             date_val = parse_date_smart(t.get("date"))
             if not date_val: continue
+
+            raw_text = str(t.get("raw_text") or "").strip()
+            if re.match(r"^/?\d{1,2}/\d{1,2}/\d{4}/", raw_text):
+                continue
             
             t["date"] = date_val
             t["credit"] = parse_money(t.get("credit"))
             t["debit"] = parse_money(t.get("debit"))
-            t["balance"] = parse_money(t.get("balance"))
+            t["_raw_balance_text"] = str(t.get("balance") or "")
+            t["balance"] = _parse_fidelity_balance(t.get("balance"))
             final_txns.append(t)
 
         print(f"DEBUG: Total Fidelity transactions after merge & parse: {len(final_txns)}")
@@ -3680,6 +3700,45 @@ def extract_fidelity_via_tables(pdf_path: Path, metadata: Dict, pdf: pdfplumber.
                     inferred = round(prev_bal - d + c, 2)
                     txn["balance"] = inferred
                     _repaired += 1
+        # Precision pass: Fidelity sometimes splits balance suffixes onto a
+        # separate visual line. When the visible balance is a prefix of the
+        # mathematically implied value, prefer the ledger-derived balance.
+        prev_balance = metadata.get("opening_balance")
+        for txn in final_txns:
+            if prev_balance is None:
+                bal = txn.get("balance") or 0.0
+                if bal != 0.0:
+                    prev_balance = bal
+                continue
+            expected = round(
+                float(prev_balance)
+                - float(txn.get("debit") or 0.0)
+                + float(txn.get("credit") or 0.0),
+                2,
+            )
+            observed = txn.get("balance") or 0.0
+            if observed != 0.0:
+                raw_balance_digits = re.sub(r"\D", "", str(txn.get("_raw_balance_text") or ""))
+                expected_digits = re.sub(r"\D", "", f"{abs(expected):.2f}")
+                observed_looks_truncated = (
+                    raw_balance_digits
+                    and len(raw_balance_digits) >= 6
+                    and len(raw_balance_digits) < len(expected_digits)
+                    and expected_digits.startswith(raw_balance_digits)
+                )
+                if observed_looks_truncated:
+                    txn["balance"] = expected
+                    prev_balance = expected
+                    _repaired += 1
+                    continue
+                # Same whole naira value, missing/wrong kobo.
+                if int(abs(observed)) == int(abs(expected)) and abs(observed - expected) <= 1.0:
+                    if abs(observed - expected) > 0.001:
+                        txn["balance"] = expected
+                        _repaired += 1
+                    prev_balance = expected
+                else:
+                    prev_balance = observed
         if _repaired:
             print(f"DEBUG [Fidelity balance inference]: repaired {_repaired} B=0 transactions")
 
