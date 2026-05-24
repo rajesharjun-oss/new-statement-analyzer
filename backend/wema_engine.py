@@ -116,7 +116,11 @@ def extract_wema_summary(pages: List[pdfplumber.page.Page], existing_summary: Di
             
             # Robust Regex Capture (V6): Support digit splitting and space-agnosticism
             import re
-            match_debit = re.search(r"TOTAL\s+DEBIT.*?([0-9\s,.]+)", line_txt.upper())
+            line_txt_u = line_txt.upper()
+            debit_segment = line_txt_u
+            if "TOTAL DEBIT" in line_txt_u and "TOTAL CREDIT" in line_txt_u:
+                debit_segment = line_txt_u.split("TOTAL CREDIT", 1)[0]
+            match_debit = re.search(r"TOTAL\s+DEBIT.*?([0-9\s,.]+)", debit_segment)
             if match_debit:
                 val = parse_wema_money(match_debit.group(1))
                 cur_debit = summary.get("statement_total_debit")
@@ -124,7 +128,7 @@ def extract_wema_summary(pages: List[pdfplumber.page.Page], existing_summary: Di
                      summary["statement_total_debit"] = val
                      print(f"  !!! [WEMA-STABLE-PATH-A] Found Max Debit: {val:,.2f} !!!")
             
-            match_credit = re.search(r"TOTAL\s+CREDIT.*?([0-9\s,.]+)", line_txt.upper())
+            match_credit = re.search(r"TOTAL\s+CREDIT.*?([0-9\s,.]+)", line_txt_u)
             if match_credit:
                 val = parse_wema_money(match_credit.group(1))
                 cur_credit = summary.get("statement_total_credit")
@@ -136,7 +140,7 @@ def extract_wema_summary(pages: List[pdfplumber.page.Page], existing_summary: Di
             # 45,567,533,642.  45,568,587,440.13
             # Total Debit:      Total Credit:
             # ... 72            (decimal tail for debit)
-            if "TOTAL DEBIT" in line_txt.upper() and "TOTAL CREDIT" in line_txt.upper():
+            if "TOTAL DEBIT" in line_txt_u and "TOTAL CREDIT" in line_txt_u:
                 debit_label_x = None
                 credit_label_x = None
                 for w in row_words:
@@ -222,7 +226,11 @@ def extract_wema_summary(pages: List[pdfplumber.page.Page], existing_summary: Di
             text_lines = full_text.split('\n')
             for line in text_lines:
                 # FIX: Stricter summary total regex to avoid catching partial numbers
-                match_debit_b = re.search(r"TOTAL\s+DEBIT.*?([\d\s,]+\.\d{2})", line.upper())
+                line_u = line.upper()
+                debit_line_segment = line_u
+                if "TOTAL DEBIT" in line_u and "TOTAL CREDIT" in line_u:
+                    debit_line_segment = line_u.split("TOTAL CREDIT", 1)[0]
+                match_debit_b = re.search(r"TOTAL\s+DEBIT.*?([\d\s,]+\.\d{2})", debit_line_segment)
                 if match_debit_b:
                     val = parse_wema_money(match_debit_b.group(1))
                     cur_debit = summary.get("statement_total_debit")
@@ -230,7 +238,7 @@ def extract_wema_summary(pages: List[pdfplumber.page.Page], existing_summary: Di
                          summary["statement_total_debit"] = val
                          print(f"  !!! [WEMA-STABLE-PATH-B-WELD] Found Max Debit: {val:,.2f} !!!")
 
-                match_credit_b = re.search(r"TOTAL\s+CREDIT.*?([\d\s,]+\.\d{2})", line.upper())
+                match_credit_b = re.search(r"TOTAL\s+CREDIT.*?([\d\s,]+\.\d{2})", line_u)
                 if match_credit_b:
                     val = parse_wema_money(match_credit_b.group(1))
                     cur_credit = summary.get("statement_total_credit")
@@ -483,6 +491,29 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
             )
 
         # Final tiny reconciliation against statement totals (kobo drift only).
+        stmt_debit = metadata.get("statement_total_debit")
+        stmt_credit = metadata.get("statement_total_credit")
+        if stmt_debit is not None and stmt_credit is not None:
+            cur_debit = round(sum((t.get("debit") or 0.0) for t in txns), 2)
+            cur_credit = round(sum((t.get("credit") or 0.0) for t in txns), 2)
+            opening_bal = metadata.get("opening_balance")
+            closing_bal = metadata.get("closing_balance")
+            if opening_bal is not None and closing_bal is not None:
+                extracted_close = round(float(opening_bal) + cur_credit - cur_debit, 2)
+                summary_close = round(float(opening_bal) + float(stmt_credit) - float(stmt_debit), 2)
+                if (
+                    abs(extracted_close - float(closing_bal)) <= 1.0
+                    and abs(summary_close - float(closing_bal)) > 1.0
+                    and abs(float(stmt_debit) - float(stmt_credit)) <= 0.01
+                    and abs(float(stmt_debit) - cur_debit) > 1.0
+                ):
+                    metadata["statement_total_debit"] = None
+                    metadata["wema_missing_debit_total"] = True
+                    stmt_debit = None
+                    print(
+                        "  [WEMA SUMMARY] Ignoring copied debit total; source text only exposes credit total."
+                    )
+
         stmt_debit = metadata.get("statement_total_debit")
         stmt_credit = metadata.get("statement_total_credit")
         if stmt_debit is not None and stmt_credit is not None:

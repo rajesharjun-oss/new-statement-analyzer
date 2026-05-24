@@ -77,7 +77,24 @@ def run_file(path: Path, bank: str) -> dict:
         if not primary_meta and statement_results:
             primary_meta = statement_results[0].get("metadata", {})
 
+        validations = [
+            validate_totals(statement.get("transactions", []), statement.get("metadata", {}))
+            for statement in statement_results
+        ]
         validation = validate_totals(txns, primary_meta)
+        if len(validations) > 1:
+            all_match = all(v.get("totals_match") is True for v in validations)
+            any_failed = any(v.get("totals_match") is False for v in validations)
+            validation = {
+                "status": (
+                    "All statement groups validated"
+                    if all_match
+                    else "One or more statement groups failed validation"
+                    if any_failed
+                    else "Statement groups extracted; full totals unavailable"
+                ),
+                "totals_match": True if all_match else False if any_failed else None,
+            }
         result.update(
             {
                 "status": "OK",
@@ -92,6 +109,7 @@ def run_file(path: Path, bank: str) -> dict:
                 "detected_bank": primary_meta.get("bank"),
                 "validation_status": validation.get("status"),
                 "totals_match": validation.get("totals_match"),
+                "statement_validations": validations,
             }
         )
     except Exception as exc:

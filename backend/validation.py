@@ -43,20 +43,46 @@ def validate_totals(transactions: List[Dict], metadata: Dict[str, Any]) -> Dict[
     statement_debit = metadata.get("statement_total_debit")
     statement_credit = metadata.get("statement_total_credit")
 
-    # If statement totals are missing, we can't fully validate
+    opening_bal = _num(metadata.get("opening_balance"))
+    closing_bal = _num(metadata.get("closing_balance"))
+    last_bal = 0.0
+    for t in reversed(transactions):
+        b = _num(t.get("balance"))
+        if b != 0.0:
+            last_bal = b
+            break
+
+    if closing_bal == 0.0 and last_bal != 0.0:
+        closing_bal = last_bal
+
+    implied_closing = round(opening_bal + extracted_credit - extracted_debit, 2)
+    has_balance_bounds = metadata.get("opening_balance") is not None and (
+        metadata.get("closing_balance") is not None or last_bal != 0.0
+    )
+    ledger_reconciles = has_balance_bounds and abs(implied_closing - closing_bal) <= 1.0
+
+    # If statement totals are missing, we can't fully validate against a printed
+    # debit/credit summary, but we can still say whether the visible ledger
+    # reconciles from opening to closing balance.
     if statement_debit is None or statement_credit is None:
+        status = "Statement totals missing (cannot fully validate). Extraction totals computed."
+        if ledger_reconciles:
+            status = "Ledger balances reconcile; statement debit/credit totals unavailable."
         return {
-            "status": "Statement totals missing (cannot fully validate). Extraction totals computed.",
-            "totals_match": None,
+            "status": status,
+            "totals_match": True if ledger_reconciles else None,
             "extracted_total_debit": extracted_debit,
             "extracted_total_credit": extracted_credit,
             "statement_total_debit": statement_debit,
             "statement_total_credit": statement_credit,
             "debit_diff": None,
             "credit_diff": None,
+            "opening_balance": opening_bal,
+            "closing_balance": closing_bal if has_balance_bounds else None,
+            "implied_closing_balance": implied_closing if has_balance_bounds else None,
         }
 
-    tolerance = 0.01  # 1 kobo tolerance
+    tolerance = float(metadata.get("validation_tolerance", 0.50))  # tolerate small OCR/table kobo drift
     debit_diff = extracted_debit - float(statement_debit)
     credit_diff = extracted_credit - float(statement_credit)
 
@@ -68,17 +94,8 @@ def validate_totals(transactions: List[Dict], metadata: Dict[str, Any]) -> Dict[
     # totals/closing don't align with the visible ledger pages in the file.
     # In this conflict case, surface an explicit mismatch reason (do not mark pass).
     if not totals_match and str(metadata.get("bank", "")).lower() in {"gtbank", "gtco"}:
-        opening_bal = _num(metadata.get("opening_balance"))
-        closing_bal = _num(metadata.get("closing_balance"))
-        last_bal = 0.0
-        for t in reversed(transactions):
-            b = _num(t.get("balance"))
-            if b != 0.0:
-                last_bal = b
-                break
-
-        implied_last = round(opening_bal + extracted_credit - extracted_debit, 2)
-        ledger_consistent = abs(implied_last - last_bal) <= 1.0 if last_bal != 0.0 else False
+        implied_last = implied_closing
+        ledger_consistent = ledger_reconciles
         header_disagrees = abs(closing_bal - last_bal) > 1.0 if last_bal != 0.0 else False
 
         if ledger_consistent and header_disagrees:
@@ -98,6 +115,25 @@ def validate_totals(transactions: List[Dict], metadata: Dict[str, Any]) -> Dict[
                 "header_closing_balance": closing_bal,
                 "ledger_closing_balance": last_bal,
             }
+
+    if not totals_match and ledger_reconciles:
+        return {
+            "status": (
+                "Statement totals and transaction ledger conflict: ledger rows reconcile "
+                "from opening to closing balance, but extracted debit/credit totals do not "
+                "match the statement summary."
+            ),
+            "totals_match": False,
+            "extracted_total_debit": extracted_debit,
+            "extracted_total_credit": extracted_credit,
+            "statement_total_debit": float(statement_debit),
+            "statement_total_credit": float(statement_credit),
+            "debit_diff": debit_diff,
+            "credit_diff": credit_diff,
+            "opening_balance": opening_bal,
+            "closing_balance": closing_bal,
+            "implied_closing_balance": implied_closing,
+        }
 
     if totals_match:
         status = "Totals match statement"

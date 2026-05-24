@@ -1132,6 +1132,8 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 len(pages_to_process) > 30
             )
             gt_dense_allowed_pages = None
+            gt_dense_text_cache = {}
+            gt_dense_header_pages = set()
             if skip_heavy_meta_scan:
                 try:
                     sig_seen = set()
@@ -1142,23 +1144,32 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                         for i in range(limit):
                             txt = (reader.pages[i].extract_text() or "").strip()
                             sig = hash(" ".join(txt.split())[:30000])
+                            page_no = i + 1
                             if sig in sig_seen:
                                 continue
                             sig_seen.add(sig)
-                            keep_pages.append(i + 1)
+                            keep_pages.append(page_no)
+                            if "CUSTOMER STATEMENT" in txt or "Statement Period" in txt:
+                                gt_dense_header_pages.add(page_no)
+                                gt_dense_text_cache[page_no] = txt
                     else:
                         for i, p in enumerate(pages_to_process):
                             txt = (p.extract_text() or "").strip()
                             sig = hash(" ".join(txt.split())[:30000])
+                            page_no = i + 1
                             if sig in sig_seen:
                                 continue
                             sig_seen.add(sig)
-                            keep_pages.append(i + 1)
+                            keep_pages.append(page_no)
+                            if "CUSTOMER STATEMENT" in txt or "Statement Period" in txt:
+                                gt_dense_header_pages.add(page_no)
+                                gt_dense_text_cache[page_no] = txt
                     if keep_pages:
                         gt_dense_allowed_pages = set(keep_pages)
                         print(
                             f"DEBUG: GT dense pre-scan reduced pages "
-                            f"{len(pages_to_process)} -> {len(gt_dense_allowed_pages)} unique text signatures."
+                            f"{len(pages_to_process)} -> {len(gt_dense_allowed_pages)} unique text signatures "
+                            f"({len(gt_dense_header_pages)} statement headers)."
                         )
                 except Exception as _e_gt_prescan:
                     print(f"DEBUG: GT dense pre-scan skipped due to error: {_e_gt_prescan}")
@@ -1171,7 +1182,9 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 try:
                     pg_text = ""
                     if skip_heavy_meta_scan:
-                        if page_num == 1 or page_num == len(pages_to_process) or page_num % 15 == 0:
+                        if page_num in gt_dense_text_cache:
+                            pg_text = gt_dense_text_cache[page_num]
+                        elif page_num == 1 or page_num == len(pages_to_process) or page_num % 15 == 0:
                             pg_text = page.extract_text() or ""
                     else:
                         pg_text = page.extract_text() or ""
@@ -1247,10 +1260,25 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
             final_results = []
             for group in statement_groups:
                 acc = group[0]["_acc"]
-                # Find best metadata for this account
+                stmt_id = group[0].get("_stmt_id")
+                # Find best metadata for this extracted statement group. Account
+                # number alone is not enough for merged PDFs because some banks
+                # repeat account numbers or include multiple GT sections in one file.
                 best_meta = metadata.copy()
+                for statement_key in [
+                    "account_no",
+                    "account_number",
+                    "period",
+                    "period_start",
+                    "period_end",
+                    "opening_balance",
+                    "closing_balance",
+                    "statement_total_debit",
+                    "statement_total_credit",
+                ]:
+                    best_meta[statement_key] = None
                 for p_num, p_meta in page_meta_map.items():
-                    if p_meta.get("account_no") == acc:
+                    if p_meta.get("_stmt_id") == stmt_id:
                         for k, v in (p_meta or {}).items():
                             if v not in (None, ""):
                                 best_meta[k] = v
