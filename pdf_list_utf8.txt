@@ -1,1 +1,0 @@
-['C:\\Users\\ionawoga\\Desktop\\Statement-analyzer-3.0-1\\backend\\FIDELITY 1 2024.pdf', 'C:\\Users\\ionawoga\\Desktop\\Statement-analyzer-3.0-1\\backend\\repaired_fidelity.pdf', 'C:\\Users\\ionawoga\\Desktop\\Statement-analyzer-3.0-1\\backend\\test_fidelity.pdf.pdf']

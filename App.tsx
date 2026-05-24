@@ -386,21 +386,6 @@ export default function App() {
       const targetName = `${org} - ${bank}.xlsx`;
 
       try {
-         generateExcel(
-            analysisResult.transactions,
-            analysisResult.reconciliation_warnings,
-            analysisResult.reconciliation_failed,
-            analysisResult.currency,
-            analysisResult.organizationName,
-            analysisResult.bankName,
-            targetName
-         );
-         return;
-      } catch (localExportError: any) {
-         console.error("Local export failed, falling back to server download.", localExportError);
-      }
-
-      try {
          if (analysisResult.downloadUrl) {
             const response = await fetch(analysisResult.downloadUrl);
             if (!response.ok) {
@@ -418,7 +403,22 @@ export default function App() {
             return;
          }
       } catch (downloadError: any) {
-         console.error("Server download fallback failed.", downloadError);
+         console.error("Server download failed, falling back to local export.", downloadError);
+      }
+
+      try {
+         generateExcel(
+            analysisResult.transactions,
+            analysisResult.reconciliation_warnings,
+            analysisResult.reconciliation_failed,
+            analysisResult.currency,
+            analysisResult.organizationName,
+            analysisResult.bankName,
+            targetName
+         );
+         return;
+      } catch (localExportError: any) {
+         console.error("Local export fallback failed.", localExportError);
       }
 
       setError("Export failed. Please retry.");

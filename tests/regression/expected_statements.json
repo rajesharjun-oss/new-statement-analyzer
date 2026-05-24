@@ -1,0 +1,26 @@
+[
+  {
+    "id": "access-african-business-coalition-q4-2025",
+    "enabled": true,
+    "file": "tests/regression/samples/access-bank-test.pdf",
+    "bank": "access",
+    "expected_transaction_count": 128,
+    "expected_total_debit": 40163400.78,
+    "expected_total_credit": 74931500.0,
+    "expected_opening_balance": 27133148.42,
+    "expected_closing_balance": 61901247.64,
+    "tolerance": 0.01,
+    "notes": "Guards against Access column drift where debits shift into credits and credits shift into balance."
+  },
+  {
+    "id": "example-wema",
+    "enabled": false,
+    "file": "samples/wema-example.pdf",
+    "bank": "wema",
+    "expected_transaction_count": 552,
+    "expected_total_debit": 45500000000.0,
+    "expected_total_credit": 0.0,
+    "tolerance": 0.01,
+    "notes": "Copy this object, point it at a local sample file, set enabled to true, and update totals."
+  }
+]

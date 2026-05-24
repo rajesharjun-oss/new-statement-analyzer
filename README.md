@@ -4,63 +4,90 @@
 
 # AI Bank Statement Analyzer
 
-A powerful AI-driven tool for extracting, validating, and categorizing transactions from Nigerian bank statements (PDF, Excel, CSV).
+Extract, validate, categorize, and export transactions from Nigerian bank statements in PDF, Excel, and CSV formats.
 
-## 🚀 Supported Banks (Verified)
-- **Access Bank** (Searchable & OCR)
-- **UBA** (Searchable & OCR)
-- **WEMA Bank**
-- **FCMB**
-- **Zenith Bank**
-- **GTBank / GTCO** (Multi-statement support)
-- **Providus Bank**
-- **Sterling Bank**
-- **First Bank (FBN)**
+## Supported Banks
 
-## 🛠️ Run Locally (Manual)
+- Access Bank (searchable PDFs and OCR fallback)
+- UBA (searchable PDFs and OCR fallback)
+- Wema Bank
+- FCMB
+- Zenith Bank
+- GTBank / GTCO, including multi-statement bundles
+- Providus Bank
+- Sterling Bank
+- First Bank / FBN
 
-**Prerequisites:** Node.js, Python 3.10+
+## Project Layout
 
-1. **Environment Setup**:
-   Create a `.env` file in the project root:
-   ```bash
-   GEMINI_API_KEY="your_key_here" # Supports comma-separated keys for rotation
-   OPENAI_API_KEY="optional_fallback_key"
-   ```
+- `backend/` - FastAPI API, extraction engines, validation, categorization, and Excel export.
+- `components/` - React UI components.
+- `services/` - Frontend API, analysis, parsing, and export helpers.
+- `tests/regression/` - Structured sample expectations and regression runner.
+- `tools/diagnostics/` - Legacy forensic scripts kept for future extraction debugging.
+- `artifacts/debug-output/` - Local debug logs and extraction dumps. This folder is ignored by git.
 
-2. **Backend**:
-   ```bash
-   cd backend
-   pip install -r requirements.txt
-   uvicorn main:app --reload
-   ```
+## Run Locally
 
-3. **Frontend**:
-   ```bash
-   # From the project root
-   npm install
-   npm run dev
-   ```
+Prerequisites: Node.js and Python 3.10+.
 
-## 🐳 Run Locally (Docker)
+1. Create a `.env` file from the example:
 
-1. `cp .env.example .env` (Add your keys)
-2. `docker-compose up --build`
-3. Open http://localhost:8000
+```bash
+cp .env.example .env
+```
 
----
----
+2. Add the API keys you use for OCR/fallback extraction:
 
-## ☁️ Deploy to Render
+```env
+GEMINI_API_KEY=your_gemini_key_here
+OPENAI_API_KEY=optional_openai_key_here
+ANTHROPIC_API_KEY=optional_anthropic_key_here
+```
 
-The project is optimized for **Render** (Docker or Native Web Service).
+3. Start the backend on `http://localhost:8000`:
 
-1. **Environment Variables**:
-   In the Render Dashboard, add:
-   - `GEMINI_API_KEY`: Your Google AI Studio key.
-   - `PYTHONPATH`: `/app/backend` (if using Docker).
+```bash
+cd backend
+pip install -r requirements.txt
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
 
-2. **Persistent Storage**:
-   The `temp_uploads/` and `temp_downloads/` directories are ephemeral on Render. For production use with large volumes, consider attaching a **Render Disk**.
+4. Start the frontend on `http://localhost:5000`:
 
-*Powered by Gemini 2.0 Flash for high-accuracy financial OCR.*
+```bash
+npm install
+npm run dev
+```
+
+## Run With Docker
+
+```bash
+cp .env.example .env
+docker-compose up --build
+```
+
+Open `http://localhost:8000`.
+
+## Regression Checks
+
+Add local sample statements and expected totals to `tests/regression/expected_statements.json`, then run:
+
+```bash
+python tests/regression/run_regression.py
+```
+
+Sample PDFs and spreadsheets are ignored by git, so the expectations file can describe local fixtures without committing sensitive bank statements.
+
+## Deploy To Render
+
+The Dockerfile builds the React frontend and serves it through FastAPI.
+
+Set these environment variables in Render:
+
+- `GEMINI_API_KEY`
+- `OPENAI_API_KEY` if OpenAI fallback is enabled
+- `ANTHROPIC_API_KEY` if Claude fallback is enabled
+- `PYTHONPATH=/app/backend`
+
+`temp_uploads/` and `temp_downloads/` are ephemeral. For production workloads with large files or long retention needs, attach persistent storage.

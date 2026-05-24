@@ -26,3 +26,5 @@ dist/
 build/
 coverage/
 .env
+artifacts/debug-output/
+tools/diagnostics/

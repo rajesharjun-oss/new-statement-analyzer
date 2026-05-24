@@ -1,43 +1,35 @@
-# Backend Setup Instructions
+# Backend
 
-## 1. Install Python Dependencies
+FastAPI service for statement upload, extraction, validation, categorization, and Excel export.
+
+## Setup
 
 ```bash
 cd backend
 pip install -r requirements.txt
 ```
 
-## 2. Set Environment Variables
-
-Create a `.env` file in the `backend/` directory:
+Create a `.env` file in the project root or in `backend/`:
 
 ```env
-OPENAI_API_KEY=your_openai_api_key_here
-OCR_ENGINE=openai  # or 'tesseract'
+GEMINI_API_KEY=your_gemini_key_here
+OPENAI_API_KEY=optional_openai_key_here
+ANTHROPIC_API_KEY=optional_anthropic_key_here
+OCR_ENGINE=gemini
 ```
 
-## 3. Start the Backend Server
+## Run
 
 ```bash
-python main.py
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Server will run on `http://localhost:8000`
+The API will be available at `http://localhost:8000`.
 
-## 4. Open the Frontend
+Useful endpoints:
 
-Simply open `frontend/index.html` in your browser, or use a simple HTTP server:
+- `GET /health`
+- `POST /analyze`
+- `GET /download/{file_id}`
 
-```bash
-cd frontend
-python -m http.server 3000
-```
-
-Then visit `http://localhost:3000`
-
-## 5. Test
-
-Upload a PDF bank statement and verify:
-- Summary displays correctly
-- Totals match
-- Excel downloads successfully
+The Vite frontend proxies `/analyze` and `/download` to this backend in local development.

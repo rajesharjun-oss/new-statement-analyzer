@@ -42,6 +42,7 @@ temp_downloads/
 temp_uploads/
 backend/temp_downloads/
 backend/temp_uploads/
+artifacts/debug-output/
 
 # Statement artifacts
 **/statement-analysis-*.xlsx

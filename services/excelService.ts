@@ -2,8 +2,7 @@
 import * as XLSX_PKG from 'xlsx';
 import { Transaction } from '../types';
 
-// Handle ESM/CJS interop
-const XLSX = (XLSX_PKG as any).utils ? XLSX_PKG : (XLSX_PKG as any).default;
+const XLSX = XLSX_PKG;
 
 export const generateExcel = (
   transactions: Transaction[],

@@ -1,7 +1,0 @@
-﻿Testing Standard Chartered with new 2-phase OCR pipeline...
-Status: 200
-Records: 105
-Debit: 57,098,177.69
-Credit: 207,508,800.00
-Expected Debit: 1,699,167.22
-Difference: -55,399,010.47

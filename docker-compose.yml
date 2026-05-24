@@ -4,10 +4,11 @@ services:
   app:
     build: .
     ports:
-      - "8001:8001"
+      - "8000:8000"
     env_file:
       - .env
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      # - GEMINI_API_KEY=${GEMINI_API_KEY} # Uncomment if Gemini is used
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     restart: always

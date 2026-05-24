@@ -44,7 +44,7 @@ COPY backend /app/backend
 COPY --from=frontend_build /app/frontend/dist /app/dist
 
 # Expose port
-EXPOSE 8001
+EXPOSE 8000
 
 # Run the application with a 300s timeout for long PDF extractions
-CMD ["sh", "-c", "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8001} --timeout-keep-alive 300"]
+CMD ["sh", "-c", "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000} --timeout-keep-alive 300"]
