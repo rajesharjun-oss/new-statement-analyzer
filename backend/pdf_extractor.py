@@ -1073,6 +1073,18 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                             print(f"DEBUG: Tesseract UBA parser extracted {len(local_txns)} txns.")
                             return [{"transactions": normalize_remarks(local_txns), "metadata": {**metadata, **local_meta}}]
 
+                    try:
+                        from ocr_helper import extract_pdf_text_with_tesseract
+                        preview_text = extract_pdf_text_with_tesseract(str(pdf_path), max_pages=min(2, len(pdf_pages)))
+                    except Exception:
+                        preview_text = ""
+                    if "STANDARD" in preview_text.upper() and "CHARTERED" in preview_text.upper():
+                        from local_ocr_parsers import parse_standard_chartered_tesseract_pdf
+                        sc_txns, sc_meta = parse_standard_chartered_tesseract_pdf(str(pdf_path), max_pages=min(40, len(pdf_pages)))
+                        if sc_txns:
+                            print(f"DEBUG: Tesseract Standard Chartered parser extracted {len(sc_txns)} txns.")
+                            return [{"transactions": normalize_remarks(sc_txns), "metadata": {**metadata, **sc_meta}}]
+
                     ocr_text_legacy = ""
                     for i in range(page_limit):
                         print(f"DEBUG: Attempting legacy OCR on page {i}...")
