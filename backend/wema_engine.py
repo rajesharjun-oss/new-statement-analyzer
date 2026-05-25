@@ -3,10 +3,18 @@ WEMA Bank Dedicated Coordinate Extractor - Unified 2.1 (Billion-Naira Support)
 """
 import pdfplumber
 import math
+import os
 import re
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
 from utils import parse_date_smart
+
+try:
+    import fitz  # PyMuPDF
+    PYMUPDF_AVAILABLE = True
+except ImportError:
+    fitz = None
+    PYMUPDF_AVAILABLE = False
 
 def parse_wema_money(text: str) -> float | None:
     """Converts text to float. Uses length and character filtering for Reference IDs."""
@@ -45,7 +53,10 @@ def detect_wema_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, f
         
     tops = [round(w['top'], 1) for w in header_words]
     best_top = max(set(tops), key=tops.count)
-    band = [w for w in header_words if abs(w['top'] - best_top) < 3.0]
+    band = sorted(
+        [w for w in header_words if abs(w['top'] - best_top) < 3.0],
+        key=lambda w: w["x0"],
+    )
     
     if len(band) < 4: return None
 
@@ -66,7 +77,7 @@ def detect_wema_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, f
 
     x_bal_l, _ = find_x("BALANCE")
     
-    if x_date_l:
+    if x_date_l and os.getenv("WEMA_DEBUG_LAYOUT"):
          print(f"  [WEMA-LAYOUT] Header Audit - Date: {x_date_l}, Width: {x_wid_l}, Dep: {x_dep_l}")
 
     if x_date_l is None or x_wid_l is None: return None
@@ -85,6 +96,25 @@ def detect_wema_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, f
         cuts["description"] = (x_desc_l, x_id_l - 2)
 
     return cuts
+
+def pymupdf_wema_words(doc: Any, page_index: int) -> List[Dict[str, Any]]:
+    """Return visible-page words in pdfplumber's word shape."""
+    page = doc[page_index]
+    page_height = float(page.rect.height)
+    words = []
+    for w in page.get_text("words"):
+        text = (w[4] or "").strip()
+        if not text:
+            continue
+        words.append({
+            "text": text,
+            "x0": float(w[0]),
+            "top": float(w[1]),
+            "x1": float(w[2]),
+            "bottom": float(w[3]),
+            "doctop": float(w[1]) + page_index * page_height,
+        })
+    return words
 
 def extract_wema_summary(pages: List[pdfplumber.page.Page], existing_summary: Dict[str, float] = None) -> Dict[str, float]:
     """
@@ -261,6 +291,17 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
     _pdf_handle = pdf if pdf else pdfplumber.open(pdf_path)
     _total_pages = len(_pdf_handle.pages)
     print(f"\n>>> [WEMA ENGINE 2.1] Extraction Started for: {pdf_path.name} ({_total_pages} pages)")
+    fast_doc = None
+    use_fast_words = False
+    if _total_pages > 100 and PYMUPDF_AVAILABLE:
+        try:
+            fast_doc = fitz.open(pdf_path)
+            use_fast_words = True
+            print("  [WEMA-FAST] Using PyMuPDF visible-page word extraction.")
+        except Exception as exc:
+            print(f"  [WEMA-FAST] PyMuPDF unavailable for this file: {exc}")
+            fast_doc = None
+            use_fast_words = False
     
     try:
         # 1. EXTRACT SUMMARY TOTALS GLOBALLY (Unified 2.1 FINAL)
@@ -275,11 +316,15 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
         summary_keywords = ["TOTAL DEBIT", "TOTAL CREDIT", "TOTAL WITHDRAWAL", "TOTAL DEPOSIT", "TOTALS", "CARRIED FORWARD"]
         
         # 2. Detect columns
-        words_p0 = _pdf_handle.pages[0].extract_words()
+        words_p0 = pymupdf_wema_words(fast_doc, 0) if use_fast_words and fast_doc is not None else _pdf_handle.pages[0].extract_words()
         cuts = detect_wema_columns(words_p0)
         
         if not cuts:
-             words_p1 = _pdf_handle.pages[1].extract_words() if _total_pages > 1 else []
+             words_p1 = (
+                 pymupdf_wema_words(fast_doc, 1)
+                 if use_fast_words and fast_doc is not None and _total_pages > 1
+                 else _pdf_handle.pages[1].extract_words() if _total_pages > 1 else []
+             )
              cuts = detect_wema_columns(words_p1)
         if not cuts:
             raise ValueError("Wema column headers not found in first 2 pages.")
@@ -289,7 +334,7 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
                 print(f"  [WEMA-PROGRESS] Processing Page {i+1}/{_total_pages}...")
             last_txn_date = None
                 
-            p_words = page.extract_words(x_tolerance=2, y_tolerance=2)
+            p_words = pymupdf_wema_words(fast_doc, i) if use_fast_words and fast_doc is not None else page.extract_words(x_tolerance=2, y_tolerance=2)
             
             # Recalibrate cuts
             new_cuts = detect_wema_columns(p_words)
@@ -389,6 +434,11 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
                     last_txn_date = parsed_date
 
     finally:
+        if fast_doc is not None:
+            try:
+                fast_doc.close()
+            except Exception:
+                pass
         if not pdf: _pdf_handle.close()
 
     # ── Balance inference: fill B=0 holes from known neighbours ──────────────
