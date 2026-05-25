@@ -70,7 +70,7 @@ def validate_totals(transactions: List[Dict], metadata: Dict[str, Any]) -> Dict[
             status = "Ledger balances reconcile; statement debit/credit totals unavailable."
         return {
             "status": status,
-            "totals_match": True if ledger_reconciles else None,
+            "totals_match": None,
             "extracted_total_debit": extracted_debit,
             "extracted_total_credit": extracted_credit,
             "statement_total_debit": statement_debit,

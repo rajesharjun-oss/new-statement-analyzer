@@ -207,10 +207,12 @@ export default function App() {
       const totalDebits = txns.reduce((a, t) => a + (t.debit ?? 0), 0);
       const totalCredits = txns.reduce((a, t) => a + (t.credit ?? 0), 0);
 
-      // Use the backend's definitive flag for status
-      let checkStatus = "Passed";
-      if (analysisResult.reconciliation_failed || txns.length === 0) {
+      const totalsMatch = statementSummary?.totals_match;
+      let checkStatus: "Passed" | "Failed" | "Unverified" = "Unverified";
+      if (analysisResult.reconciliation_failed || txns.length === 0 || totalsMatch === false) {
          checkStatus = "Failed";
+      } else if (totalsMatch === true) {
+         checkStatus = "Passed";
       }
 
       return {
@@ -811,13 +813,17 @@ export default function App() {
                         </div>
                         <div>
                            <p className="text-[11px] text-zinc-500 font-semibold uppercase tracking-wider mb-1">Validation</p>
-                           <div className={`inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-medium border ${analysisResult?.reconciliation_failed
+                           <div className={`inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-medium border ${summary.checkStatus === "Failed"
                               ? 'bg-red-500/10 text-red-400 border-red-500/20'
-                              : 'bg-[#3CDCAB]/10 text-[#3CDCAB] border-[#3CDCAB]/20'
+                              : summary.checkStatus === "Passed"
+                                 ? 'bg-[#3CDCAB]/10 text-[#3CDCAB] border-[#3CDCAB]/20'
+                                 : 'bg-amber-500/10 text-amber-300 border-amber-500/20'
                               }`}>
-                              {analysisResult?.reconciliation_failed
+                              {summary.checkStatus === "Failed"
                                  ? <><AlertTriangle className="w-3.5 h-3.5" /> Mismatch</>
-                                 : <><CheckCircle2 className="w-3.5 h-3.5" /> Totals match statement</>}
+                                 : summary.checkStatus === "Passed"
+                                    ? <><CheckCircle2 className="w-3.5 h-3.5" /> Totals match statement</>
+                                    : <><Clock className="w-3.5 h-3.5" /> Statement totals unavailable</>}
                            </div>
                         </div>
                         <div>

@@ -43,6 +43,13 @@ try:
 except ImportError:
     PYPDF_AVAILABLE = False
 
+try:
+    import fitz  # PyMuPDF
+    PYMUPDF_AVAILABLE = True
+except ImportError:
+    fitz = None
+    PYMUPDF_AVAILABLE = False
+
 # Define OCR availability based on OpenAI API key presence
 OCR_AVAILABLE = bool(os.getenv("OPENAI_API_KEY"))
 
@@ -1168,10 +1175,21 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 bank_identifier in ["gtbank", "gtco"] and
                 len(pages_to_process) > 30
             )
+            gt_visible_doc = None
+            gt_use_visible_page_words = False
+            if skip_heavy_meta_scan and PYMUPDF_AVAILABLE:
+                try:
+                    gt_visible_doc = fitz.open(pdf_path)
+                    gt_use_visible_page_words = True
+                    print("DEBUG: GT dense mode using PyMuPDF visible-page words.")
+                except Exception as _e_gt_fitz:
+                    print(f"DEBUG: GT dense PyMuPDF mode unavailable: {_e_gt_fitz}")
+                    gt_visible_doc = None
+                    gt_use_visible_page_words = False
             gt_dense_allowed_pages = None
             gt_dense_text_cache = {}
             gt_dense_header_pages = set()
-            if skip_heavy_meta_scan:
+            if skip_heavy_meta_scan and not gt_use_visible_page_words:
                 try:
                     sig_seen = set()
                     keep_pages = []
@@ -1219,7 +1237,11 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 try:
                     pg_text = ""
                     if skip_heavy_meta_scan:
-                        if page_num in gt_dense_text_cache:
+                        if gt_use_visible_page_words and gt_visible_doc is not None and (
+                            page_num == 1 or page_num == len(pages_to_process) or page_num % 15 == 0
+                        ):
+                            pg_text = gt_visible_doc[page_num - 1].get_text("text") or ""
+                        elif page_num in gt_dense_text_cache:
                             pg_text = gt_dense_text_cache[page_num]
                         elif page_num == 1 or page_num == len(pages_to_process) or page_num % 15 == 0:
                             pg_text = page.extract_text() or ""
@@ -1248,7 +1270,10 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
 
                 # Extract words for rows
                 try:
-                    words = page.extract_words(x_tolerance=2, y_tolerance=2)
+                    if gt_use_visible_page_words and gt_visible_doc is not None:
+                        words = pymupdf_words_for_page(gt_visible_doc, page_num - 1)
+                    else:
+                        words = page.extract_words(x_tolerance=2, y_tolerance=2)
                 except Exception as e:
                     words = extract_words_from_pypdf(pdf_path, page_num - 1)
                 
@@ -1281,6 +1306,12 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                     # can reason on tokens that may not map cleanly into a single column.
                     row["_raw_text"] = " ".join((w.get("text") or "").strip() for w in rg["words"]).strip()
                     all_rows.append(row)
+
+            if gt_visible_doc is not None:
+                try:
+                    gt_visible_doc.close()
+                except Exception:
+                    pass
 
             # --- 4) Split all_rows by Statement ID and merge ---
             statement_groups = []
@@ -1365,6 +1396,14 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                         "_page": txn.get("_page"),
                         "_row": txn.get("_row")
                     })
+
+                if is_gt_layout and normalized:
+                    before_cleanup = len(normalized)
+                    normalized = drop_static_balance_movements(normalized)
+                    removed_cleanup = before_cleanup - len(normalized)
+                    if removed_cleanup:
+                        best_meta["gt_static_balance_rows_removed"] = removed_cleanup
+                    normalized = repair_amounts_from_running_balance(normalized)
 
                 # --- 4c) GTBank/GTCO mismatch rescue (page-scoped OpenAI Vision) ---
                 # Some mixed-account GTBank/GTCO bundles start with empty summary pages.
@@ -1649,6 +1688,101 @@ def repair_ref_branch_remarks(tx: dict) -> dict:
 def repair_fields_batch(transactions: List[Dict]) -> List[Dict]:
     """Apply repair_ref_branch_remarks to all transactions"""
     return [repair_ref_branch_remarks(tx) for tx in transactions]
+
+
+def drop_static_balance_movements(transactions: List[Dict]) -> List[Dict]:
+    """
+    Remove GTBank/GTCO continuation rows that leak into amount columns.
+
+    A row with a non-zero debit/credit must change the running balance. When
+    the balance is identical to the previous kept row, the amount is usually a
+    repeated token from a wrapped narration, not a posted transaction.
+    """
+    cleaned: List[Dict] = []
+    removed = 0
+
+    for tx in transactions:
+        debit = parse_money(str(tx.get("debit", "")))
+        credit = parse_money(str(tx.get("credit", "")))
+        balance = parse_money(str(tx.get("balance", "")))
+        remarks = f"{tx.get('remarks', '')} {tx.get('description', '')}".upper()
+
+        if (
+            balance == 0.0
+            and max(debit, credit) >= 1000.0
+            and (
+                "STAMP DUTY CHARGE" in remarks
+                or "ELECTRONIC MONEY TRANSFER LEVY" in remarks
+            )
+        ):
+            removed += 1
+            continue
+
+        has_single_sided_amount = (debit > 0 and credit == 0) or (credit > 0 and debit == 0)
+        if cleaned and has_single_sided_amount and balance != 0.0:
+            prev_balance = parse_money(str(cleaned[-1].get("balance", "")))
+            if prev_balance != 0.0 and abs(balance - prev_balance) <= 0.01:
+                removed += 1
+                continue
+
+        cleaned.append(tx)
+
+    if removed:
+        print(f"DEBUG [GTBANK/GTCO Cleanup]: Removed {removed} static-balance continuation rows.")
+    return cleaned
+
+
+def repair_amounts_from_running_balance(transactions: List[Dict]) -> List[Dict]:
+    """Use the printed running balance to repair small GT amount-column leaks."""
+    repaired = 0
+    prev_balance = None
+
+    for tx in transactions:
+        debit = parse_money(str(tx.get("debit", "")))
+        credit = parse_money(str(tx.get("credit", "")))
+        balance = parse_money(str(tx.get("balance", "")))
+
+        if prev_balance is not None and balance != 0.0:
+            expected = round(prev_balance + credit - debit, 2)
+            gap = round(balance - expected, 2)
+
+            if abs(gap) > 0.02:
+                if debit > 0 and credit > 0 and abs(gap + credit) <= 0.02:
+                    tx["credit"] = 0.0
+                    repaired += 1
+                elif debit > 0 and credit == 0 and gap < 0 and abs(gap) <= 1000.0:
+                    tx["debit"] = round(debit + abs(gap), 2)
+                    repaired += 1
+                elif credit > 0 and debit == 0 and gap > 0 and abs(gap) <= 1000.0:
+                    tx["credit"] = round(credit + gap, 2)
+                    repaired += 1
+
+        if balance != 0.0:
+            prev_balance = balance
+
+    if repaired:
+        print(f"DEBUG [GTBANK/GTCO Cleanup]: Repaired {repaired} amount cells from running balance.")
+    return transactions
+
+
+def pymupdf_words_for_page(doc: Any, page_index: int) -> List[Dict[str, Any]]:
+    """Return visible-page words in pdfplumber's word shape."""
+    page = doc[page_index]
+    words = []
+    page_height = float(page.rect.height)
+    for w in page.get_text("words"):
+        text = (w[4] or "").strip()
+        if not text:
+            continue
+        words.append({
+            "text": text,
+            "x0": float(w[0]),
+            "top": float(w[1]),
+            "x1": float(w[2]),
+            "bottom": float(w[3]),
+            "doctop": float(w[1]) + page_index * page_height,
+        })
+    return words
 
 
 def parse_statement_metadata(text: str) -> Dict[str, Any]:
