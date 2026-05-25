@@ -311,9 +311,21 @@ def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
                 full_text,
                 flags=re.I,
             )
+            if not footer_match:
+                footer_match = re.search(
+                    r"\n\s*([0-9]{1,3}(?:,[0-9]{3})*\.\d)\s+([0-9]{1,3}(?:,[0-9]{3})*\.)\s*\n\s*(\d)\s+(\d{2})\s*\n\s*\d+\s+of\s+\d+",
+                    full_text,
+                    flags=re.I,
+                )
             if footer_match:
-                footer_debit = _num(footer_match.group(1))
-                footer_credit = _num(footer_match.group(2))
+                if footer_match.lastindex and footer_match.lastindex >= 4:
+                    raw_footer_debit = footer_match.group(1) + footer_match.group(3)
+                    raw_footer_credit = footer_match.group(2) + footer_match.group(4)
+                else:
+                    raw_footer_debit = footer_match.group(1)
+                    raw_footer_credit = footer_match.group(2)
+                footer_debit = _num(raw_footer_debit)
+                footer_credit = _num(raw_footer_credit)
                 if footer_debit is not None:
                     metadata["statement_total_debit"] = footer_debit
                 if footer_credit is not None:
