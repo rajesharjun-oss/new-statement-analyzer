@@ -261,6 +261,65 @@ def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
             
         # Otherwise fallback to the standard parser
         return parse_date_smart(s)
+
+    def _num(tok: str) -> float | None:
+        if not tok:
+            return None
+        try:
+            return float(re.sub(r"[^\d.\-]", "", tok))
+        except Exception:
+            return None
+
+    def _enrich_access_metadata(pdf_handle: pdfplumber.PDF):
+        try:
+            page_texts = [(p.extract_text() or "") for p in pdf_handle.pages]
+            full_text = "\n".join(page_texts)
+            compact = re.sub(r"\s+", " ", full_text)
+
+            currency_match = re.search(
+                r"\bCurrency\s+(.+?)\s+(?:Total\s+Withdrawals|Account\s+Name|Closing\s+Balance)",
+                compact,
+                flags=re.I,
+            )
+            if currency_match:
+                raw_currency = currency_match.group(1).strip().upper()
+                if "DOLLAR" in raw_currency or raw_currency == "USD":
+                    metadata["currency"] = "USD"
+                elif "NAIRA" in raw_currency or raw_currency in {"NGN", "N"}:
+                    metadata["currency"] = "NGN"
+
+            period_match = re.search(
+                r"Statement\s+for\s+\w+\s+(.+?)\s+and\s+\w+\s+(.+?)\s+Opening\s+Balance",
+                compact,
+                flags=re.I,
+            )
+            if period_match:
+                start_dt = pd.to_datetime(period_match.group(1), errors="coerce")
+                end_dt = pd.to_datetime(period_match.group(2), errors="coerce")
+                if pd.notna(start_dt) and pd.notna(end_dt):
+                    metadata["statement_period"] = f"{start_dt.strftime('%d-%b-%Y')} to {end_dt.strftime('%d-%b-%Y')}"
+
+            acct_match = re.search(r"\bAccount\s+No\s+(\d{10,12})\b", compact, flags=re.I)
+            if acct_match:
+                metadata["account_no"] = acct_match.group(1)
+
+            # Some Access USD statements show transaction-count summary labels at
+            # the top, while the actual debit/credit totals are printed as the
+            # final two money values just before "x of y".
+            footer_match = re.search(
+                r"\n\s*([0-9]{1,3}(?:,[0-9]{3})*\.\d{2})\s+([0-9]{1,3}(?:,[0-9]{3})*\.\d{2})\s*\n\s*\d+\s+of\s+\d+",
+                full_text,
+                flags=re.I,
+            )
+            if footer_match:
+                footer_debit = _num(footer_match.group(1))
+                footer_credit = _num(footer_match.group(2))
+                if footer_debit is not None:
+                    metadata["statement_total_debit"] = footer_debit
+                if footer_credit is not None:
+                    metadata["statement_total_credit"] = footer_credit
+        except Exception as e:
+            print(f"DEBUG [Access]: Metadata enrichment skipped: {e}")
     
     txns = []
     
@@ -273,6 +332,8 @@ def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
         _auto_close = False
         
     try:
+        _enrich_access_metadata(_pdf_handle)
+
         # Dynamic cuts: start with None, then update on each page if a header is found
         cuts = None
         
