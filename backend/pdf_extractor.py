@@ -996,6 +996,35 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 _gemini_key = os.getenv("GEMINI_API_KEY")
                 _anthropic_key = os.getenv("ANTHROPIC_API_KEY")
 
+                # Prefer deterministic local OCR for scanned UBA statements.
+                # The generic AI fallback can return plausible rows but miss UBA
+                # summary totals and account metadata.
+                try:
+                    from ocr_helper import extract_pdf_text_with_tesseract
+                    preview_text = extract_pdf_text_with_tesseract(str(pdf_path), max_pages=min(2, len(pdf_pages)))
+                except Exception:
+                    preview_text = ""
+                preview_upper = preview_text.upper()
+                is_uba_ocr = (
+                    "UNITED BANK FOR AFRICA" in preview_upper
+                    or re.search(r"\bUBA\b", preview_upper) is not None
+                    or (
+                        "ACCOUNT SUMMARY" in preview_upper
+                        and "TOTAL DEBIT" in preview_upper
+                        and "TRANS DATE" in preview_upper
+                    )
+                )
+                if bank_identifier == "uba" or (bank_identifier in {"auto", "generic", "unknown"} and is_uba_ocr):
+                    try:
+                        page_limit = min(20, len(pdf_pages))
+                        from local_ocr_parsers import parse_uba_tesseract_pdf
+                        local_txns, local_meta = parse_uba_tesseract_pdf(str(pdf_path), max_pages=page_limit)
+                        if local_txns:
+                            print(f"DEBUG: Tesseract UBA parser extracted {len(local_txns)} txns.")
+                            return [{"transactions": normalize_remarks(local_txns), "metadata": {**metadata, **local_meta}}]
+                    except Exception as e:
+                        print(f"DEBUG: Deterministic UBA OCR parse failed: {e}")
+
                 if GEMINI_AVAILABLE and _gemini_key and _anthropic_key and not is_searchable:
                     print(f"DEBUG: Scanned PDF detected. Trying Gemini OCR → Claude extraction (2-stage pipeline)...")
                     try:

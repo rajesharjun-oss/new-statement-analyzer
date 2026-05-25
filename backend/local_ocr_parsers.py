@@ -45,6 +45,25 @@ def _extract_summary(text: str) -> Dict[str, Any]:
         value = find(label)
         if value is not None:
             metadata[key] = value
+
+    account_match = re.search(r"\bAccount\s+Number\s+(\d{10,12})\b", compact, flags=re.I)
+    if account_match:
+        metadata["account_no"] = account_match.group(1)
+        metadata["account_number"] = account_match.group(1)
+
+    period_match = re.search(
+        r"\b([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})\s+to\s+([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})\b",
+        compact,
+        flags=re.I,
+    )
+    if period_match:
+        metadata["statement_period"] = f"{period_match.group(1)} to {period_match.group(2)}"
+
+    name_match = re.search(r"Bank Statement\s+(.+?)\s+No\s+\d+", compact, flags=re.I)
+    if not name_match:
+        name_match = re.search(r"Hello\s+(.+?),\s+Here is your Account Summary", compact, flags=re.I)
+    if name_match:
+        metadata["account_name"] = re.sub(r"\s+", " ", name_match.group(1)).strip()
     return metadata
 
 
