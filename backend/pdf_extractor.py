@@ -687,6 +687,14 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
     print(f"DEBUG: extract_transactions called with bank_identifier='{bank_identifier}'")
     if config is None:
         config = {}
+    bank_identifier = (bank_identifier or "auto").strip().lower()
+    bank_aliases = {
+        "accessbank": "access",
+        "access_bank": "access",
+        "access-bank": "access",
+        "access bank": "access",
+    }
+    bank_identifier = bank_aliases.get(bank_identifier, bank_identifier)
     
     all_rows: List[Dict[str, Any]] = []
     metadata: Dict[str, Any] = {
