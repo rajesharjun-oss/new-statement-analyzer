@@ -499,7 +499,6 @@ export default function App() {
                >
                   AI Converter
                </button>
-               <Badge variant="warning" className="text-[10px]">Under Maintenance</Badge>
             </div>
 
             {activeTab === "converter" ? (
