@@ -776,6 +776,9 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                         combined_text += "\n" + (p.extract_text() or "")
                 
                 bank_identifier = detect_template(combined_text)
+                if bank_identifier in {"generic", "unknown"} and "uba" in Path(pdf_path).name.lower():
+                    bank_identifier = "uba"
+                    print("DEBUG: UBA detected from filename hint for scanned/blank text PDF.")
 
             # HARD GUARD: GTBank only allowed if positively detected (with 2+ signals OR explicit header name)
             if STRICT_TEMPLATE_MODE and bank_identifier == "gtbank":
@@ -857,7 +860,23 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                      uba_txns, uba_meta = extract_uba_via_coordinates(Path(pdf_path), metadata, pdf=pdf)
                      if uba_txns: return [{"transactions": normalize_remarks(uba_txns), "metadata": uba_meta}]
                  
-                 # Scanned or coordinate failure -> AI fallback (UBA only; First Bank has no AI path)
+                 # Scanned or coordinate failure -> deterministic UBA OCR first.
+                 # The vision fallback can return plausible-looking rows, but for
+                 # UBA templates the Tesseract parser is the trusted totals path.
+                 try:
+                     from local_ocr_parsers import parse_uba_tesseract_pdf
+                     page_limit = min(20, len(pdf_pages))
+                     local_txns, local_meta = parse_uba_tesseract_pdf(str(pdf_path), max_pages=page_limit)
+                     if local_txns:
+                         print(f"DEBUG: Tesseract UBA parser extracted {len(local_txns)} txns.")
+                         return [{
+                             "transactions": normalize_remarks(local_txns),
+                             "metadata": {**metadata, **local_meta, "method": "tesseract_uba"},
+                         }]
+                 except Exception as e:
+                     print(f"DEBUG: Deterministic UBA OCR parse failed before AI fallback: {e}")
+
+                 # AI fallback (UBA only; First Bank has no AI path)
                  print("DEBUG: UBA PDF requires AI extraction...")
                  txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='uba', max_pages=15)
                  if txns:
@@ -928,6 +947,36 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 # Hardened Fallback: If 0 transactions found, trigger AI cascade
                 _gemini_key_eco = os.getenv("GEMINI_API_KEY")
                 _anthropic_key_eco = os.getenv("ANTHROPIC_API_KEY")
+
+                # Scanned UBA can look generic to native PDF text extractors.
+                # Prefer deterministic local OCR before any generic AI fallback,
+                # otherwise AI may return plausible but wrong UBA rows/totals.
+                if not is_searchable:
+                    try:
+                        from ocr_helper import extract_pdf_text_with_tesseract
+                        preview_text = extract_pdf_text_with_tesseract(str(pdf_path), max_pages=min(2, len(pdf_pages)))
+                    except Exception:
+                        preview_text = ""
+                    preview_upper = preview_text.upper()
+                    is_uba_ocr = (
+                        "UNITED BANK FOR AFRICA" in preview_upper
+                        or re.search(r"\bUBA\b", preview_upper) is not None
+                        or (
+                            "ACCOUNT SUMMARY" in preview_upper
+                            and "TOTAL DEBIT" in preview_upper
+                            and "TRANS DATE" in preview_upper
+                        )
+                    )
+                    if is_uba_ocr:
+                        try:
+                            page_limit = min(20, len(pdf_pages))
+                            from local_ocr_parsers import parse_uba_tesseract_pdf
+                            local_txns, local_meta = parse_uba_tesseract_pdf(str(pdf_path), max_pages=page_limit)
+                            if local_txns:
+                                print(f"DEBUG: Tesseract UBA parser extracted {len(local_txns)} txns.")
+                                return [{"transactions": normalize_remarks(local_txns), "metadata": {**metadata, **local_meta}}]
+                        except Exception as e:
+                            print(f"DEBUG: Deterministic UBA OCR parse failed in generic path: {e}")
 
                 # Stage 1: Gemini OCR → Claude extraction (2-stage, preferred for scanned PDFs)
                 if GEMINI_AVAILABLE and _gemini_key_eco and _anthropic_key_eco and not is_searchable:
