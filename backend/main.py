@@ -57,6 +57,26 @@ def num(x):
     except:
         return 0.0
 
+def normalize_bank_id(bank: str) -> str:
+    value = (bank or "auto").strip().lower()
+    aliases = {
+        "accessbank": "access",
+        "access_bank": "access",
+        "access-bank": "access",
+        "access bank": "access",
+    }
+    return aliases.get(value, value)
+
+def access_result_score(result: dict) -> tuple:
+    txns = result.get("transactions") or []
+    meta = result.get("metadata") or {}
+    validation = validate_totals(txns, meta)
+    return (
+        1 if validation.get("totals_match") is True else 0,
+        1 if meta.get("statement_total_debit") is not None and meta.get("statement_total_credit") is not None else 0,
+        len(txns),
+    )
+
 @app.post("/analyze")
 async def analyze_statement(
     request: Request,
@@ -64,7 +84,11 @@ async def analyze_statement(
     bank: str = Form("auto")  # auto, gtbank, accessbank, firstbank, zenith, uba, etc.
 ):
     print(f"\n{'!'*40}")
-    print(f"!!! [ANALYZE-FORENSIC] Request received: {file.filename} (Bank: {bank}) !!!")
+    normalized_bank = normalize_bank_id(bank)
+    filename_lower = (file.filename or "").lower()
+    access_upload_hint = normalized_bank == "access" or "access" in filename_lower
+
+    print(f"!!! [ANALYZE-FORENSIC] Request received: {file.filename} (Bank: {bank} -> {normalized_bank}) !!!")
     print(f"{'!'*40}\n")
     
     # Audit file size
@@ -98,7 +122,28 @@ async def analyze_statement(
         # Step 1: Extract transactions (Non-blocking background thread)
         import asyncio
         if file_ext == ".pdf":
-            statement_results = await asyncio.to_thread(extract_transactions, stored_path, bank_identifier=bank.lower())
+            statement_results = await asyncio.to_thread(extract_transactions, stored_path, bank_identifier=normalized_bank)
+
+            # Access PDFs must not be allowed to surface a weaker generic parse.
+            # On Cloud Run, auto-detection can occasionally choose a partial path
+            # before the Access coordinate engine wins locally.
+            if access_upload_hint:
+                try:
+                    access_results = await asyncio.to_thread(extract_transactions, stored_path, bank_identifier="access")
+                    access_candidates = [r for r in access_results if r.get("transactions")]
+                    if access_candidates:
+                        best_access = max(access_candidates, key=access_result_score)
+                        current_candidates = [r for r in statement_results if r.get("transactions")]
+                        best_current = max(current_candidates, key=access_result_score) if current_candidates else None
+                        if best_current is None or access_result_score(best_access) > access_result_score(best_current):
+                            print(
+                                "WARN: Access primary route replaced weaker parse "
+                                f"({len(best_current.get('transactions', [])) if best_current else 0} -> "
+                                f"{len(best_access.get('transactions', []))} transactions)."
+                            )
+                            statement_results = [best_access]
+                except Exception as e:
+                    print(f"WARN: Access primary route failed before validation: {e}")
         else:
             # Excel/CSV handling
             txns, meta = await asyncio.to_thread(extract_excel_transactions, stored_path)
@@ -159,7 +204,7 @@ async def analyze_statement(
             # Access route and keep the candidate only if it validates cleanly.
             if (
                 file_ext == ".pdf"
-                and meta.get("bank") == "access"
+                and (meta.get("bank") == "access" or access_upload_hint)
                 and validation_result.get("totals_match") is False
                 and meta.get("statement_total_debit") is not None
                 and meta.get("statement_total_credit") is not None
@@ -295,7 +340,7 @@ async def analyze_statement(
 
         return {
             "file_id": file_id, 
-            "backend_version": "v2.1-STABLE-FINAL-CORP-V7",
+            "backend_version": "v2.1-STABLE-FINAL-CORP-V8",
             "summary": {
                 **summary,
                 "auditSummary": audit_summary
