@@ -3,6 +3,33 @@ from typing import Any, Dict, List, Tuple
 
 import pdfplumber
 
+try:
+    import fitz  # PyMuPDF
+    PYMUPDF_AVAILABLE = True
+except ImportError:
+    fitz = None
+    PYMUPDF_AVAILABLE = False
+
+
+def _pymupdf_words(doc: Any, page_index: int) -> List[Dict[str, Any]]:
+    """Return visible-page words in pdfplumber's word shape."""
+    page = doc[page_index]
+    page_height = float(page.rect.height)
+    words: List[Dict[str, Any]] = []
+    for w in page.get_text("words"):
+        text = (w[4] or "").strip()
+        if not text:
+            continue
+        words.append({
+            "text": text,
+            "x0": float(w[0]),
+            "top": float(w[1]),
+            "x1": float(w[2]),
+            "bottom": float(w[3]),
+            "doctop": float(w[1]) + page_index * page_height,
+        })
+    return words
+
 
 def extract_firstbank_via_coordinates(
     pdf_path: Path,
@@ -25,10 +52,26 @@ def extract_firstbank_via_coordinates(
 
     all_rows: List[Dict[str, Any]] = []
     cuts = None
+    fast_doc = None
+    use_fast_words = False
 
     try:
+        if len(pdf.pages) > 100 and PYMUPDF_AVAILABLE:
+            try:
+                fast_doc = fitz.open(pdf_path)
+                use_fast_words = True
+                print("DEBUG: FirstBank fast mode using PyMuPDF visible-page words.")
+            except Exception as exc:
+                print(f"DEBUG: FirstBank fast mode unavailable: {exc}")
+                fast_doc = None
+                use_fast_words = False
+
         for page_num, page in enumerate(pdf.pages, start=1):
-            words = page.extract_words(x_tolerance=2, y_tolerance=2)
+            words = (
+                _pymupdf_words(fast_doc, page_num - 1)
+                if use_fast_words and fast_doc is not None
+                else page.extract_words(x_tolerance=2, y_tolerance=2)
+            )
             if not words:
                 continue
 
@@ -62,5 +105,10 @@ def extract_firstbank_via_coordinates(
 
         return cleaned, metadata
     finally:
+        if fast_doc is not None:
+            try:
+                fast_doc.close()
+            except Exception:
+                pass
         if _auto_close:
             pdf.close()

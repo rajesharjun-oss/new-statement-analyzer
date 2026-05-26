@@ -569,6 +569,14 @@ def detect_template(first_page_text: str) -> str:
         return "uba"
     if "first bank" in header_text or "firstbank" in header_text or " fbn " in header_text:
         return "firstbank"
+    firstbank_structural = (
+        ("withdrawal(dr)" in text or "withdrawal (dr)" in text) and
+        ("deposit(cr)" in text or "deposit (cr)" in text) and
+        ("ref. number" in text or "ref number" in text) and
+        "transaction details" in text
+    )
+    if firstbank_structural:
+        return "firstbank"
     if "fidelity" in header_text:
         return "fidelity"
     if "fcmb" in header_text or "first city monument" in header_text:
@@ -1956,6 +1964,18 @@ def parse_statement_metadata(text: str) -> Dict[str, Any]:
     m = re.search(r"Statement Period\s*[:\s]*([\d\-A-Za-z\s]+to[\d\-A-Za-z\s]+)", text, re.I)
     if m:
         meta["statement_period"] = m.group(1).strip()
+    else:
+        m = re.search(
+            r"(?:statement\s+for\s+the\s+)?period\s*:\s*"
+            r"(\d{1,2}[-/][A-Za-z]{3}[-/]\d{2,4})\s*(?:to|-)\s*"
+            r"(\d{1,2}[-/][A-Za-z]{3}[-/]\d{2,4})",
+            text,
+            re.I,
+        )
+        if m:
+            start = parse_date_smart(m.group(1)) or m.group(1)
+            end = parse_date_smart(m.group(2)) or m.group(2)
+            meta["statement_period"] = f"{start} to {end}"
 
     # Try various patterns for totals
     # Pattern 1: "Total Debit 1,234,567.89"
@@ -3293,7 +3313,8 @@ def detect_firstbank_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[flo
     if not best_row or max_score < 3:
         return None
 
-    print(f"DEBUG: Found FirstBank Header Row: {[w['text'] for w in best_row['words']]}")
+    if os.getenv("FIRSTBANK_DEBUG_LAYOUT"):
+        print(f"DEBUG: Found FirstBank Header Row: {[w['text'] for w in best_row['words']]}")
 
     # Extract columns
     sorted_words = sorted(best_row["words"], key=lambda w: w["x0"])
