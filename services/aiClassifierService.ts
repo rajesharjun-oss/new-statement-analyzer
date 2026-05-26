@@ -8,6 +8,7 @@ export interface AIClassificationResult {
   confidence: "High" | "Medium" | "Low";
   reason: string;
   reviewRequired: boolean;
+  decisionSource?: "AI" | "SYSTEM";
 }
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -81,8 +82,9 @@ export async function classifyTransactionsWithAI({
           category: "Review Required",
           taxAuthority: template.id === "firs-sirs-na" ? "Review Required" : null,
           confidence: "Low",
-          reason: "AI classification unavailable or invalid; manual review required.",
-          reviewRequired: true
+          reason: "No deterministic rule matched and AI provider is unavailable.",
+          reviewRequired: true,
+          decisionSource: "SYSTEM"
         }));
       }
     }
@@ -98,7 +100,7 @@ export async function classifyTransactionsWithAI({
       taxAuthority: ai.taxAuthority ?? t.taxAuthority ?? null,
       confidence: ai.confidence || "Low",
       reason: ai.reason || "Classified by AI fallback.",
-      decisionSource: "AI",
+      decisionSource: ai.decisionSource || "AI",
       reviewRequired: Boolean(ai.reviewRequired || ai.confidence === "Low")
     };
   });

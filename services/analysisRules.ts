@@ -1,7 +1,46 @@
 import { AnalysisTemplate, ClassifiedTransaction, ConfidenceLabel, ReconciliationCheck, Transaction } from "../types";
 
 const reviewCategory = "Review Required";
-const highNoise = ["opening balance", "closing balance", "balance brought forward", "stamp duty", "sms", "vat on bank", "account maintenance", "charge", "reversal", "reversed"];
+const notApplicableKeywords = [
+  "stamp duty",
+  "sms alert",
+  "account maintenance",
+  "acct maint",
+  "vat on bank charge",
+  "value added tax on charge",
+  "card charge",
+  "transfer charge",
+  "commission",
+  "nip charge",
+  "pos stamp duty",
+  "reversal",
+  "reversed",
+  "failed",
+  "opening balance",
+  "closing balance",
+  "internal transfer",
+  "own account transfer",
+  "balance brought forward"
+];
+const strongEntityKeywords = [
+  "ltd",
+  "limited",
+  "plc",
+  "enterprise",
+  "enterprises",
+  "ventures",
+  "services",
+  "company",
+  "incorporated",
+  "nigeria limited",
+  "firs",
+  "federal inland revenue",
+  "wht",
+  "cit",
+  "tax payment"
+];
+const salaryKeywords = ["salary", "payroll", "staff salary", "wages"];
+const commonTransferChargeAmounts = [10, 26.88, 50, 53.75, 100, 107.5];
 
 function money(value: unknown): number {
   const n = typeof value === "number" ? value : Number(String(value ?? "0").replace(/,/g, ""));
@@ -10,6 +49,20 @@ function money(value: unknown): number {
 
 function tokenizeKeywords(value: string): string[] {
   return value.split(",").map(k => k.trim()).filter(Boolean);
+}
+
+export function normalizeNarration(value: string): string {
+  return String(value || "")
+    .normalize("NFKC")
+    .replace(/[\u00a0\u1680\u180e\u2000-\u200d\u2028\u2029\u202f\u205f\u2060\ufeff\u00ad]/g, " ")
+    .replace(/[‐‑‒–—―]/g, "-")
+    .replace(/[’‘`´]/g, "'")
+    .replace(/[“”]/g, "\"")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}@&*'/-]+/gu, " ")
+    .replace(/[-_/]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export function normalizeTransactions(transactions: Transaction[], sourceFileName: string): ClassifiedTransaction[] {
@@ -50,18 +103,171 @@ function appliesToScope(txn: ClassifiedTransaction, scope: "debit" | "credit" | 
   return (txn.credit || 0) > 0;
 }
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function keywordMatches(normalizedText: string, keyword: string) {
+  const normalizedKeyword = normalizeNarration(keyword);
+  if (!normalizedKeyword) return false;
+  const words = normalizedKeyword.split(" ").filter(Boolean);
+  if (words.length === 1) {
+    return new RegExp(`(^|\\s)${escapeRegExp(normalizedKeyword)}(?=\\s|$)`).test(normalizedText);
+  }
+  return normalizedText.includes(normalizedKeyword);
+}
+
 function includesAny(text: string, keywords: string[]) {
-  return keywords.some(keyword => {
-    const k = keyword.toLowerCase().trim();
-    if (!k) return false;
-    return text.includes(k);
-  });
+  return keywords.some(keyword => keywordMatches(text, keyword));
+}
+
+function hasStrongEntityIndicator(text: string) {
+  return includesAny(text, strongEntityKeywords);
+}
+
+function isPosPurchase(text: string) {
+  return keywordMatches(text, "pos purchase") || keywordMatches(text, "pos purch") || text.startsWith("pos ");
+}
+
+function isCommonTransferCharge(transaction: ClassifiedTransaction, text: string) {
+  const debit = money(transaction.debit);
+  if (debit <= 0 || money(transaction.credit) > 0) return false;
+  const isCommonAmount = commonTransferChargeAmounts.some(amount => Math.abs(debit - amount) <= 0.01);
+  if (!isCommonAmount || hasStrongEntityIndicator(text)) return false;
+  return includesAny(text, ["nip transfer", "nip", "cob trf", "trf", "transfer", "interbank transfer", "bank transfer", "others"]);
+}
+
+function isNotApplicable(transaction: ClassifiedTransaction, text: string) {
+  return includesAny(text, notApplicableKeywords) || isCommonTransferCharge(transaction, text);
 }
 
 function inferIndividualName(text: string) {
-  if (includesAny(text, ["ltd", "limited", "plc", "company", "enterprise", "ventures", "services"])) return false;
-  const tokens = text.replace(/[^a-z\s]/g, " ").split(/\s+/).filter(Boolean);
-  return tokens.length >= 2 && tokens.some(t => t.length > 3) && !includesAny(text, highNoise);
+  if (hasStrongEntityIndicator(text) || isPosPurchase(text) || isNotApplicable({ debit: 0, credit: 0 } as ClassifiedTransaction, text)) return false;
+  if (includesAny(text, ["vendor", "vendors", "supplier", "subscription", "internet", "merchant"])) return false;
+  if (includesAny(text, ["mr", "mrs", "miss", "dr"])) return true;
+
+  const cleaned = text
+    .replace(/\b(cob|trf|transfer|to|from|nip|neft|payment|paid|for|on|behalf|beh)\b/g, " ")
+    .replace(/[@*&0-9]+/g, " ");
+  const tokens = cleaned.split(/\s+/).filter(t => /^[a-z]{3,}$/.test(t));
+  return tokens.length >= 2 && tokens.slice(0, 4).some(t => t.length > 3);
+}
+
+function firsTaxAuthority(category: string) {
+  return (category === "FIRS" || category === "SIRS" || category === "Not Applicable" || category === "Review Required")
+    ? category
+    : null;
+}
+
+function applyFirsSirsRules(transaction: ClassifiedTransaction, template: AnalysisTemplate): ClassifiedTransaction {
+  const text = normalizeNarration(`${transaction.description} ${transaction.reference || ""} ${transaction.rawText || ""}`);
+
+  if (isNotApplicable(transaction, text)) {
+    return {
+      ...transaction,
+      category: "Not Applicable",
+      taxAuthority: "Not Applicable",
+      confidence: "High",
+      reason: isCommonTransferCharge(transaction, text)
+        ? "Matched common bank transfer/NIP charge pattern."
+        : "Matched non-taxable bank item before entity classification.",
+      decisionSource: "RULE",
+      reviewRequired: false
+    };
+  }
+
+  if (isPosPurchase(text)) {
+    if (hasStrongEntityIndicator(text)) {
+      return {
+        ...transaction,
+        category: "FIRS",
+        taxAuthority: "FIRS",
+        confidence: "High",
+        reason: "POS narration contains a strong company/entity indicator.",
+        decisionSource: "RULE",
+        reviewRequired: false
+      };
+    }
+    return {
+      ...transaction,
+      category: reviewCategory,
+      taxAuthority: "Review Required",
+      confidence: "Low",
+      reason: "POS merchant name has no strong company/entity indicator.",
+      decisionSource: "SYSTEM",
+      reviewRequired: template.markUncertainAsReview
+    };
+  }
+
+  if (hasStrongEntityIndicator(text)) {
+    return {
+      ...transaction,
+      category: "FIRS",
+      taxAuthority: "FIRS",
+      confidence: "High",
+      reason: "Matched strong company/entity or tax authority indicator.",
+      decisionSource: "RULE",
+      reviewRequired: false
+    };
+  }
+
+  if (includesAny(text, salaryKeywords)) {
+    if (template.treatSalaryAsSirs) {
+      return {
+        ...transaction,
+        category: "SIRS",
+        taxAuthority: "SIRS",
+        confidence: "Medium",
+        reason: "Salary/payroll setting treats staff payments as SIRS.",
+        decisionSource: "RULE",
+        reviewRequired: false
+      };
+    }
+    return {
+      ...transaction,
+      category: reviewCategory,
+      taxAuthority: "Review Required",
+      confidence: "Low",
+      reason: "Salary/payroll payment requires review because salary-as-SIRS is off.",
+      decisionSource: "SYSTEM",
+      reviewRequired: template.markUncertainAsReview
+    };
+  }
+
+  const sirsRule = template.categories.find(rule => rule.outputLabel === "SIRS");
+  if (sirsRule && includesAny(text, sirsRule.includeKeywords) && !includesAny(text, sirsRule.excludeKeywords)) {
+    return {
+      ...transaction,
+      category: "SIRS",
+      taxAuthority: "SIRS",
+      confidence: "Medium",
+      reason: "Matched individual-payment rule keyword.",
+      decisionSource: "RULE",
+      reviewRequired: false
+    };
+  }
+
+  if (inferIndividualName(text)) {
+    return {
+      ...transaction,
+      category: "SIRS",
+      taxAuthority: "SIRS",
+      confidence: "Medium",
+      reason: "Narration resembles a personal-name payment.",
+      decisionSource: "RULE",
+      reviewRequired: false
+    };
+  }
+
+  return {
+    ...transaction,
+    category: reviewCategory,
+    taxAuthority: "Review Required",
+    confidence: "Low",
+    reason: "No deterministic rule matched.",
+    decisionSource: "SYSTEM",
+    reviewRequired: template.markUncertainAsReview
+  };
 }
 
 export function applyDeterministicRules(
@@ -79,7 +285,11 @@ export function applyDeterministicRules(
     };
   }
 
-  const text = `${transaction.description} ${transaction.reference || ""}`.toLowerCase();
+  if (template.id === "firs-sirs-na") {
+    return applyFirsSirsRules(transaction, template);
+  }
+
+  const text = normalizeNarration(`${transaction.description} ${transaction.reference || ""} ${transaction.rawText || ""}`);
   const rules = [...template.categories].sort((a, b) => b.priority - a.priority);
 
   for (const rule of rules) {
@@ -88,7 +298,7 @@ export function applyDeterministicRules(
     const exclude = rule.excludeKeywords.length > 0 && includesAny(text, rule.excludeKeywords);
     if (include && !exclude && rule.includeKeywords.length > 0) {
       const taxAuthority = template.id === "firs-sirs-na"
-        ? (rule.outputLabel === "FIRS" || rule.outputLabel === "SIRS" || rule.outputLabel === "Not Applicable" ? rule.outputLabel : null)
+        ? firsTaxAuthority(rule.outputLabel)
         : null;
       return {
         ...transaction,
@@ -100,18 +310,6 @@ export function applyDeterministicRules(
         reviewRequired: false
       };
     }
-  }
-
-  if (template.id === "firs-sirs-na" && inferIndividualName(text) && transaction.debit > 0) {
-    return {
-      ...transaction,
-      category: "SIRS",
-      taxAuthority: "SIRS",
-      confidence: "Medium",
-      reason: "Narration resembles a personal-name payment.",
-      decisionSource: "RULE",
-      reviewRequired: false
-    };
   }
 
   return {

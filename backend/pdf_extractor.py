@@ -1886,6 +1886,35 @@ def parse_statement_metadata(text: str) -> Dict[str, Any]:
 
     meta = {}
 
+    # Fidelity statements place the customer name immediately after the
+    # account/currency/type block, before the address and Transactions header.
+    if re.search(r"\bfidelitybank\.ng\b|\bFidelity\s+Bank\b", text, re.I):
+        m = re.search(
+            r"\bType\s*:\s*[^\n\r]+[\r\n]+([^\n\r]+)(?:[\r\n]+|$)",
+            text,
+            re.I,
+        )
+        if m:
+            candidate = clean_text(m.group(1))
+            if candidate and not re.search(r"\b(account|currency|type|transactions?)\b", candidate, re.I):
+                meta["account_name"] = candidate
+
+        m = re.search(
+            r"\bFrom\s+(.+?)\s+to\s+(.+?)(?:[\r\n]+Account\b|\s+Account\s*:)",
+            text,
+            re.I,
+        )
+        if m:
+            start = clean_text(m.group(1))
+            end = clean_text(m.group(2))
+            if start and end:
+                start_dt = pd.to_datetime(start, errors="coerce", dayfirst=True)
+                end_dt = pd.to_datetime(end, errors="coerce", dayfirst=True)
+                if pd.notna(start_dt) and pd.notna(end_dt):
+                    meta["statement_period"] = f"{start_dt.strftime('%d-%b-%Y')} to {end_dt.strftime('%d-%b-%Y')}"
+                else:
+                    meta["statement_period"] = f"{start} to {end}"
+
     # Access Bank summary fields are rendered as labels on one line and values
     # on following lines, so parse these before the generic one-line patterns.
     if re.search(r"\bAccount\s+Statement\b", text, re.I) and re.search(r"\bTOTAL\s+LODGEMENTS\b", text, re.I):

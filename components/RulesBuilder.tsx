@@ -54,6 +54,17 @@ export function RulesBuilder({
           onChange={(e) => onInstructionsChange(e.target.value)}
           placeholder="Write analysis instructions for ambiguous rows..."
         />
+        {template.id === "firs-sirs-na" && (
+          <label className="mt-3 flex items-center gap-3 rounded-[10px] border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-sm text-zinc-300">
+            <input
+              type="checkbox"
+              className="h-4 w-4 accent-[#9B87FF]"
+              checked={Boolean(template.treatSalaryAsSirs)}
+              onChange={(e) => onTemplateChange({ ...template, treatSalaryAsSirs: e.target.checked })}
+            />
+            Treat salary/payroll payments as SIRS
+          </label>
+        )}
       </Card>
 
       <Card className="overflow-hidden rounded-[12px]">

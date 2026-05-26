@@ -442,8 +442,9 @@ Rows:
                     "subCategory": None,
                     "taxAuthority": "Review Required" if template.get("id") == "firs-sirs-na" else None,
                     "confidence": "Low",
-                    "reason": "AI provider unavailable; manual review required.",
+                    "reason": "No deterministic rule matched and AI provider is unavailable.",
                     "reviewRequired": True,
+                    "decisionSource": "SYSTEM",
                 }
                 for row in rows
             ]
@@ -494,6 +495,7 @@ Rows:
                 "confidence": item.get("confidence") if item.get("confidence") in ["High", "Medium", "Low"] else "Low",
                 "reason": item.get("reason") or "AI classification.",
                 "reviewRequired": bool(item.get("reviewRequired") or item.get("confidence") == "Low"),
+                "decisionSource": "AI",
             })
         return {"results": cleaned}
     except Exception as e:

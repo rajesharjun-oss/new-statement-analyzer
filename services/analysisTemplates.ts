@@ -1,9 +1,11 @@
 import { AnalysisTemplate } from "../types";
 
 const bankNoise = [
-  "bank charge", "charges", "vat on bank", "stamp duty", "account maintenance",
-  "sms", "card charge", "pos charge", "reversal", "reversed", "internal transfer",
-  "own account", "opening balance", "closing balance", "loan disbursement", "failed"
+  "stamp duty", "sms alert", "account maintenance", "acct maint", "vat on bank charge",
+  "value added tax on charge", "card charge", "transfer charge", "commission", "nip charge",
+  "pos stamp duty", "reversal", "reversed", "failed", "opening balance", "closing balance",
+  "internal transfer", "own account transfer", "bank charge", "charges", "vat on bank",
+  "sms", "pos charge", "own account", "loan disbursement"
 ];
 
 export const analysisTemplates: AnalysisTemplate[] = [
@@ -13,6 +15,7 @@ export const analysisTemplates: AnalysisTemplate[] = [
     description: "Classify debit transactions as company/entity payments, individual payments, or non-applicable bank items.",
     scope: "debit",
     markUncertainAsReview: true,
+    treatSalaryAsSirs: false,
     aiInstructions: "Classify all debit transactions into FIRS, SIRS, or Not Applicable. Put payments to companies under FIRS, payments to individuals under SIRS, and bank charges/internal transfers/reversals under Not Applicable. If unsure, mark Review Required.",
     categories: [
       {
@@ -21,7 +24,7 @@ export const analysisTemplates: AnalysisTemplate[] = [
         outputLabel: "FIRS",
         description: "Company, incorporated entity, tax authority, or formal business payment.",
         appliesTo: "debit",
-        includeKeywords: ["ltd", "limited", "plc", "company", " co ", "coy", "enterprises", "ventures", "services", "nigeria ltd", "firs", "wht", "vat", "cit", "tin", "tax", "federal inland revenue"],
+        includeKeywords: ["ltd", "limited", "plc", "enterprise", "enterprises", "ventures", "services", "company", "incorporated", "nigeria limited", "firs", "federal inland revenue", "wht", "cit", "tax payment"],
         excludeKeywords: bankNoise,
         priority: 90
       },
@@ -41,7 +44,7 @@ export const analysisTemplates: AnalysisTemplate[] = [
         outputLabel: "SIRS",
         description: "Likely individual or personal-name payments.",
         appliesTo: "debit",
-        includeKeywords: ["mr ", "mrs ", "miss ", "dr ", "salary", "allowance", "refund to", "transfer to"],
+        includeKeywords: ["mr", "mrs", "miss", "dr", "refund to individual"],
         excludeKeywords: ["ltd", "limited", "plc", "enterprise", "ventures", "company"],
         priority: 40
       }

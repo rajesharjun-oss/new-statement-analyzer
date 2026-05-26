@@ -17,6 +17,26 @@ function safeName(value: string) {
   return (value || "AI Analysis").replace(/[^a-z0-9]+/gi, "_").replace(/_+/g, "_");
 }
 
+function titleCaseFilePart(value: string, dropAnd = false) {
+  const words = safeName(value || "Unknown Org")
+    .replace(/^_+|_+$/g, "")
+    .split("_")
+    .filter(Boolean)
+    .filter(word => !(dropAnd && word.toLowerCase() === "and"));
+  if (!words.length) return "Unknown_Org";
+  return words.map(word => {
+    const upper = word.toUpperCase();
+    if (["FIRS", "SIRS", "VAT", "WHT", "CIT", "PLC", "LTD", "GTE", "NGN", "USD"].includes(upper)) return upper;
+    return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+  }).join("_");
+}
+
+function buildExportFileName(organizationName: string | undefined, templateName: string) {
+  const org = titleCaseFilePart(organizationName && organizationName !== "Unknown Org" ? organizationName : "Unknown Org", true);
+  const analysis = titleCaseFilePart(templateName || "AI Analysis");
+  return `${org}_${analysis}.xlsx`;
+}
+
 export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) {
   const [step, setStep] = useState(0);
   const [fileName, setFileName] = useState("");
@@ -47,7 +67,14 @@ export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) 
 
   const categorySummary = useMemo(() => calculateCategorySummary(classified).slice(0, 8), [classified]);
   const reviewCount = classified.filter(t => t.reviewRequired || t.confidence === "Low").length;
-  const outputFileName = `${safeName(extractedResult?.organizationName || "Statement")}_${safeName(template.name)}.xlsx`;
+  const outputFileName = buildExportFileName(extractedResult?.organizationName, template.name);
+  const isDebitOnlyTemplate = template.scope === "debit";
+  const outOfScopeCredits = classified
+    .filter(t => (t.category === "Out of Scope" || t.debit === 0) && (t.credit || 0) > 0)
+    .reduce((sum, t) => sum + (t.credit || 0), 0);
+  const visibleCategorySummary = isDebitOnlyTemplate
+    ? categorySummary.filter(row => !(row.category === "Out of Scope" && row.creditTotal > 0))
+    : categorySummary;
 
   const chooseTemplate = (id: string) => {
     setTemplateId(id);
@@ -142,7 +169,7 @@ export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) 
       customInstructions,
       openingBalance: extractedResult?.statement_summary?.opening_balance,
       closingBalance: extractedResult?.statement_summary?.closing_balance,
-      fileName: `${safeName(extractedResult?.organizationName || "Statement")}_${safeName(template.name)}.xlsx`
+      fileName: outputFileName
     });
   };
 
@@ -338,19 +365,37 @@ export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) 
           <AnalysisSummaryCards transactions={classified} reconciliation={reconciliation} />
           <div className="flex items-center gap-2">
             <BarChart3 className="w-4 h-4 text-[#9B87FF]" />
-            <h3 className="text-sm font-semibold text-white">Category Movement</h3>
+            <h3 className="text-sm font-semibold text-white">Category Totals</h3>
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-            {categorySummary.map(row => (
+            {visibleCategorySummary.map(row => (
               <Card key={row.category} className="p-4 rounded-[12px] bg-[#111318]/80">
                 <div className="flex items-center justify-between gap-3">
                   <div className="text-sm font-semibold text-white truncate">{row.category}</div>
                   <Badge variant="outline">{row.transactionCount}</Badge>
                 </div>
-                <div className="text-xs text-zinc-500 mt-3">Net movement</div>
-                <div className={`text-lg font-mono mt-1 ${row.netMovement >= 0 ? "text-[#3CDCAB]" : "text-[#FFB43C]"}`}>{row.netMovement.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+                <div className="mt-3 grid grid-cols-2 gap-3">
+                  <div>
+                    <div className="text-xs text-zinc-500">Debit total</div>
+                    <div className="text-lg font-mono mt-1 text-[#FFB43C]">{row.debitTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-zinc-500">Credit total</div>
+                    <div className="text-lg font-mono mt-1 text-[#3CDCAB]">{row.creditTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+                  </div>
+                </div>
               </Card>
             ))}
+            {isDebitOnlyTemplate && outOfScopeCredits > 0 && (
+              <Card className="p-4 rounded-[12px] bg-[#111318]/80 border-[#3CDCAB]/20">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm font-semibold text-white truncate">Out of Scope Credits</div>
+                  <Badge variant="outline">Credit</Badge>
+                </div>
+                <div className="text-xs text-zinc-500 mt-3">Credit total</div>
+                <div className="text-lg font-mono mt-1 text-[#3CDCAB]">{outOfScopeCredits.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+              </Card>
+            )}
           </div>
           <TransactionPreviewTable transactions={classified} filter={filter} onFilterChange={setFilter} onManualEdit={manualEdit} />
         </>

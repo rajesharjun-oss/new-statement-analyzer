@@ -49,6 +49,7 @@ export interface AnalysisTemplate {
   categories: AnalysisCategoryRule[];
   aiInstructions: string;
   markUncertainAsReview: boolean;
+  treatSalaryAsSirs?: boolean;
 }
 
 export interface ClassifiedTransaction extends Transaction {
