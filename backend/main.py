@@ -340,7 +340,7 @@ async def analyze_statement(
 
         return {
             "file_id": file_id, 
-            "backend_version": "v2.1-STABLE-FINAL-CORP-V8",
+            "backend_version": "v2.1-STABLE-FINAL-CORP-V9",
             "summary": {
                 **summary,
                 "auditSummary": audit_summary

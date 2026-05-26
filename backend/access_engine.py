@@ -51,7 +51,12 @@ def detect_columns_via_vision(pdf_path: Path, page_index: int = 0) -> Dict[str, 
         print(f"DEBUG [Access-Vision]: Vision detection failed: {e}")
     return None
 
-def detect_access_columns(words: List[Dict[str, Any]], bank_identifier: str = None, pdf_path: Path = None) -> Dict[str, Tuple[float, float]] | None:
+def detect_access_columns(
+    words: List[Dict[str, Any]],
+    bank_identifier: str = None,
+    pdf_path: Path = None,
+    allow_vision: bool = True,
+) -> Dict[str, Tuple[float, float]] | None:
     """
     Detect column boundaries for Access Bank.
     Handles multiple template variants including:
@@ -84,7 +89,7 @@ def detect_access_columns(words: List[Dict[str, Any]], bank_identifier: str = No
                 break
     
     if not header_words:
-        if pdf_path:
+        if pdf_path and allow_vision:
             print("DEBUG [Access]: No header words found. Trying AI Vision Fallback...")
             sys.stdout.flush()
             vision_cuts = detect_columns_via_vision(pdf_path)
@@ -113,7 +118,7 @@ def detect_access_columns(words: List[Dict[str, Any]], bank_identifier: str = No
             best_y = y
             
     if max_indicators < 4:
-        if pdf_path:
+        if pdf_path and allow_vision:
             print(f"DEBUG [Access]: Rule-based detection weak ({max_indicators} indicators). Trying AI Vision Fallback...")
             vision_cuts = detect_columns_via_vision(pdf_path)
             if vision_cuts:
@@ -153,7 +158,7 @@ def detect_access_columns(words: List[Dict[str, Any]], bank_identifier: str = No
     x_bal = find_x(["Balance", "Bal"], is_right=True)
 
     if not all([x_date, x_details, x_with or x_lodge, x_bal]):
-        if pdf_path:
+        if pdf_path and allow_vision:
             print(f"DEBUG [Access]: Missing core columns. Trying AI Vision Fallback...")
             sys.stdout.flush()
             vision_cuts = detect_columns_via_vision(pdf_path)
@@ -346,18 +351,26 @@ def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
     try:
         _enrich_access_metadata(_pdf_handle)
 
-        # Dynamic cuts: start with None, then update on each page if a header is found
+        # Dynamic cuts: start with the first reliable rule-based header. On
+        # continuation pages, reuse the last good cuts instead of asking Vision
+        # to infer columns from sparse/non-header text.
         cuts = None
         
         # We still do a pre-scan of first 5 pages just to see if we can identify it at all
         for pg_idx in range(min(5, len(_pdf_handle.pages))):
             words = _pdf_handle.pages[pg_idx].extract_words()
-            if detect_access_columns(words, pdf_path=pdf_path):
+            initial_cuts = detect_access_columns(words, pdf_path=None, allow_vision=False)
+            if initial_cuts:
+                cuts = initial_cuts
                 print(f"DEBUG [Access]: Initial header signature found on page {pg_idx}")
                 break
         else:
-            print(f"DEBUG [Access]: No Access header signature found in first 5 pages.")
-            return [], metadata
+            print(f"DEBUG [Access]: No rule-based Access header signature found in first 5 pages. Trying Vision once.")
+            words = _pdf_handle.pages[0].extract_words()
+            cuts = detect_access_columns(words, pdf_path=pdf_path, allow_vision=True)
+            if not cuts:
+                print(f"DEBUG [Access]: No Access header signature found in first 5 pages.")
+                return [], metadata
              
         print(f"DEBUG: Active Access Cuts: {cuts}")
         
@@ -372,8 +385,10 @@ def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
         for pg_num, page in enumerate(target_pages):
             words = page.extract_words()
             
-            # Update cuts for THIS page if a header is present
-            new_cuts = detect_access_columns(words, pdf_path=pdf_path)
+            # Update cuts for THIS page only when a real text header is present.
+            # Vision fallback on continuation pages can mis-detect the money
+            # columns and truncate Access statements in Cloud Run.
+            new_cuts = detect_access_columns(words, pdf_path=None, allow_vision=False)
             if new_cuts:
                 cuts = new_cuts
                 print(f"DEBUG [Access]: Cuts updated for page {pg_num}")
