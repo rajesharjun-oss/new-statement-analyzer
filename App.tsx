@@ -25,6 +25,7 @@ import {
 
 import { Button, Card, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Progress, cn, Badge, Input } from "./components/PrimitiveUI";
 import { SettingsModal } from './components/SettingsModal';
+import { AIAnalysisWorkspace } from './components/AIAnalysisWorkspace';
 // import { analyzeBankStatement } from './services/geminiService'; // Removed
 import { analyzeDocument } from './services/analysisService';
 import { generateExcel } from './services/excelService';
@@ -160,9 +161,13 @@ export default function App() {
       const errorSet = new Set(analysisResult.error_indices || []);
 
       return analysisResult.transactions.map((t, i) => {
-         const confidence = t.confidence !== undefined
+         const confidence = typeof t.confidence === "number"
             ? t.confidence
-            : (t.category === "Review Required" || t.category === "Unallocated" ? 0.5 : 0.85);
+            : t.confidence === "High"
+               ? 0.9
+               : t.confidence === "Medium"
+                  ? 0.65
+                  : (t.category === "Review Required" || t.category === "Unallocated" ? 0.5 : 0.85);
 
          let flag: "ok" | "review" | "anomaly" = "ok";
 
@@ -497,12 +502,14 @@ export default function App() {
                         : "bg-white/[0.02] text-zinc-400 border-white/[0.08] hover:text-white"
                   )}
                >
-                  AI Converter
+                  AI Analysis Workspace
                </button>
             </div>
 
             {activeTab === "converter" ? (
-               <div className="animate-enter space-y-6">
+               <>
+                  <AIAnalysisWorkspace selectedBank={selectedBank} />
+                  <div className="hidden">
                   <Card className="p-6 border-amber-500/20 bg-amber-500/5">
                      <div className="flex items-start gap-3">
                         <AlertTriangle className="w-5 h-5 text-amber-300 mt-0.5" />
@@ -595,7 +602,8 @@ export default function App() {
                         </div>
                      </div>
                   </Card>
-               </div>
+                  </div>
+               </>
             ) : !hasFile ? (
                /* --- STATE: UPLOAD WORKSPACE --- */
                <div className="animate-enter">

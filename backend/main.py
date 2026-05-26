@@ -2,10 +2,13 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from dotenv import load_dotenv
 import os
 import uuid
+import json
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 # Load environment variables from .env file
 load_dotenv()
@@ -18,6 +21,19 @@ from excel_generator import generate_excel
 from claude_service import generate_audit_summary
 
 app = FastAPI()
+
+class AIClassifyTransaction(BaseModel):
+    id: str
+    date: Optional[str] = None
+    description: str
+    debit: Optional[float] = 0
+    credit: Optional[float] = 0
+    reference: Optional[str] = None
+
+class AIClassifyRequest(BaseModel):
+    transactions: List[AIClassifyTransaction]
+    template: Dict[str, Any]
+    customInstructions: Optional[str] = ""
 
 @app.get("/health")
 async def health_check():
@@ -340,7 +356,7 @@ async def analyze_statement(
 
         return {
             "file_id": file_id, 
-            "backend_version": "v2.1-STABLE-FINAL-CORP-V9",
+            "backend_version": "v2.1-STABLE-FINAL-CORP-V10",
             "summary": {
                 **summary,
                 "auditSummary": audit_summary
@@ -378,6 +394,111 @@ async def download_excel(file_id: str):
         filename=f"statement-analysis.xlsx",
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
+@app.post("/classify-analysis")
+async def classify_analysis(payload: AIClassifyRequest):
+    """
+    AI fallback classifier for already-extracted transaction rows.
+    Secrets must be provided as environment variables; no API keys are accepted
+    from the browser or stored in frontend code.
+    """
+    if not payload.transactions:
+        return {"results": []}
+
+    template = payload.template or {}
+    categories = [
+        {
+            "name": c.get("name"),
+            "outputLabel": c.get("outputLabel"),
+            "description": c.get("description"),
+            "appliesTo": c.get("appliesTo"),
+        }
+        for c in template.get("categories", [])
+    ]
+    instructions = payload.customInstructions or template.get("aiInstructions") or ""
+    rows = [t.model_dump() for t in payload.transactions[:50]]
+
+    prompt = f"""
+Classify ONLY the provided bank transaction rows. Do not invent rows, amounts, dates, balances or totals.
+Return strict JSON only in this structure:
+{{"results":[{{"id":"transaction id","category":"string","subCategory":null,"taxAuthority":"FIRS/SIRS/Not Applicable/Review Required/null","confidence":"High/Medium/Low","reason":"short explanation","reviewRequired":true}}]}}
+
+Template:
+{json.dumps({"name": template.get("name"), "scope": template.get("scope"), "categories": categories}, ensure_ascii=False)}
+
+Instructions:
+{instructions}
+
+Rows:
+{json.dumps(rows, ensure_ascii=False)}
+"""
+
+    def _fallback_results():
+        return {
+            "results": [
+                {
+                    "id": row["id"],
+                    "category": "Review Required",
+                    "subCategory": None,
+                    "taxAuthority": "Review Required" if template.get("id") == "firs-sirs-na" else None,
+                    "confidence": "Low",
+                    "reason": "AI provider unavailable; manual review required.",
+                    "reviewRequired": True,
+                }
+                for row in rows
+            ]
+        }
+
+    try:
+        if os.getenv("OPENAI_API_KEY"):
+            from openai import OpenAI
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            response = client.chat.completions.create(
+                model=os.getenv("OPENAI_CLASSIFIER_MODEL", "gpt-4o-mini"),
+                messages=[
+                    {"role": "system", "content": "You classify existing bank transaction rows and return strict JSON only."},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0,
+            )
+            content = response.choices[0].message.content or "{}"
+            data = json.loads(content)
+        elif os.getenv("ANTHROPIC_API_KEY"):
+            import anthropic
+            client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+            response = client.messages.create(
+                model=os.getenv("ANTHROPIC_CLASSIFIER_MODEL", "claude-3-haiku-20240307"),
+                max_tokens=3000,
+                temperature=0,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            content = response.content[0].text if response.content else "{}"
+            data = json.loads(content)
+        else:
+            return _fallback_results()
+
+        results = data.get("results", [])
+        if not isinstance(results, list):
+            return _fallback_results()
+        valid_ids = {row["id"] for row in rows}
+        cleaned = []
+        for item in results:
+            if item.get("id") not in valid_ids:
+                continue
+            cleaned.append({
+                "id": item.get("id"),
+                "category": item.get("category") or "Review Required",
+                "subCategory": item.get("subCategory"),
+                "taxAuthority": item.get("taxAuthority"),
+                "confidence": item.get("confidence") if item.get("confidence") in ["High", "Medium", "Low"] else "Low",
+                "reason": item.get("reason") or "AI classification.",
+                "reviewRequired": bool(item.get("reviewRequired") or item.get("confidence") == "Low"),
+            })
+        return {"results": cleaned}
+    except Exception as e:
+        print(f"WARN: AI analysis classifier failed: {e}")
+        return _fallback_results()
 
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str):

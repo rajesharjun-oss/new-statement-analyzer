@@ -1,17 +1,82 @@
 
-export type DecisionSource = 'AI' | 'RULE' | 'MEMORY' | 'HUMAN';
+export type DecisionSource = 'AI' | 'RULE' | 'MEMORY' | 'HUMAN' | 'MANUAL' | 'SYSTEM';
 
 export interface Transaction {
+  id?: string;
+  sourceFileName?: string;
+  pageNumber?: number;
+  rowNumber?: number;
   date: string;
+  transactionDate?: string;
+  valueDate?: string;
+  reference?: string;
   description: string;
+  rawText?: string;
   category: string;
   debit: number;
   credit: number;
   balance: number;
-  confidence?: number;
+  subCategory?: string | null;
+  taxAuthority?: 'FIRS' | 'SIRS' | 'Not Applicable' | 'Review Required' | null;
+  confidence?: number | 'High' | 'Medium' | 'Low';
+  reason?: string;
   ruleId?: string;
   decision_source?: DecisionSource;
+  decisionSource?: DecisionSource;
+  reviewRequired?: boolean;
   is_reversal?: boolean;
+}
+
+export type AnalysisScope = 'debit' | 'credit' | 'both';
+export type ConfidenceLabel = 'High' | 'Medium' | 'Low';
+
+export interface AnalysisCategoryRule {
+  id: string;
+  name: string;
+  outputLabel: string;
+  description: string;
+  appliesTo: AnalysisScope;
+  includeKeywords: string[];
+  excludeKeywords: string[];
+  priority: number;
+}
+
+export interface AnalysisTemplate {
+  id: string;
+  name: string;
+  description: string;
+  scope: AnalysisScope;
+  categories: AnalysisCategoryRule[];
+  aiInstructions: string;
+  markUncertainAsReview: boolean;
+}
+
+export interface ClassifiedTransaction extends Transaction {
+  id: string;
+  sourceFileName: string;
+  transactionDate: string;
+  valueDate?: string;
+  reference?: string;
+  debit: number;
+  credit: number;
+  balance: number;
+  category: string;
+  subCategory?: string | null;
+  taxAuthority?: 'FIRS' | 'SIRS' | 'Not Applicable' | 'Review Required' | null;
+  confidence: ConfidenceLabel;
+  reason: string;
+  decisionSource: DecisionSource;
+  reviewRequired: boolean;
+}
+
+export interface ReconciliationCheck {
+  openingBalance: number | null;
+  totalDebit: number;
+  totalCredit: number;
+  expectedClosingBalance: number | null;
+  actualClosingBalance: number | null;
+  difference: number | null;
+  status: 'Passed' | 'Failed' | 'Unverified';
 }
 
 export interface AnalysisStatistics {
