@@ -154,6 +154,42 @@ async def analyze_statement(
             # Step 2: Validate totals
             validation_result = validate_totals(txns, meta)
 
+            # Access-only guard: do not surface a partial Access parse when the
+            # printed statement totals are available. Retry through the dedicated
+            # Access route and keep the candidate only if it validates cleanly.
+            if (
+                file_ext == ".pdf"
+                and meta.get("bank") == "access"
+                and validation_result.get("totals_match") is False
+                and meta.get("statement_total_debit") is not None
+                and meta.get("statement_total_credit") is not None
+            ):
+                print("WARN: Access totals mismatch. Retrying dedicated Access extraction before response...")
+                try:
+                    from pdf_extractor import extract_transactions as _et
+                    retry_results = await asyncio.to_thread(_et, stored_path, bank_identifier="access")
+                    retry_candidates = [
+                        rs for rs in retry_results
+                        if rs.get("transactions")
+                    ]
+                    if retry_candidates:
+                        retry_stmt = max(retry_candidates, key=lambda rs: len(rs.get("transactions", [])))
+                        retry_txns = retry_stmt.get("transactions", [])
+                        retry_meta = retry_stmt.get("metadata", {})
+                        retry_validation = validate_totals(retry_txns, retry_meta)
+                        if retry_validation.get("totals_match") is True:
+                            print(
+                                "WARN: Access retry repaired totals "
+                                f"({len(txns)} -> {len(retry_txns)} transactions)."
+                            )
+                            txns = retry_txns
+                            meta = retry_meta
+                            validation_result = retry_validation
+                        else:
+                            print(f"WARN: Access retry still failed: {retry_validation.get('status')}")
+                except Exception as e:
+                    print(f"WARN: Access retry failed: {e}")
+
             # Step 2b: FAIL-FAST check for generic retry
             if txns and not meta.get("_retried"):
                 empty_desc_count = sum(1 for t in txns if not (t.get('description') or t.get('remarks') or '').strip())
@@ -259,7 +295,7 @@ async def analyze_statement(
 
         return {
             "file_id": file_id, 
-            "backend_version": "v2.1-STABLE-FINAL-CORP-V6",
+            "backend_version": "v2.1-STABLE-FINAL-CORP-V7",
             "summary": {
                 **summary,
                 "auditSummary": audit_summary
