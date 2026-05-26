@@ -309,6 +309,30 @@ export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) 
         </div>
       </Card>
 
+      <Card className="p-5 rounded-[14px] border-[#9B87FF]/20 bg-[linear-gradient(135deg,rgba(155,135,255,0.10),rgba(17,19,24,0.92))]">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-[12px] bg-[#9B87FF]/15 border border-[#9B87FF]/25 flex items-center justify-center">
+              <Download className="w-5 h-5 text-[#C6B8FF]" />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-base font-semibold text-white">Export Audit Workbook</h3>
+                <Badge variant={classified.length ? "success" : "outline"}>{classified.length ? "Ready" : "Classify first"}</Badge>
+              </div>
+              <p className="text-sm text-zinc-400 mt-1">
+                Creates Extracted Transactions, Classified Transactions, Category Summary, Monthly Summary, Review Required, Reconciliation Check, and Rules Used sheets.
+              </p>
+              <p className="text-xs text-zinc-500 mt-2 font-mono">{outputFileName}</p>
+            </div>
+          </div>
+          <Button variant="primary" className="lg:min-w-[190px]" onClick={handleExport} disabled={!classified.length}>
+            <FileSpreadsheet className="w-4 h-4 mr-2" />
+            Export Excel
+          </Button>
+        </div>
+      </Card>
+
       {classified.length > 0 && (
         <>
           <AnalysisSummaryCards transactions={classified} reconciliation={reconciliation} />
