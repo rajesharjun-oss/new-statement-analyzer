@@ -5,6 +5,8 @@ export interface Transaction {
   id?: string;
   sourceFileName?: string;
   pageNumber?: number;
+  page_number?: number;
+  _page?: number;
   rowNumber?: number;
   date: string;
   transactionDate?: string;
@@ -50,6 +52,7 @@ export interface AnalysisTemplate {
   aiInstructions: string;
   markUncertainAsReview: boolean;
   treatSalaryAsSirs?: boolean;
+  salaryTreatment?: 'review' | 'sirs' | 'not_applicable';
 }
 
 export interface ClassifiedTransaction extends Transaction {

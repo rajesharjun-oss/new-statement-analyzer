@@ -15,6 +15,7 @@ export function buildExportWorkbookData({
   customInstructions: string;
   reconciliation: ReconciliationCheck;
 }) {
+  const pageValue = (t: ClassifiedTransaction) => t.pageNumber ?? t.page_number ?? t._page ?? "";
   const extractedTransactions = transactions.map(t => ({
     "Transaction Date": t.transactionDate,
     "Value Date": t.valueDate || "",
@@ -23,7 +24,7 @@ export function buildExportWorkbookData({
     Debit: t.debit || 0,
     Credit: t.credit || 0,
     Balance: t.balance || 0,
-    "Page Number": t.pageNumber || "",
+    "Page Number": pageValue(t),
     "Source File": t.sourceFileName
   }));
 
@@ -42,7 +43,7 @@ export function buildExportWorkbookData({
     "Decision Source": t.decisionSource,
     Reason: t.reason,
     "Review Required": t.reviewRequired ? "Yes" : "No",
-    "Page Number": t.pageNumber || "",
+    "Page Number": pageValue(t),
     "Source File": t.sourceFileName
   }));
 

@@ -16,6 +16,7 @@ export const analysisTemplates: AnalysisTemplate[] = [
     scope: "debit",
     markUncertainAsReview: true,
     treatSalaryAsSirs: false,
+    salaryTreatment: "review",
     aiInstructions: "Classify all debit transactions into FIRS, SIRS, or Not Applicable. Put payments to companies under FIRS, payments to individuals under SIRS, and bank charges/internal transfers/reversals under Not Applicable. If unsure, mark Review Required.",
     categories: [
       {
@@ -24,7 +25,7 @@ export const analysisTemplates: AnalysisTemplate[] = [
         outputLabel: "FIRS",
         description: "Company, incorporated entity, tax authority, or formal business payment.",
         appliesTo: "debit",
-        includeKeywords: ["ltd", "limited", "plc", "enterprise", "enterprises", "ventures", "services", "company", "incorporated", "nigeria limited", "firs", "federal inland revenue", "wht", "cit", "tax payment"],
+        includeKeywords: ["ltd", "limited", "plc", "enterprise", "enterprises", "ventures", "company", "incorporated", "nigeria limited", "firs", "federal inland revenue", "wht", "cit", "tax payment"],
         excludeKeywords: bankNoise,
         priority: 90
       },

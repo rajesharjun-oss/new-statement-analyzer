@@ -29,7 +29,6 @@ const strongEntityKeywords = [
   "enterprise",
   "enterprises",
   "ventures",
-  "services",
   "company",
   "incorporated",
   "nigeria limited",
@@ -40,7 +39,7 @@ const strongEntityKeywords = [
   "tax payment"
 ];
 const salaryKeywords = ["salary", "payroll", "staff salary", "wages"];
-const commonTransferChargeAmounts = [10, 26.88, 50, 53.75, 100, 107.5];
+const commonTransferChargeAmounts = [1.25, 2.5, 3.75, 6.83, 10, 25, 26.88, 50, 53.75, 90.96, 100, 107.5];
 
 function money(value: unknown): number {
   const n = typeof value === "number" ? value : Number(String(value ?? "0").replace(/,/g, ""));
@@ -51,13 +50,30 @@ function tokenizeKeywords(value: string): string[] {
   return value.split(",").map(k => k.trim()).filter(Boolean);
 }
 
-export function normalizeNarration(value: string): string {
+export function cleanupTransactionDescription(value: string): string {
   return String(value || "")
     .normalize("NFKC")
     .replace(/[\u00a0\u1680\u180e\u2000-\u200d\u2028\u2029\u202f\u205f\u2060\ufeff\u00ad]/g, " ")
-    .replace(/[‐‑‒–—―]/g, "-")
-    .replace(/[’‘`´]/g, "'")
-    .replace(/[“”]/g, "\"")
+    .replace(/\bL\s*T\s*D\b/gi, "LTD")
+    .replace(/\bLIMITE\b/gi, "LIMITED")
+    .replace(/\b\d{1,2}\/\d{1,2}\/\d{4}\s+Details\b/gi, " ")
+    .replace(/\bTransaction\s+Date\b/gi, " ")
+    .replace(/\bValue\s+Date\b/gi, " ")
+    .replace(/\bDetails\b/gi, " ")
+    .replace(/\b\d+\s+of\s+\d+\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function normalizeNarration(value: string): string {
+  return cleanupTransactionDescription(value)
+    .normalize("NFKC")
+    .replace(/[\u00a0\u1680\u180e\u2000-\u200d\u2028\u2029\u202f\u205f\u2060\ufeff\u00ad]/g, " ")
+    .replace(/[\u2010-\u2015]/g, "-")
+    .replace(/[\u2018\u2019`´]/g, "'")
+    .replace(/[\u201c\u201d]/g, "\"")
+    .replace(/\bL\s*T\s*D\b/gi, "LTD")
+    .replace(/\bLIMITE\b/gi, "LIMITED")
     .toLowerCase()
     .replace(/[^\p{L}\p{N}@&*'/-]+/gu, " ")
     .replace(/[-_/]+/g, " ")
@@ -66,26 +82,31 @@ export function normalizeNarration(value: string): string {
 }
 
 export function normalizeTransactions(transactions: Transaction[], sourceFileName: string): ClassifiedTransaction[] {
-  return transactions.map((t, index) => ({
-    ...t,
-    id: t.id || `txn-${index + 1}`,
-    sourceFileName,
-    rowNumber: t.rowNumber ?? index + 1,
-    transactionDate: t.transactionDate || t.date,
-    valueDate: t.valueDate,
-    reference: t.reference || "",
-    description: t.description || "",
-    debit: money(t.debit),
-    credit: money(t.credit),
-    balance: money(t.balance),
-    category: t.category || reviewCategory,
-    subCategory: t.subCategory ?? null,
-    taxAuthority: t.taxAuthority ?? null,
-    confidence: normalizeConfidence(t.confidence),
-    reason: t.reason || "Extracted from statement.",
-    decisionSource: t.decisionSource || t.decision_source || "SYSTEM",
-    reviewRequired: Boolean(t.reviewRequired)
-  }));
+  return transactions.map((t, index) => {
+    const rawText = t.rawText || t.description || "";
+    return {
+      ...t,
+      id: t.id || `txn-${index + 1}`,
+      sourceFileName,
+      pageNumber: t.pageNumber ?? t.page_number ?? t._page,
+      rowNumber: t.rowNumber ?? index + 1,
+      transactionDate: t.transactionDate || t.date,
+      valueDate: t.valueDate,
+      reference: t.reference || "",
+      rawText,
+      description: cleanupTransactionDescription(t.description || ""),
+      debit: money(t.debit),
+      credit: money(t.credit),
+      balance: money(t.balance),
+      category: t.category || reviewCategory,
+      subCategory: t.subCategory ?? null,
+      taxAuthority: t.taxAuthority ?? null,
+      confidence: normalizeConfidence(t.confidence),
+      reason: t.reason || "Extracted from statement.",
+      decisionSource: t.decisionSource || t.decision_source || "SYSTEM",
+      reviewRequired: Boolean(t.reviewRequired)
+    };
+  });
 }
 
 export function normalizeConfidence(value: unknown): ConfidenceLabel {
@@ -133,8 +154,8 @@ function isCommonTransferCharge(transaction: ClassifiedTransaction, text: string
   const debit = money(transaction.debit);
   if (debit <= 0 || money(transaction.credit) > 0) return false;
   const isCommonAmount = commonTransferChargeAmounts.some(amount => Math.abs(debit - amount) <= 0.01);
-  if (!isCommonAmount || hasStrongEntityIndicator(text)) return false;
-  return includesAny(text, ["nip transfer", "nip", "cob trf", "trf", "transfer", "interbank transfer", "bank transfer", "others"]);
+  if (!isCommonAmount) return false;
+  return includesAny(text, ["cob trf to", "nip transfer", "nip", "transfer fee", "transfer charge", "cob trf", "trf", "interbank transfer", "bank transfer", "others"]);
 }
 
 function isNotApplicable(transaction: ClassifiedTransaction, text: string) {
@@ -143,7 +164,7 @@ function isNotApplicable(transaction: ClassifiedTransaction, text: string) {
 
 function inferIndividualName(text: string) {
   if (hasStrongEntityIndicator(text) || isPosPurchase(text) || isNotApplicable({ debit: 0, credit: 0 } as ClassifiedTransaction, text)) return false;
-  if (includesAny(text, ["vendor", "vendors", "supplier", "subscription", "internet", "merchant"])) return false;
+  if (includesAny(text, ["vendor", "vendors", "supplier", "subscription", "internet", "merchant", "services", "cleaning", "medical", "digital", "logistics", "tutoring"])) return false;
   if (includesAny(text, ["mr", "mrs", "miss", "dr"])) return true;
 
   const cleaned = text
@@ -211,8 +232,21 @@ function applyFirsSirsRules(transaction: ClassifiedTransaction, template: Analys
     };
   }
 
+  if (includesAny(text, ["limi"])) {
+    return {
+      ...transaction,
+      category: reviewCategory,
+      taxAuthority: "Review Required",
+      confidence: "Medium",
+      reason: "Possible broken LIMITED suffix needs review.",
+      decisionSource: "SYSTEM",
+      reviewRequired: template.markUncertainAsReview
+    };
+  }
+
   if (includesAny(text, salaryKeywords)) {
-    if (template.treatSalaryAsSirs) {
+    const salaryTreatment = template.salaryTreatment || (template.treatSalaryAsSirs ? "sirs" : "review");
+    if (salaryTreatment === "sirs") {
       return {
         ...transaction,
         category: "SIRS",
@@ -223,12 +257,23 @@ function applyFirsSirsRules(transaction: ClassifiedTransaction, template: Analys
         reviewRequired: false
       };
     }
+    if (salaryTreatment === "not_applicable") {
+      return {
+        ...transaction,
+        category: "Not Applicable",
+        taxAuthority: "Not Applicable",
+        confidence: "Medium",
+        reason: "Salary/payroll setting treats staff payments as Not Applicable.",
+        decisionSource: "RULE",
+        reviewRequired: false
+      };
+    }
     return {
       ...transaction,
       category: reviewCategory,
       taxAuthority: "Review Required",
       confidence: "Low",
-      reason: "Salary/payroll payment requires review because salary-as-SIRS is off.",
+      reason: "Salary/payroll payment requires review.",
       decisionSource: "SYSTEM",
       reviewRequired: template.markUncertainAsReview
     };
