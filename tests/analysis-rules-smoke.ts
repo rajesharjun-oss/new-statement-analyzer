@@ -52,11 +52,27 @@ async function main() {
   const internetServicesCharge = applyDeterministicRules(txn("COB TRF TO SWIFT NETW **4891 INTERNET SERVICES", 53.75), firsTemplate);
   assert(internetServicesCharge.category === "Not Applicable", "Internet services transfer charge must be Not Applicable");
 
+  const tenSeventyFiveCharge = applyDeterministicRules(txn("COB TRF TO ADESHOLA H **5089 To purchase Facemasks", 10.75), firsTemplate);
+  assert(tenSeventyFiveCharge.category === "Not Applicable", "10.75 COB transfer charge must be Not Applicable");
+
+  const counterCheque = applyDeterministicRules(txn("Counter Cheque Issue Charge", 50), firsTemplate);
+  assert(counterCheque.category === "Not Applicable", "Counter cheque issue charge must be Not Applicable");
+
+  const vatCounterCheque = applyDeterministicRules(txn("VAT- Counter Chq Issue Charge", 3.75), firsTemplate);
+  assert(vatCounterCheque.category === "Not Applicable", "VAT counter cheque issue charge must be Not Applicable");
+
   const largerServicePayment = applyDeterministicRules(txn("COB TRF TO PALMACEDAR **7638 CLEANING SERVICES", 75250), firsTemplate);
   assert(largerServicePayment.category !== "Not Applicable", "Large service payment must not be treated as a common transfer charge");
+  assert(largerServicePayment.category === "Review Required", "Large unregistered service/trade payee must default to Review Required");
+
+  for (const tradeName of ["COB TRF TO DAMAC OIL", "COB TRF TO PRINT HAVE", "COB TRF TO CAKES BIRE"]) {
+    const result = applyDeterministicRules(txn(tradeName, 10000), firsTemplate);
+    assert(result.category === "Review Required", `${tradeName} must default to Review Required`);
+  }
 
   assert(normalizeNarration("OFFICE LAND L TD").includes("ltd"), "Broken L TD suffix must normalize to LTD");
   assert(!cleanupTransactionDescription("07/04/2024 Details COB TRF TO ABC").includes("07/04/2024 Details"), "Header/footer Details contamination must be cleaned");
+  assert(cleanupTransactionDescription("STAMP DUTY CHARGE - 04-01-2022 07/04/2024") === "STAMP DUTY CHARGE - 04-01-2022", "Trailing report/footer date must be removed from description");
 
   const exportData = buildExportWorkbookData({
     transactions: [{ ...txn("OFFICE LAND L TD", 1000), pageNumber: 4, category: "FIRS", taxAuthority: "FIRS", confidence: "High", reviewRequired: false }],

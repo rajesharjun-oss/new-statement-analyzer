@@ -53,6 +53,7 @@ export interface AnalysisTemplate {
   markUncertainAsReview: boolean;
   treatSalaryAsSirs?: boolean;
   salaryTreatment?: 'review' | 'sirs' | 'not_applicable';
+  tradeNameTreatment?: 'review' | 'sirs' | 'firs';
 }
 
 export interface ClassifiedTransaction extends Transaction {

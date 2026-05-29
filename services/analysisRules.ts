@@ -12,6 +12,15 @@ const notApplicableKeywords = [
   "transfer charge",
   "commission",
   "nip charge",
+  "counter cheque issue charge",
+  "counter chq issue charge",
+  "cheque issue charge",
+  "chq issue charge",
+  "vat counter chq",
+  "vat counter cheque",
+  "vat on cheque",
+  "cheque book charge",
+  "cheque charge",
   "pos stamp duty",
   "reversal",
   "reversed",
@@ -39,7 +48,7 @@ const strongEntityKeywords = [
   "tax payment"
 ];
 const salaryKeywords = ["salary", "payroll", "staff salary", "wages"];
-const commonTransferChargeAmounts = [1.25, 2.5, 3.75, 6.83, 10, 25, 26.88, 50, 53.75, 90.96, 100, 107.5];
+const commonTransferChargeAmounts = [1.25, 2.5, 3.75, 6.83, 10, 10.75, 25, 26.88, 50, 53.75, 90.96, 100, 107.5];
 
 function money(value: unknown): number {
   const n = typeof value === "number" ? value : Number(String(value ?? "0").replace(/,/g, ""));
@@ -61,6 +70,7 @@ export function cleanupTransactionDescription(value: string): string {
     .replace(/\bValue\s+Date\b/gi, " ")
     .replace(/\bDetails\b/gi, " ")
     .replace(/\b\d+\s+of\s+\d+\b/gi, " ")
+    .replace(/\s+\d{1,2}\/\d{1,2}\/\d{4}\s*$/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -166,12 +176,31 @@ function inferIndividualName(text: string) {
   if (hasStrongEntityIndicator(text) || isPosPurchase(text) || isNotApplicable({ debit: 0, credit: 0 } as ClassifiedTransaction, text)) return false;
   if (includesAny(text, ["vendor", "vendors", "supplier", "subscription", "internet", "merchant", "services", "cleaning", "medical", "digital", "logistics", "tutoring"])) return false;
   if (includesAny(text, ["mr", "mrs", "miss", "dr"])) return true;
+  if (includesAny(text, ["cob trf", "trf to", "nip transfer"])) return false;
 
   const cleaned = text
     .replace(/\b(cob|trf|transfer|to|from|nip|neft|payment|paid|for|on|behalf|beh)\b/g, " ")
     .replace(/[@*&0-9]+/g, " ");
   const tokens = cleaned.split(/\s+/).filter(t => /^[a-z]{3,}$/.test(t));
   return tokens.length >= 2 && tokens.slice(0, 4).some(t => t.length > 3);
+}
+
+function looksLikeUnregisteredTradeName(text: string) {
+  if (hasStrongEntityIndicator(text) || isNotApplicable({ debit: 0, credit: 0 } as ClassifiedTransaction, text)) return false;
+  if (!includesAny(text, ["cob trf", "trf to", "transfer to", "nip transfer", "pos purchase"])) return false;
+  if (includesAny(text, ["mr", "mrs", "miss", "dr", "salary", "payroll"])) return false;
+  const tradeHints = [
+    "oil", "print", "cakes", "eng", "engineering", "office", "music", "mus", "gold", "stores",
+    "superstores", "food", "foods", "market", "ventures", "logistics", "cleaning", "medical",
+    "digital", "internet", "subscription", "school", "academy", "studio", "fashion", "pharmacy",
+    "mart", "shop", "enterprise", "attainable", "ryteprint", "goldmender", "damac", "palmacedar"
+  ];
+  if (includesAny(text, tradeHints)) return true;
+  const cleaned = text
+    .replace(/\b(cob|trf|transfer|to|from|nip|neft|payment|paid|for|on|behalf|beh|pos|purchase)\b/g, " ")
+    .replace(/[@*&0-9]+/g, " ");
+  const tokens = cleaned.split(/\s+/).filter(t => /^[a-z]{3,}$/.test(t));
+  return tokens.length >= 1 && tokens.length <= 3;
 }
 
 function firsTaxAuthority(category: string) {
@@ -289,6 +318,41 @@ function applyFirsSirsRules(transaction: ClassifiedTransaction, template: Analys
       reason: "Matched individual-payment rule keyword.",
       decisionSource: "RULE",
       reviewRequired: false
+    };
+  }
+
+  if (looksLikeUnregisteredTradeName(text)) {
+    const treatment = template.tradeNameTreatment || "review";
+    if (treatment === "firs") {
+      return {
+        ...transaction,
+        category: "FIRS",
+        taxAuthority: "FIRS",
+        confidence: "Medium",
+        reason: "Unregistered business/trade-name setting treats this row as FIRS.",
+        decisionSource: "RULE",
+        reviewRequired: false
+      };
+    }
+    if (treatment === "sirs") {
+      return {
+        ...transaction,
+        category: "SIRS",
+        taxAuthority: "SIRS",
+        confidence: "Medium",
+        reason: "Unregistered business/trade-name setting treats this row as SIRS.",
+        decisionSource: "RULE",
+        reviewRequired: false
+      };
+    }
+    return {
+      ...transaction,
+      category: reviewCategory,
+      taxAuthority: "Review Required",
+      confidence: "Low",
+      reason: "Possible unregistered business/trade name requires review.",
+      decisionSource: "SYSTEM",
+      reviewRequired: template.markUncertainAsReview
     };
   }
 

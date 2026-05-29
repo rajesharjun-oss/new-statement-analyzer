@@ -17,6 +17,7 @@ export const analysisTemplates: AnalysisTemplate[] = [
     markUncertainAsReview: true,
     treatSalaryAsSirs: false,
     salaryTreatment: "review",
+    tradeNameTreatment: "review",
     aiInstructions: "Classify all debit transactions into FIRS, SIRS, or Not Applicable. Put payments to companies under FIRS, payments to individuals under SIRS, and bank charges/internal transfers/reversals under Not Applicable. If unsure, mark Review Required.",
     categories: [
       {
