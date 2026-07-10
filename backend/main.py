@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 import os
 import uuid
 import json
+import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -20,7 +22,12 @@ from categorization import categorize_transactions
 from excel_generator import generate_excel
 from claude_service import generate_audit_summary
 
-app = FastAPI()
+ENABLE_API_DOCS = os.getenv("ENABLE_API_DOCS", "false").lower() == "true"
+app = FastAPI(
+    docs_url="/docs" if ENABLE_API_DOCS else None,
+    redoc_url="/redoc" if ENABLE_API_DOCS else None,
+    openapi_url="/openapi.json" if ENABLE_API_DOCS else None,
+)
 
 class AIClassifyTransaction(BaseModel):
     id: str
@@ -39,19 +46,43 @@ class AIClassifyRequest(BaseModel):
 async def health_check():
     return {"status": "ok", "message": "Backend is reachable"}
 
-# CORS for local development
+def csv_env(name: str, default: str) -> List[str]:
+    raw = os.getenv(name, default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+# CORS is intentionally explicit. Same-origin production traffic does not need
+# CORS, and credentialed wildcard CORS is unsafe for an internet-facing API.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=csv_env("ALLOWED_ORIGINS", "http://localhost:5000,http://127.0.0.1:5000"),
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
+
+def env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return max(value, minimum)
 
 UPLOAD_DIR = Path("temp_uploads")
 DOWNLOAD_DIR = Path("temp_downloads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 DOWNLOAD_DIR.mkdir(exist_ok=True)
+
+MAX_UPLOAD_BYTES = env_int("MAX_UPLOAD_BYTES", 20 * 1024 * 1024)
+TEMP_FILE_TTL_SECONDS = env_int("TEMP_FILE_TTL_SECONDS", 60 * 60)
+MAX_CLASSIFY_TRANSACTIONS = env_int("MAX_CLASSIFY_TRANSACTIONS", 500)
+MAX_CLASSIFY_INSTRUCTIONS_CHARS = env_int("MAX_CLASSIFY_INSTRUCTIONS_CHARS", 4000)
+SUPPORTED_FILE_EXTS = {".pdf", ".xlsx", ".xls", ".csv"}
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+FILE_SIGNATURES = {
+    ".pdf": (b"%PDF",),
+    ".xlsx": (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"),
+    ".xls": (b"\xd0\xcf\x11\xe0",),
+}
 
 # Mount static files (React build)
 # Check multiple potential dist locations for production
@@ -65,6 +96,45 @@ if DIST_DIR.exists():
     assets_dir = DIST_DIR / "assets"
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+def cleanup_stale_temp_files() -> None:
+    now = time.time()
+    for directory in (UPLOAD_DIR, DOWNLOAD_DIR):
+        try:
+            for path in directory.iterdir():
+                if path.is_file() and now - path.stat().st_mtime > TEMP_FILE_TTL_SECONDS:
+                    path.unlink(missing_ok=True)
+        except Exception as exc:
+            print(f"WARN: Temp cleanup failed for {directory}: {exc}")
+
+def validate_upload_content(file_ext: str, content: bytes) -> None:
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    if len(content) > MAX_UPLOAD_BYTES:
+        max_mb = MAX_UPLOAD_BYTES / (1024 * 1024)
+        raise HTTPException(status_code=413, detail=f"File is too large. Maximum allowed size is {max_mb:.0f}MB")
+
+    signatures = FILE_SIGNATURES.get(file_ext)
+    if signatures and not any(content.startswith(sig) for sig in signatures):
+        raise HTTPException(status_code=400, detail="File content does not match the declared file type")
+    if file_ext == ".csv" and b"\x00" in content[:4096]:
+        raise HTTPException(status_code=400, detail="CSV upload appears to contain binary data")
+
+@app.on_event("startup")
+async def startup_cleanup():
+    cleanup_stale_temp_files()
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    if request.url.path.startswith(("/analyze", "/download", "/classify-analysis")):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
 
 def num(x):
     """Safely convert to float, handling strings with commas"""
@@ -106,14 +176,6 @@ async def analyze_statement(
 
     print(f"!!! [ANALYZE-FORENSIC] Request received: {file.filename} (Bank: {bank} -> {normalized_bank}) !!!")
     print(f"{'!'*40}\n")
-    
-    # Audit file size
-    try:
-        content = await file.read()
-        await file.seek(0) # Reset for later use
-        print(f"  [FORENSIC] Upload Buffer Size: {len(content)} bytes")
-    except Exception as e:
-        print(f"  [FORENSIC] Error reading buffer: {e}")
     """
     Main endpoint: accepts PDF, returns summary + download URL
     
@@ -123,16 +185,18 @@ async def analyze_statement(
            Defaults to 'auto' for automatic detection
     """
     file_ext = Path(file.filename or "").suffix.lower()
-    if file_ext not in [".pdf", ".xlsx", ".xls", ".csv"]:
+    if file_ext not in SUPPORTED_FILE_EXTS:
         raise HTTPException(status_code=400, detail="Only PDF, Excel (.xlsx, .xls), and CSV files are supported")
 
     file_id = str(uuid.uuid4())
     stored_path = UPLOAD_DIR / f"{file_id}{file_ext}"
     excel_path = DOWNLOAD_DIR / f"statement-analysis-{file_id}.xlsx"
 
-    success = False
     try:
+        cleanup_stale_temp_files()
         content = await file.read()
+        print(f"  [FORENSIC] Upload Buffer Size: {len(content)} bytes")
+        validate_upload_content(file_ext, content)
         stored_path.write_bytes(content)
 
         # Step 1: Extract transactions (Non-blocking background thread)
@@ -336,7 +400,6 @@ async def analyze_statement(
             "statementCount": len(processed_statements)
         }
 
-        success = True
         # Return a combined preview so the frontend doesn't show 0 when first group is empty.
         preview_txns = []
         for s in processed_statements:
@@ -365,16 +428,22 @@ async def analyze_statement(
             "transactions": preview_txns
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
-        print(f"ERROR in /analyze: {error_details}")
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}\n\nFull error:\n{error_details}")
+        print(f"ERROR in /analyze ({file_id}): {error_details}")
+        if os.getenv("DEBUG_ERRORS", "false").lower() == "true":
+            detail = f"Analysis failed: {str(e)}\n\nFull error:\n{error_details}"
+        else:
+            detail = f"Analysis failed. Please retry or contact support with reference {file_id}."
+        raise HTTPException(status_code=500, detail=detail)
 
     finally:
         # Clean up temp upload file after processing
         try:
-            if success and stored_path.exists():
+            if stored_path.exists():
                 stored_path.unlink()
         except Exception:
             pass
@@ -384,6 +453,10 @@ async def download_excel(file_id: str):
     """
     Download endpoint for generated Excel file
     """
+    cleanup_stale_temp_files()
+    if not UUID_RE.fullmatch(file_id):
+        raise HTTPException(status_code=404, detail="File not found")
+
     excel_path = DOWNLOAD_DIR / f"statement-analysis-{file_id}.xlsx"
     
     if not excel_path.exists():
@@ -402,6 +475,10 @@ async def classify_analysis(payload: AIClassifyRequest):
     Secrets must be provided as environment variables; no API keys are accepted
     from the browser or stored in frontend code.
     """
+    if len(payload.transactions) > MAX_CLASSIFY_TRANSACTIONS:
+        raise HTTPException(status_code=413, detail="Too many transactions in one classification request")
+    if len(payload.customInstructions or "") > MAX_CLASSIFY_INSTRUCTIONS_CHARS:
+        raise HTTPException(status_code=400, detail="Custom instructions are too long")
     if not payload.transactions:
         return {"results": []}
 
@@ -508,7 +585,7 @@ async def serve_spa(full_path: str):
     Catch-all route to serve React SPA (index.html)
     Exclude API routes (start with /analyze, /download, /docs, /openapi.json)
     """
-    if full_path.startswith("api") or full_path.startswith("analyze") or full_path.startswith("download"):
+    if full_path.startswith(("api", "analyze", "download", "docs", "redoc", "openapi.json")):
         raise HTTPException(status_code=404, detail="API route not found")
         
     # Serve index.html for all other routes

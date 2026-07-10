@@ -89,5 +89,10 @@ Set these environment variables in Render:
 - `OPENAI_API_KEY` if OpenAI fallback is enabled
 - `ANTHROPIC_API_KEY` if Claude fallback is enabled
 - `PYTHONPATH=/app/backend`
+- `ALLOWED_ORIGINS` as a comma-separated list of trusted frontend origins for cross-origin development access
+- `MAX_UPLOAD_BYTES` to cap upload size, defaults to `20971520` (20MB)
+- `TEMP_FILE_TTL_SECONDS` to remove stale upload/download artifacts, defaults to `3600`
+- `ENABLE_API_DOCS=false` in production unless protected behind trusted access
+- `DEBUG_ERRORS=false` in production so stack traces are not returned to clients
 
-`temp_uploads/` and `temp_downloads/` are ephemeral. For production workloads with large files or long retention needs, attach persistent storage.
+`temp_uploads/` and `temp_downloads/` are ephemeral and are cleaned by TTL. For production workloads with large files or long retention needs, attach private persistent storage with a retention policy.

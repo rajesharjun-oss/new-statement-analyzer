@@ -16,6 +16,11 @@ GEMINI_API_KEY=your_gemini_key_here
 OPENAI_API_KEY=optional_openai_key_here
 ANTHROPIC_API_KEY=optional_anthropic_key_here
 OCR_ENGINE=gemini
+ALLOWED_ORIGINS=http://localhost:5000,http://127.0.0.1:5000
+MAX_UPLOAD_BYTES=20971520
+TEMP_FILE_TTL_SECONDS=3600
+ENABLE_API_DOCS=false
+DEBUG_ERRORS=false
 ```
 
 ## Run

@@ -215,6 +215,33 @@ def normalize_description(desc: str) -> str:
     desc = re.sub(r'\s+', ' ', desc)
     return desc.strip()
 
+def parse_money_amount(value: Any) -> float:
+    """Parse bank amount values that may contain commas, symbols, or blanks."""
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        parsed = float(value)
+        return parsed if math.isfinite(parsed) else 0.0
+
+    text = str(value).strip()
+    if not text:
+        return 0.0
+
+    is_parenthesized_negative = text.startswith("(") and text.endswith(")")
+    cleaned = text.replace(",", "")
+    cleaned = re.sub(r"[^\d.\-]", "", cleaned)
+    if not cleaned or cleaned in {"-", ".", "-."}:
+        return 0.0
+
+    try:
+        parsed = float(cleaned)
+    except (TypeError, ValueError):
+        return 0.0
+
+    if not math.isfinite(parsed):
+        return 0.0
+    return -abs(parsed) if is_parenthesized_negative else parsed
+
 print("--- CATEGORIZATION MODULE LOADED ---")
 
 def categorize_single_transaction(txn: Dict) -> Dict:
@@ -226,9 +253,12 @@ def categorize_single_transaction(txn: Dict) -> Dict:
     raw_desc = txn.get('remarks', '') or txn.get('description', '')
     norm_desc = normalize_description(raw_desc)
     
-    # Parse amounts safely
-    debit = float(txn.get('debit') or 0)
-    credit = float(txn.get('credit') or 0)
+    # Parse amounts safely. Some OCR/bank parsers return formatted strings
+    # such as "3,590.00"; normalize them here before downstream logic sees them.
+    debit = parse_money_amount(txn.get('debit'))
+    credit = parse_money_amount(txn.get('credit'))
+    txn['debit'] = debit
+    txn['credit'] = credit
     is_debit = debit != 0
     is_credit = credit != 0
     
