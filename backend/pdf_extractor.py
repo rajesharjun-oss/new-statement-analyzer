@@ -694,6 +694,72 @@ def normalize_remarks(transactions: List[Dict]) -> List[Dict]:
     return transactions
 
 
+def _parse_amount_or_none(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    amount = parse_money(text)
+    if amount == 0.0 and not re.search(r"\d", text):
+        return None
+    return amount
+
+
+def assess_statement_total_match(
+    transactions: List[Dict[str, Any]],
+    metadata: Dict[str, Any],
+    tolerance: float = 1.0,
+) -> Dict[str, Any]:
+    statement_debit = _parse_amount_or_none(metadata.get("statement_total_debit"))
+    statement_credit = _parse_amount_or_none(metadata.get("statement_total_credit"))
+    extracted_debit = round(sum(_parse_amount_or_none(t.get("debit")) or 0.0 for t in transactions), 2)
+    extracted_credit = round(sum(_parse_amount_or_none(t.get("credit")) or 0.0 for t in transactions), 2)
+
+    if statement_debit is None or statement_credit is None:
+        return {
+            "has_statement_totals": False,
+            "totals_match": None,
+            "extracted_total_debit": extracted_debit,
+            "extracted_total_credit": extracted_credit,
+            "statement_total_debit": statement_debit,
+            "statement_total_credit": statement_credit,
+            "debit_diff": None,
+            "credit_diff": None,
+        }
+
+    debit_diff = round(extracted_debit - statement_debit, 2)
+    credit_diff = round(extracted_credit - statement_credit, 2)
+    return {
+        "has_statement_totals": True,
+        "totals_match": abs(debit_diff) <= tolerance and abs(credit_diff) <= tolerance,
+        "extracted_total_debit": extracted_debit,
+        "extracted_total_credit": extracted_credit,
+        "statement_total_debit": statement_debit,
+        "statement_total_credit": statement_credit,
+        "debit_diff": debit_diff,
+        "credit_diff": credit_diff,
+    }
+
+
+def _bounded_page_limit(env_name: str, default_limit: int, hard_limit: int, total_pages: int) -> int:
+    try:
+        configured_limit = int(os.getenv(env_name, str(default_limit)))
+    except (TypeError, ValueError):
+        configured_limit = default_limit
+    configured_limit = max(1, min(configured_limit, hard_limit))
+    return min(max(total_pages, 0), configured_limit)
+
+
+def get_uba_ocr_page_limit(total_pages: int) -> int:
+    return _bounded_page_limit("UBA_OCR_MAX_PAGES", 80, 150, total_pages)
+
+
+def get_uba_ai_page_limit(total_pages: int) -> int:
+    return _bounded_page_limit("UBA_AI_MAX_PAGES", 30, 80, total_pages)
+
 def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: dict = None, max_pages: int = None) -> List[Dict[str, Any]]:
     """
     Main entry point for PDF extraction. Routes to specific bank engines
@@ -724,6 +790,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
         "closing_balance": None,
     }
     page_meta_map = {} # To track metadata per page
+    uba_partial_candidate: Optional[Tuple[List[Dict[str, Any]], Dict[str, Any]]] = None
 
     # --- 1) Consolidate PDF I/O and Initial Checks ---
     try:
@@ -866,27 +933,64 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                      from uba_engine import extract_uba_via_coordinates
                      print(f"DEBUG: {bank_identifier.upper()} PDF is searchable - routing to dedicated coordinate engine")
                      uba_txns, uba_meta = extract_uba_via_coordinates(Path(pdf_path), metadata, pdf=pdf)
-                     if uba_txns: return [{"transactions": normalize_remarks(uba_txns), "metadata": uba_meta}]
+                     if uba_txns:
+                         uba_quality = assess_statement_total_match(uba_txns, uba_meta)
+                         if uba_quality.get("has_statement_totals") and uba_quality.get("totals_match") is False:
+                             uba_partial_candidate = (
+                                 uba_txns,
+                                 {
+                                     **metadata,
+                                     **uba_meta,
+                                     "method": uba_meta.get("method", "uba_coordinates"),
+                                     "partial_extraction": True,
+                                     "partial_extraction_reason": "statement_totals_mismatch",
+                                 },
+                             )
+                             print(
+                                 f"WARN: UBA coordinate extraction returned {len(uba_txns)} rows but totals mismatch "
+                                 f"(debit_diff={uba_quality.get('debit_diff')}, credit_diff={uba_quality.get('credit_diff')}). "
+                                 "Trying OCR/AI fallbacks before accepting it."
+                             )
+                         else:
+                             return [{"transactions": normalize_remarks(uba_txns), "metadata": uba_meta}]
                  
                  # Scanned or coordinate failure -> deterministic UBA OCR first.
                  # The vision fallback can return plausible-looking rows, but for
                  # UBA templates the Tesseract parser is the trusted totals path.
                  try:
                      from local_ocr_parsers import parse_uba_tesseract_pdf
-                     page_limit = min(20, len(pdf_pages))
+                     page_limit = get_uba_ocr_page_limit(len(pdf_pages))
                      local_txns, local_meta = parse_uba_tesseract_pdf(str(pdf_path), max_pages=page_limit)
                      if local_txns:
-                         print(f"DEBUG: Tesseract UBA parser extracted {len(local_txns)} txns.")
-                         return [{
-                             "transactions": normalize_remarks(local_txns),
-                             "metadata": {**metadata, **local_meta, "method": "tesseract_uba"},
-                         }]
+                         local_meta = {**metadata, **local_meta, "method": "tesseract_uba"}
+                         local_quality = assess_statement_total_match(local_txns, local_meta)
+                         if local_quality.get("has_statement_totals") and local_quality.get("totals_match") is False:
+                             if uba_partial_candidate is None or len(local_txns) > len(uba_partial_candidate[0]):
+                                 uba_partial_candidate = (
+                                     local_txns,
+                                     {
+                                         **local_meta,
+                                         "partial_extraction": True,
+                                         "partial_extraction_reason": "statement_totals_mismatch",
+                                     },
+                                 )
+                             print(
+                                 f"WARN: Tesseract UBA parser extracted {len(local_txns)} rows but totals mismatch "
+                                 f"(debit_diff={local_quality.get('debit_diff')}, credit_diff={local_quality.get('credit_diff')}). "
+                                 "Continuing fallback cascade."
+                             )
+                         else:
+                             print(f"DEBUG: Tesseract UBA parser extracted {len(local_txns)} txns.")
+                             return [{
+                                 "transactions": normalize_remarks(local_txns),
+                                 "metadata": local_meta,
+                             }]
                  except Exception as e:
                      print(f"DEBUG: Deterministic UBA OCR parse failed before AI fallback: {e}")
 
                  # AI fallback (UBA only; First Bank has no AI path)
                  print("DEBUG: UBA PDF requires AI extraction...")
-                 txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='uba', max_pages=15)
+                 txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='uba', max_pages=get_uba_ai_page_limit(len(pdf_pages)))
                  if txns:
                      uba_meta = {"method": "gemini_vision", **metadata}
                      if os.getenv("OPENAI_API_KEY"):
@@ -898,12 +1002,29 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                                      uba_meta[k] = v
                          except Exception as e_sum:
                              print(f"DEBUG: UBA metadata summary enrichment failed: {e_sum}")
-                     return [{"transactions": normalize_remarks(txns), "metadata": uba_meta}]
+                     ai_quality = assess_statement_total_match(txns, uba_meta)
+                     if ai_quality.get("has_statement_totals") and ai_quality.get("totals_match") is False:
+                         if uba_partial_candidate is None or len(txns) > len(uba_partial_candidate[0]):
+                             uba_partial_candidate = (
+                                 txns,
+                                 {
+                                     **uba_meta,
+                                     "partial_extraction": True,
+                                     "partial_extraction_reason": "statement_totals_mismatch",
+                                 },
+                             )
+                         print(
+                             f"WARN: UBA Gemini fallback returned {len(txns)} rows but totals mismatch "
+                             f"(debit_diff={ai_quality.get('debit_diff')}, credit_diff={ai_quality.get('credit_diff')}). "
+                             "Trying next fallback."
+                         )
+                     else:
+                         return [{"transactions": normalize_remarks(txns), "metadata": uba_meta}]
                  # Fallback: OpenAI Vision page-wise extraction for scanned UBA statements
                  if os.getenv("OPENAI_API_KEY"):
                      try:
                          from openai_vision import extract_transactions_from_pdf_with_openai, extract_statement_summary_with_openai
-                         oa_txns = extract_transactions_from_pdf_with_openai(str(pdf_path), max_pages=15)
+                         oa_txns = extract_transactions_from_pdf_with_openai(str(pdf_path), max_pages=get_uba_ai_page_limit(len(pdf_pages)))
                          if oa_txns:
                              print(f"DEBUG: UBA OpenAI fallback returned {len(oa_txns)} transactions")
                              oa_meta = {"method": "openai_vision_fallback"}
@@ -912,12 +1033,29 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                                  oa_meta.update({k: v for k, v in oa_summary.items() if v not in (None, "")})
                              except Exception as e_sum:
                                  print(f"DEBUG: UBA OpenAI summary extraction failed: {e_sum}")
-                             return [{"transactions": normalize_remarks(oa_txns), "metadata": oa_meta}]
+                             oa_meta = {**metadata, **oa_meta}
+                             oa_quality = assess_statement_total_match(oa_txns, oa_meta)
+                             if oa_quality.get("has_statement_totals") and oa_quality.get("totals_match") is False:
+                                 if uba_partial_candidate is None or len(oa_txns) > len(uba_partial_candidate[0]):
+                                     uba_partial_candidate = (
+                                         oa_txns,
+                                         {
+                                             **oa_meta,
+                                             "partial_extraction": True,
+                                             "partial_extraction_reason": "statement_totals_mismatch",
+                                         },
+                                     )
+                                 print(
+                                     f"WARN: UBA OpenAI fallback returned {len(oa_txns)} rows but totals mismatch "
+                                     f"(debit_diff={oa_quality.get('debit_diff')}, credit_diff={oa_quality.get('credit_diff')}). "
+                                     "Falling through to generic extraction path."
+                                 )
+                             else:
+                                 return [{"transactions": normalize_remarks(oa_txns), "metadata": oa_meta}]
                      except Exception as e:
                          print(f"WARN: UBA OpenAI fallback failed: {e}")
                  # Do not hard-return empty here. Let generic local extraction run as a final fallback.
-                 print("WARN: UBA AI fallback returned 0 txns. Falling through to generic extraction path.")
-
+                 print("WARN: UBA dedicated fallbacks did not produce a validating result. Falling through to generic extraction path.")
             elif bank_identifier == "access":
                  from access_engine import extract_access_via_coordinates
                  try:
@@ -977,7 +1115,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                     )
                     if is_uba_ocr:
                         try:
-                            page_limit = min(20, len(pdf_pages))
+                            page_limit = get_uba_ocr_page_limit(len(pdf_pages))
                             from local_ocr_parsers import parse_uba_tesseract_pdf
                             local_txns, local_meta = parse_uba_tesseract_pdf(str(pdf_path), max_pages=page_limit)
                             if local_txns:
@@ -1088,7 +1226,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 )
                 if bank_identifier == "uba" or (bank_identifier in {"auto", "generic", "unknown"} and is_uba_ocr):
                     try:
-                        page_limit = min(20, len(pdf_pages))
+                        page_limit = get_uba_ocr_page_limit(len(pdf_pages))
                         from local_ocr_parsers import parse_uba_tesseract_pdf
                         local_txns, local_meta = parse_uba_tesseract_pdf(str(pdf_path), max_pages=page_limit)
                         if local_txns:
@@ -1168,6 +1306,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 try:
                     page_limit = min(20, len(pdf_pages))
                     if bank_identifier == "uba":
+                        page_limit = get_uba_ocr_page_limit(len(pdf_pages))
                         from local_ocr_parsers import parse_uba_tesseract_pdf
                         local_txns, local_meta = parse_uba_tesseract_pdf(str(pdf_path), max_pages=page_limit)
                         if local_txns:
@@ -1199,6 +1338,13 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                     print(f"DEBUG: OCR fallback failed or exhausted: {e}")
                     metadata["error"] = str(e)
                     metadata["status"] = "Extraction failed (Header not found & Fallbacks failed)"
+                    if uba_partial_candidate:
+                        candidate_txns, candidate_meta = uba_partial_candidate
+                        print("WARN: Returning best partial UBA candidate after all fallback paths failed.")
+                        return [{
+                            "transactions": normalize_remarks(candidate_txns),
+                            "metadata": {**metadata, **candidate_meta},
+                        }]
                     return [{"transactions": [], "metadata": metadata}]
             
             column_debug = {col: f"{bounds[0]:.1f} to {bounds[1]:.1f}" for col, bounds in base_cuts.items()}
@@ -1667,6 +1813,13 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                     "metadata": best_meta
                 })
 
+            if not final_results and uba_partial_candidate:
+                candidate_txns, candidate_meta = uba_partial_candidate
+                print("WARN: Returning best partial UBA candidate because generic extraction produced no groups.")
+                return [{
+                    "transactions": normalize_remarks(candidate_txns),
+                    "metadata": {**metadata, **candidate_meta},
+                }]
             return final_results
 
     except Exception as e:
@@ -1674,6 +1827,13 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
         import traceback
         traceback.print_exc()
         metadata["error"] = str(e)
+        if uba_partial_candidate:
+            candidate_txns, candidate_meta = uba_partial_candidate
+            print("WARN: Returning best partial UBA candidate after extraction error.")
+            return [{
+                "transactions": normalize_remarks(candidate_txns),
+                "metadata": {**metadata, **candidate_meta},
+            }]
         return [{"transactions": [], "metadata": metadata}]
 
 
