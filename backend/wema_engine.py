@@ -46,7 +46,7 @@ def parse_wema_money(text: str) -> float | None:
         return None
 
 def detect_wema_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
-    header_keywords = ["TRAN", "DATE", "VALUE", "NARRATION", "DESCRIPTION", "REMARKS", "DETAILS", "PARTICULARS", "ID", "REFERENCE", "REF", "CHEQUE", "WITHDRAWALS", "DEPOSITS", "BALANCE", "DEBIT", "CREDIT"]
+    header_keywords = ["TRAN", "DATE", "VALUE", "TRANSACTION", "NARRATION", "DESCRIPTION", "REMARKS", "DETAILS", "PARTICULARS", "ID", "REFERENCE", "REF", "CHEQUE", "WITHDRAWALS", "DEPOSITS", "BALANCE", "DEBIT", "CREDIT"]
     
     header_words = [w for w in words if any(k in w["text"].upper() for k in header_keywords)]
     if len(header_words) < 5: return None
@@ -67,7 +67,8 @@ def detect_wema_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, f
 
     x_date_l, _ = find_x("TRAN")
     x_val_l, _ = find_x("VALUE")
-    x_desc_l, _ = find_x("NARRATION")
+    x_desc_l, _ = find_x("TRANSACTION")
+    if x_desc_l is None: x_desc_l, _ = find_x("NARRATION")
     if x_desc_l is None: x_desc_l, _ = find_x("DESCRIPTION")
     if x_desc_l is None: x_desc_l, _ = find_x("REMARKS")
     if x_desc_l is None: x_desc_l, _ = find_x("DETAILS")
@@ -170,6 +171,10 @@ def _is_wema_date_token(text: str) -> bool:
     token = (text or "").strip().strip(".,;:")
     if not token:
         return False
+    if re.fullmatch(r"20\d{2}", token):
+        return True
+    if re.fullmatch(r"\d{1,2}[-/]\d{1,2}[-/]?", token):
+        return True
     if re.fullmatch(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", token):
         return True
     if re.fullmatch(r"\d{1,2}[-/][A-Za-z]{3,9}[-/]\d{2,4}", token):
@@ -177,6 +182,37 @@ def _is_wema_date_token(text: str) -> bool:
     if re.fullmatch(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}", token):
         return True
     return False
+
+
+def infer_wema_statement_year(metadata: Dict[str, Any], pages: List[pdfplumber.page.Page]) -> int | None:
+    candidates = [
+        metadata.get("period"),
+        metadata.get("period_start"),
+        metadata.get("period_end"),
+        metadata.get("statement_period"),
+    ]
+    try:
+        if pages:
+            candidates.append(pages[0].extract_text() or "")
+    except Exception:
+        pass
+    for candidate in candidates:
+        match = re.search(r"\b(20\d{2})\b", str(candidate or ""))
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def parse_wema_date_token(date_text: str, statement_year: int | None) -> str | None:
+    parsed = parse_date_smart(date_text)
+    if parsed:
+        return parsed
+    text = (date_text or "").strip()
+    match = re.fullmatch(r"(\d{1,2})[-/](\d{1,2})[-/]?", text)
+    if match and statement_year:
+        candidate = f"{match.group(1).zfill(2)}-{match.group(2).zfill(2)}-{statement_year}"
+        return parse_date_smart(candidate)
+    return None
 
 
 def clean_wema_description(text: str) -> str:
@@ -439,6 +475,7 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
             if v is not None:
                 metadata[k] = v
         
+        statement_year = infer_wema_statement_year(metadata, _pdf_handle.pages)
         summary_keywords = ["TOTAL DEBIT", "TOTAL CREDIT", "TOTAL WITHDRAWAL", "TOTAL DEPOSIT", "TOTALS", "CARRIED FORWARD"]
         
         # 2. Detect columns. Some Wema statements place account-summary pages before the ledger,
@@ -492,7 +529,7 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
                 
                 # REINFORCE: The summary rows usually don't have dates in the transaction region.
                 date_str = row_data.get("date", "")
-                parsed_date = parse_date_smart(date_str)
+                parsed_date = parse_wema_date_token(date_str, statement_year)
                 if parsed_date:
                     last_txn_date = parsed_date
                 
@@ -514,7 +551,7 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
                         if merged_desc:
                             last_txn["description"] = merged_desc
                             last_txn["remarks"] = merged_desc
-                    else:
+                    elif last_txn is not None:
                         pending_desc_parts.append(row_desc)
                     continue
 

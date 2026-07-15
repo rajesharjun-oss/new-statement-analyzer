@@ -11,8 +11,11 @@ if str(BACKEND) not in sys.path:
 
 from wema_engine import (  # noqa: E402
     build_wema_description,
+    clean_wema_description,
+    detect_wema_columns,
     detect_wema_columns_in_pages,
     get_wema_header_scan_limit,
+    parse_wema_date_token,
     repair_wema_transaction_descriptions,
 )
 
@@ -104,6 +107,36 @@ class WemaEngineTests(unittest.TestCase):
         self.assertIn("N0129/AT68_TRF2MPTHYMYX2027643", description)
         self.assertNotIn("02-Mar-2026", description)
         self.assertNotIn("7,000.00", description)
+
+    def test_detect_wema_columns_supports_transaction_details_header(self):
+        header_words = [
+            word("Tran.", 24, 54),
+            word("date", 56, 84),
+            word("Value", 92, 130),
+            word("date", 132, 160),
+            word("Transaction", 170, 245),
+            word("details", 248, 296),
+            word("Debit", 340, 380),
+            word("Credit", 450, 496),
+            word("Balance", 535, 590),
+        ]
+
+        cuts = detect_wema_columns(header_words)
+
+        self.assertIsNotNone(cuts)
+        self.assertLess(cuts["description"][0], 180)
+        self.assertIn("debit", cuts)
+        self.assertIn("credit", cuts)
+
+    def test_wema_split_numeric_date_uses_statement_year(self):
+        self.assertEqual(parse_wema_date_token("01-06-", 2026), "01-Jun-2026")
+        self.assertIsNone(parse_wema_date_token("01-06-", None))
+
+    def test_clean_wema_description_removes_split_date_tokens(self):
+        self.assertEqual(
+            clean_wema_description("01-06- 2026 NIP:OPEYEMI VARIETY STORE"),
+            "NIP:OPEYEMI VARIETY STORE",
+        )
 
     def test_repair_wema_transaction_descriptions_uses_reference_as_last_resort(self):
         rows = [{"description": "", "reference": "N029/AT68_TRF2MPTHYMYX20276470"}]
