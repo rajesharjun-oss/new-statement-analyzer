@@ -15,9 +15,76 @@ from pdf_extractor import (  # noqa: E402
     get_uba_ai_page_limit,
     get_uba_ocr_page_limit,
 )
+from uba_engine import _extract_uba_amount_line_transactions  # noqa: E402
 
+
+
+class _FakeUBAPage:
+    def __init__(self, words):
+        self._words = words
+
+    def extract_words(self, **_kwargs):
+        return list(self._words)
+
+
+class _FakeUBAPdf:
+    def __init__(self, words):
+        self.pages = [_FakeUBAPage(words)]
+
+
+def _word(text, x0, x1, top):
+    return {"text": text, "x0": x0, "x1": x1, "top": top}
 
 class UBAExtractionQualityTests(unittest.TestCase):
+
+    def test_uba_amount_line_parser_extracts_every_printed_amount(self):
+        words = [
+            _word("TRANS", 35.9, 63.7, 100.0),
+            _word("DATE", 66.1, 87.9, 100.0),
+            _word("VALUE", 100.1, 127.0, 100.0),
+            _word("DATE", 129.5, 151.3, 100.0),
+            _word("NARRATION", 197.2, 245.5, 100.0),
+            _word("DEBIT", 343.9, 368.1, 100.0),
+            _word("CREDIT", 425.8, 456.3, 100.0),
+            _word("BALANCE", 507.0, 545.2, 100.0),
+            _word("Gift", 161.2, 176.8, 116.0),
+            _word("79", 179.5, 190.6, 116.0),
+            _word("04-Jan-2026", 33.7, 89.8, 126.0),
+            _word("03-Jan-2026", 97.4, 153.6, 126.0),
+            _word("55,000.00", 435.7, 480.1, 126.0),
+            _word("254,715.86", 515.1, 565.2, 126.0),
+            _word("CHQ100", 161.2, 200.1, 146.0),
+            _word("TRF", 202.8, 222.2, 146.0),
+            _word("13-Jan-2026", 33.7, 89.8, 156.0),
+            _word("13-Jan-2026", 97.4, 153.6, 156.0),
+            _word("100,000.00", 345.1, 395.1, 156.0),
+            _word("154,715.86", 515.1, 565.2, 156.0),
+            _word("02-Feb-", 33.7, 68.7, 186.0),
+            _word("02-Feb-", 97.4, 132.4, 186.0),
+            _word("Transfer", 161.2, 198.4, 186.0),
+            _word("from", 201.1, 221.1, 186.0),
+            _word("20,000.00", 435.7, 480.1, 196.0),
+            _word("174,715.86", 515.1, 565.2, 196.0),
+            _word("LATIFAT", 223.8, 263.7, 196.0),
+            _word("2026", 33.7, 55.9, 206.0),
+            _word("2026", 97.4, 119.7, 206.0),
+        ]
+        txns, metadata = _extract_uba_amount_line_transactions(
+            _FakeUBAPdf(words),
+            {
+                "statement_total_debit": "100,000.00",
+                "statement_total_credit": "75,000.00",
+            },
+        )
+
+        self.assertEqual(len(txns), 3)
+        self.assertEqual(metadata["method"], "uba_amount_lines")
+        self.assertEqual(txns[0]["description"], "Gift 79")
+        self.assertEqual(txns[1]["debit"], 100000.0)
+        self.assertEqual(txns[2]["date"], "02-Feb-2026")
+        self.assertEqual(txns[2]["description"], "Transfer from LATIFAT")
+        self.assertEqual(sum(t["debit"] for t in txns), 100000.0)
+        self.assertEqual(sum(t["credit"] for t in txns), 75000.0)
     def test_partial_rows_fail_statement_total_quality_gate(self):
         transactions = [{"debit": "51,504.80", "credit": "0.00"}]
         transactions.extend({"debit": "0.00", "credit": "0.00"} for _ in range(29))
