@@ -554,10 +554,13 @@ def detect_template(first_page_text: str) -> str:
         return "access"
     # WEMA must be checked before UBA: WEMA uses plural "Withdrawals"/"Deposits" which
     # accidentally matches the UBA "withdrawal"/"deposit" substring check.
-    # Require "narration" as the 3rd signal — Access/UBA use "description"/"withdrawal", not "narration".
-    # Use a wider 2500-char window so the table header is included even on dense first pages.
-    _wema_zone = text[:2500]
-    if "withdrawals" in _wema_zone and "deposits" in _wema_zone and "narration" in _wema_zone:
+    # Prefer the Wema brand when present; otherwise require Wema-style money columns
+    # plus one description/narration-like header signal in a wider first-page window.
+    if "wema bank" in header_text or "wemabank" in header_text:
+        return "wema"
+    _wema_zone = text[:3500]
+    wema_desc_signal = any(k in _wema_zone for k in ["narration", "description", "remarks", "details", "particulars"])
+    if "withdrawals" in _wema_zone and "deposits" in _wema_zone and wema_desc_signal:
         return "wema"
     # Tighten UBA detection to avoid false positives on Zenith-like layouts that
     # also use "DATE POSTED / VALUE DATE / DEBIT / CREDIT / BALANCE".
@@ -905,9 +908,13 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
             if bank_identifier == "wema":
                  print("\n!!! ROUTING: Wema Bank Identified - Calling Unified 2.1 Engine !!!")
                  from wema_engine import extract_wema_via_coordinates
-                 wm_txns, wm_meta = extract_wema_via_coordinates(Path(pdf_path), metadata, pdf=pdf)
-                 print(f"!!! ROUTING: Wema Engine returned {len(wm_txns)} transactions\n")
-                 if wm_txns: return [{"transactions": normalize_remarks(wm_txns), "metadata": wm_meta}]
+                 try:
+                     wm_txns, wm_meta = extract_wema_via_coordinates(Path(pdf_path), metadata, pdf=pdf)
+                     print(f"!!! ROUTING: Wema Engine returned {len(wm_txns)} transactions\n")
+                     if wm_txns: return [{"transactions": normalize_remarks(wm_txns), "metadata": wm_meta}]
+                     print("WARN: Wema engine returned 0 txns. Falling through to generic extraction path.")
+                 except Exception as e:
+                     print(f"WARN: Wema engine failed: {e}. Falling through to generic extraction path.")
 
             if bank_identifier == "sterling":
                  from sterling_engine import extract_sterling_via_coordinates

@@ -46,7 +46,7 @@ def parse_wema_money(text: str) -> float | None:
         return None
 
 def detect_wema_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, float]] | None:
-    header_keywords = ["TRAN", "DATE", "VALUE", "NARRATION", "ID", "CHEQUE", "WITHDRAWALS", "DEPOSITS", "BALANCE", "DEBIT", "CREDIT"]
+    header_keywords = ["TRAN", "DATE", "VALUE", "NARRATION", "DESCRIPTION", "REMARKS", "DETAILS", "PARTICULARS", "ID", "REFERENCE", "REF", "CHEQUE", "WITHDRAWALS", "DEPOSITS", "BALANCE", "DEBIT", "CREDIT"]
     
     header_words = [w for w in words if any(k in w["text"].upper() for k in header_keywords)]
     if len(header_words) < 5: return None
@@ -68,7 +68,13 @@ def detect_wema_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, f
     x_date_l, _ = find_x("TRAN")
     x_val_l, _ = find_x("VALUE")
     x_desc_l, _ = find_x("NARRATION")
+    if x_desc_l is None: x_desc_l, _ = find_x("DESCRIPTION")
+    if x_desc_l is None: x_desc_l, _ = find_x("REMARKS")
+    if x_desc_l is None: x_desc_l, _ = find_x("DETAILS")
+    if x_desc_l is None: x_desc_l, _ = find_x("PARTICULARS")
     x_id_l, _   = find_x("ID")
+    if x_id_l is None: x_id_l, _ = find_x("REFERENCE")
+    if x_id_l is None: x_id_l, _ = find_x("REF")
     x_wid_l, x_wid_r = find_x("WITHDRAWALS")
     if x_wid_l is None: x_wid_l, x_wid_r = find_x("DEBIT")
 
@@ -80,7 +86,9 @@ def detect_wema_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float, f
     if x_date_l and os.getenv("WEMA_DEBUG_LAYOUT"):
          print(f"  [WEMA-LAYOUT] Header Audit - Date: {x_date_l}, Width: {x_wid_l}, Dep: {x_dep_l}")
 
-    if x_date_l is None or x_wid_l is None: return None
+    if x_date_l is None or x_wid_l is None or x_dep_l is None or x_bal_l is None: return None
+    if x_desc_l is None:
+        x_desc_l = x_date_l + 55
 
     # Column Slices (WIDENED for Billion-Naira Support - Extreme -32)
     cuts = {
@@ -115,6 +123,124 @@ def pymupdf_wema_words(doc: Any, page_index: int) -> List[Dict[str, Any]]:
             "doctop": float(w[1]) + page_index * page_height,
         })
     return words
+
+def get_wema_header_scan_limit(total_pages: int) -> int:
+    try:
+        configured = int(os.getenv("WEMA_HEADER_SCAN_PAGES", "12"))
+    except (TypeError, ValueError):
+        configured = 12
+    configured = max(2, min(configured, 50))
+    return min(max(total_pages, 0), configured)
+
+
+def _wema_words_for_page(pdf_handle: Any, fast_doc: Any, use_fast_words: bool, page_index: int) -> List[Dict[str, Any]]:
+    if use_fast_words and fast_doc is not None:
+        return pymupdf_wema_words(fast_doc, page_index)
+    return pdf_handle.pages[page_index].extract_words(x_tolerance=2, y_tolerance=2)
+
+
+def detect_wema_columns_in_pages(
+    pdf_handle: Any,
+    fast_doc: Any = None,
+    use_fast_words: bool = False,
+    max_pages: int | None = None,
+) -> Tuple[Dict[str, Tuple[float, float]] | None, int | None]:
+    total_pages = len(pdf_handle.pages)
+    scan_limit = min(total_pages, max_pages or get_wema_header_scan_limit(total_pages))
+    for page_index in range(scan_limit):
+        try:
+            words = _wema_words_for_page(pdf_handle, fast_doc, use_fast_words, page_index)
+        except Exception as exc:
+            print(f"  [WEMA-HEADER] Could not read page {page_index + 1}: {exc}")
+            continue
+        cuts = detect_wema_columns(words or [])
+        if cuts:
+            return cuts, page_index
+    return None, None
+
+
+WEMA_DESC_NOISE_TOKENS = {
+    "TRAN", "TRANS", "TRANSACTION", "DATE", "VALUE", "NARRATION",
+    "ID", "CHEQUE", "WITHDRAWALS", "WITHDRAWAL", "DEPOSITS", "DEPOSIT",
+    "DEBIT", "CREDIT", "BALANCE", "OPENING", "CLOSING", "TOTAL", "TOTALS",
+}
+
+
+def _is_wema_date_token(text: str) -> bool:
+    token = (text or "").strip().strip(".,;:")
+    if not token:
+        return False
+    if re.fullmatch(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", token):
+        return True
+    if re.fullmatch(r"\d{1,2}[-/][A-Za-z]{3,9}[-/]\d{2,4}", token):
+        return True
+    if re.fullmatch(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}", token):
+        return True
+    return False
+
+
+def clean_wema_description(text: str) -> str:
+    text = re.sub(r"\s+", " ", str(text or "")).strip(" -|;:,\t")
+    if not text:
+        return ""
+    parts = []
+    for part in text.split():
+        stripped = part.strip(" -|;:,\t")
+        upper = stripped.upper().replace(".", "")
+        if not stripped:
+            continue
+        if upper in WEMA_DESC_NOISE_TOKENS:
+            continue
+        if _is_wema_date_token(stripped):
+            continue
+        parts.append(stripped)
+    cleaned = " ".join(parts)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -|;:,\t")
+    return cleaned
+
+
+def build_wema_description(
+    row_words: List[Dict[str, Any]],
+    cuts: Dict[str, Tuple[float, float]],
+    row_data: Dict[str, str],
+) -> str:
+    desc_direct = clean_wema_description(row_data.get("description", ""))
+    ref_direct = clean_wema_description(row_data.get("tran_id", ""))
+    if desc_direct:
+        if ref_direct and ref_direct not in desc_direct:
+            return clean_wema_description(f"{desc_direct} {ref_direct}")
+        return desc_direct
+
+    date_end = cuts.get("date", (0.0, 0.0))[1]
+    debit_start = cuts.get("debit", (1000.0, 1000.0))[0]
+    fallback_parts: List[str] = []
+    for word in sorted(row_words, key=lambda w: w.get("x0", 0.0)):
+        text = str(word.get("text", "")).strip()
+        if not text:
+            continue
+        if word.get("x0", 0.0) < date_end - 4:
+            continue
+        if word.get("x1", 0.0) > debit_start - 2:
+            continue
+        candidate = clean_wema_description(text)
+        if candidate:
+            fallback_parts.append(candidate)
+    fallback = clean_wema_description(" ".join(fallback_parts))
+    if fallback:
+        if ref_direct and ref_direct not in fallback:
+            return clean_wema_description(f"{fallback} {ref_direct}")
+        return fallback
+    return ref_direct
+
+def repair_wema_transaction_descriptions(txns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    for txn in txns:
+        desc = clean_wema_description(txn.get("description", ""))
+        ref = clean_wema_description(txn.get("reference", ""))
+        if not desc and ref:
+            desc = ref
+        txn["description"] = desc
+        txn["remarks"] = desc or ref
+    return txns
 
 def extract_wema_summary(pages: List[pdfplumber.page.Page], existing_summary: Dict[str, float] = None) -> Dict[str, float]:
     """
@@ -315,20 +441,22 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
         
         summary_keywords = ["TOTAL DEBIT", "TOTAL CREDIT", "TOTAL WITHDRAWAL", "TOTAL DEPOSIT", "TOTALS", "CARRIED FORWARD"]
         
-        # 2. Detect columns
-        words_p0 = pymupdf_wema_words(fast_doc, 0) if use_fast_words and fast_doc is not None else _pdf_handle.pages[0].extract_words()
-        cuts = detect_wema_columns(words_p0)
-        
+        # 2. Detect columns. Some Wema statements place account-summary pages before the ledger,
+        # so scan deeper than the first two pages before giving up.
+        header_scan_limit = get_wema_header_scan_limit(_total_pages)
+        cuts, header_page_idx = detect_wema_columns_in_pages(
+            _pdf_handle,
+            fast_doc=fast_doc,
+            use_fast_words=use_fast_words,
+            max_pages=header_scan_limit,
+        )
         if not cuts:
-             words_p1 = (
-                 pymupdf_wema_words(fast_doc, 1)
-                 if use_fast_words and fast_doc is not None and _total_pages > 1
-                 else _pdf_handle.pages[1].extract_words() if _total_pages > 1 else []
-             )
-             cuts = detect_wema_columns(words_p1)
-        if not cuts:
-            raise ValueError("Wema column headers not found in first 2 pages.")
+            raise ValueError(f"Wema column headers not found in first {header_scan_limit} pages.")
+        if header_page_idx:
+            print(f"  [WEMA-HEADER] Transaction header found on page {header_page_idx + 1}.")
 
+        pending_desc_parts: List[str] = []
+        last_txn = None
         for i, page in enumerate(_pdf_handle.pages):
             if (i + 1) % 50 == 0 or i == 0:
                 print(f"  [WEMA-PROGRESS] Processing Page {i+1}/{_total_pages}...")
@@ -378,6 +506,17 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
                 debit_val = parse_wema_money(row_data.get("debit", ""))
                 credit_val = parse_wema_money(row_data.get("credit", ""))
                 balance_val = parse_wema_money(row_data.get("balance", "")) or 0.0
+                row_desc = build_wema_description(row_words, cuts, row_data)
+
+                if not parsed_date and not (debit_val or credit_val) and row_desc:
+                    if last_txn is not None and last_txn.get("page") == i + 1:
+                        merged_desc = clean_wema_description((last_txn.get("description", "") + " " + row_desc).strip())
+                        if merged_desc:
+                            last_txn["description"] = merged_desc
+                            last_txn["remarks"] = merged_desc
+                    else:
+                        pending_desc_parts.append(row_desc)
+                    continue
 
                 if not parsed_date and (debit_val or credit_val):
                     desc_probe = row_data.get("description", "").strip()
@@ -409,14 +548,17 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
                 if parsed_date and (debit_val or credit_val):
                     # ADDITIONAL GUARD: If we have a massive number but no description or small description, 
                     # it might be a misaligned total from the header.
-                    desc = row_data.get("description", "").strip()
+                    desc = row_desc
+                    if pending_desc_parts:
+                        desc = clean_wema_description(" ".join(pending_desc_parts + [desc]))
+                        pending_desc_parts = []
+                    if not desc:
+                        desc = clean_wema_description(row_data.get("tran_id", ""))
                     
                     # If date exists but it's clearly a summary row (e.g. "Opening Balance" row might have a date printed in header)
                     if "OPENING BAL" in row_full_text or "CLOSING BAL" in row_full_text:
                         continue
 
-                    if row_data.get("tran_id") and not any(c.isdigit() for c in row_data["tran_id"]):
-                         desc = (desc + " " + row_data["tran_id"]).strip()
                     
                     # LOG BILLIONS FOR VERIFICATION
                     if (debit_val or 0) > 1000000000 or (credit_val or 0) > 1000000000:
@@ -425,12 +567,14 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
                     txns.append({
                         "date": parsed_date,
                         "description": desc,
+                        "remarks": desc,
                         "reference": row_data.get("tran_id", "").strip(),
                         "debit": debit_val or 0.0,
                         "credit": credit_val or 0.0,
                         "balance": balance_val,
                         "page": i + 1
                     })
+                    last_txn = txns[-1]
                     last_txn_date = parsed_date
 
     finally:
@@ -527,6 +671,7 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
             "credit": round(adj_credit, 2),
         }
 
+    txns = repair_wema_transaction_descriptions(txns)
     if txns:
         txns = _infer_balances(txns)
         txns, chain_adj = _insert_chain_adjustments(txns)
