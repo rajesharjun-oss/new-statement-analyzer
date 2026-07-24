@@ -113,6 +113,10 @@ ZENITH_DESC_NOISE = (
     "BALANCE BROUGHT FORWARD",
     "BALANCE CARRIED FORWARD",
 )
+ZENITH_NARRATION_START_RE = re.compile(
+    r"\b(?:NIP|NEFT|RTGS|CQ|TRF|TRANSFER|POS|WEB|USSD|ATM|SMS|FGN|MONEY|ACCT|FEE)\b",
+    re.I,
+)
 
 
 def _is_money_like(text: str) -> bool:
@@ -128,7 +132,22 @@ def _is_date_like(text: str) -> bool:
 
 def _clean_zenith_description(text: str) -> str:
     text = re.sub(r"\s+", " ", str(text or "")).strip()
-    return text.strip(" -|/")
+    text = re.sub(r"\s*,\s*,\s*", ", ", text)
+    text = re.sub(r"\s*,\s*", ", ", text)
+    text = text.strip(" -|/")
+
+    # Some Zenith PDFs expose a branch/location column immediately before the
+    # actual narration. Only strip compact duplicated prefixes such as
+    # "IKOYI, IKOYI" when a known narration token follows.
+    match = ZENITH_NARRATION_START_RE.search(text)
+    if match and match.start() > 0:
+        prefix = text[:match.start()].strip(" ,")
+        tokens = [tok for tok in re.split(r"[\s,]+", prefix.upper()) if tok]
+        has_duplicate_prefix = len(tokens) <= 4 and len(set(tokens)) < len(tokens)
+        if has_duplicate_prefix:
+            text = text[match.start():].strip(" -|/")
+
+    return text
 
 
 def _is_zenith_description_noise(text: str) -> bool:
