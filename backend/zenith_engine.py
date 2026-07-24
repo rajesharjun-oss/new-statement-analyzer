@@ -95,6 +95,88 @@ def detect_zenith_columns(words: List[Dict[str, Any]]) -> Dict[str, Tuple[float,
         
     return cuts
 
+
+ZENITH_CONTINUATION_Y_GAP = 18.0
+ZENITH_MONEY_RE = re.compile(r"^[\-()]?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?[)]?$|^[\-()]?\d+(?:\.\d{1,2})?[)]?$")
+ZENITH_DATE_RE = re.compile(
+    r"^(?:\d{1,2}[-/][A-Za-z]{3}[-/]\d{2,4}|\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{1,2}-\d{1,2})$",
+    re.I,
+)
+ZENITH_HEADER_TOKENS = {
+    "DATE", "POSTED", "VALUE", "VAL", "DESCRIPTION", "REMARKS",
+    "DEBIT", "CREDIT", "BALANCE", "WITHDRAWAL", "DEPOSIT",
+}
+ZENITH_DESC_NOISE = (
+    "OPENING",
+    "OPENING BALANCE",
+    "CLOSING BALANCE",
+    "BALANCE BROUGHT FORWARD",
+    "BALANCE CARRIED FORWARD",
+)
+
+
+def _is_money_like(text: str) -> bool:
+    raw = str(text or "").strip()
+    if re.fullmatch(r"\d{1,4}", raw):
+        return False
+    return bool(ZENITH_MONEY_RE.match(raw))
+
+
+def _is_date_like(text: str) -> bool:
+    return bool(ZENITH_DATE_RE.match(str(text or "").strip()))
+
+
+def _clean_zenith_description(text: str) -> str:
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    return text.strip(" -|/")
+
+
+def _is_zenith_description_noise(text: str) -> bool:
+    upper = _clean_zenith_description(text).upper()
+    return any(marker in upper for marker in ZENITH_DESC_NOISE)
+
+
+def _append_zenith_description(existing: str, extra: str) -> str:
+    existing = _clean_zenith_description(existing)
+    extra = _clean_zenith_description(extra)
+    if not extra:
+        return existing
+    if not existing:
+        return extra
+    if extra.upper() in existing.upper():
+        return existing
+    return f"{existing} {extra}".strip()
+
+
+def _description_from_row_words(row_words: List[Dict[str, Any]], cuts: Dict[str, Tuple[float, float]]) -> str:
+    """Recover Zenith descriptions whose text starts left of the centered DESCRIPTION header."""
+    if "description" not in cuts:
+        return ""
+
+    desc_left, desc_right = cuts["description"]
+    money_left = min(
+        [cuts[name][0] for name in ("debit", "credit", "balance") if name in cuts] or [desc_right]
+    )
+    left_guard = max(0.0, desc_left - 80.0)
+    right_guard = min(desc_right, money_left - 3.0)
+
+    parts: List[str] = []
+    for word in sorted(row_words, key=lambda item: item.get("x0", 0.0)):
+        token = str(word.get("text", "")).strip()
+        if not token:
+            continue
+        x0 = float(word.get("x0", 0.0))
+        if x0 < left_guard or x0 >= right_guard:
+            continue
+        upper = token.upper().strip(":")
+        if upper in ZENITH_HEADER_TOKENS:
+            continue
+        if _is_date_like(token) or _is_money_like(token):
+            continue
+        parts.append(token)
+
+    return _clean_zenith_description(" ".join(parts))
+
 def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: pdfplumber.PDF = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     from pdf_extractor import parse_date_smart, first_money, is_noise_row
     txns = []
@@ -129,6 +211,7 @@ def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
              
         pending_description = ""
         last_date_y = -999  # Y position of the last date/money row
+        last_anchor_page = -1
         
         for pg_num, page in enumerate(_pdf_handle.pages):
             words = page.extract_words()
@@ -164,7 +247,8 @@ def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
                     
                 date_str = row_dict.get("date", "").strip()
                 parsed_date = parse_date_smart(date_str)
-                desc = row_dict.get("description", "").strip()
+                desc = _description_from_row_words(row_words, cuts) or row_dict.get("description", "").strip()
+                raw_text = " ".join(w.get("text", "") for w in sorted(row_words, key=lambda item: item.get("x0", 0.0))).strip()
                 
                 has_money = any([row_dict.get("debit"), row_dict.get("credit"), row_dict.get("balance")])
                 
@@ -176,19 +260,20 @@ def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
                     # or a LEAD-IN for the next txn (far Y)?
                     y_gap = y - last_date_y
                     
-                    if txns and y_gap <= 6:
+                    if _is_zenith_description_noise(desc):
+                        continue
+                    if txns and last_anchor_page == pg_num and 0 < y_gap <= ZENITH_CONTINUATION_Y_GAP:
                         # Close to last date row = continuation of previous transaction
-                        txns[-1]["description"] = (txns[-1]["description"] + " " + desc).strip()
+                        txns[-1]["description"] = _append_zenith_description(txns[-1].get("description", ""), desc)
                         txns[-1]["remarks"] = txns[-1]["description"]
                     else:
                         # Far from last date row = lead-in for next transaction
-                        if pending_description:
-                            pending_description += " "
-                        pending_description += desc
+                        pending_description = _append_zenith_description(pending_description, desc)
                     continue
 
                 if parsed_date and len(date_str) > 6:
                     last_date_y = y
+                    last_anchor_page = pg_num
                     
                     # New transaction
                     debit_str = first_money(row_dict.get("debit", ""))
@@ -202,10 +287,12 @@ def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
                     # Combine with buffered description
                     full_desc = desc
                     if pending_description:
-                        full_desc = f"{pending_description} {desc}".strip()
+                        full_desc = _append_zenith_description(pending_description, desc)
                         pending_description = ""
                     
                     txn = {
+                        "_page": pg_num + 1,
+                        "_row": y,
                         "date": parsed_date,
                         "value_date": parse_date_smart(row_dict.get("value_date", "")) or parsed_date,
                         "description": full_desc,
@@ -214,7 +301,8 @@ def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
                         "credit": credit,
                         "balance": bal,
                         "category": "Uncategorized",
-                        "remarks": full_desc
+                        "remarks": full_desc,
+                        "raw_text": raw_text
                     }
                     
                     if not is_noise_row(txn):
@@ -222,7 +310,7 @@ def extract_zenith_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
                 else:
                     if txns and desc:
                         # Trailing multi-line description
-                        txns[-1]["description"] = (txns[-1]["description"] + " " + desc).strip()
+                        txns[-1]["description"] = _append_zenith_description(txns[-1].get("description", ""), desc)
                         txns[-1]["remarks"] = txns[-1]["description"]
 
     finally:
