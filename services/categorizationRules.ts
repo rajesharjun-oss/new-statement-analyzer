@@ -209,6 +209,7 @@ const RULES: Rule[] = [
     side: "debit",
     category: "Administrative Expenses",
     confidence: 0.95
+  },
   {
     id: "R090_GENERIC_OUTWARD_TRANSFER",
     priority: 90,

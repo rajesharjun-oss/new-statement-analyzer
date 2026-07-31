@@ -1,9 +1,10 @@
-import google.generativeai as genai
 import os
 import re
 from dotenv import load_dotenv
 from pathlib import Path
 from typing import List, Dict
+
+from gemini_client import generate_gemini_text
 
 # Load .env from project root
 env_path = Path(__file__).parent.parent / '.env'
@@ -62,10 +63,11 @@ def extract_text_with_gemini_vision(image_bytes: bytes) -> str:
         api_key = keys[_current_key_index % len(keys)]
         _current_key_index += 1
         try:
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-2.0-flash')
-            response = model.generate_content(["Perform OCR on this bank statement page.", img])
-            return response.text if response else ""
+            return generate_gemini_text(
+                api_key,
+                "gemini-2.0-flash",
+                ["Perform OCR on this bank statement page.", img],
+            )
         except Exception as e:
             if _is_quota_or_rate_limit_error(e):
                 print("DEBUG: Gemini OCR key quota/rate limited. Trying next key...")
@@ -110,21 +112,19 @@ def extract_scanned_statement(pdf_path: str, bank_identifier: str = "generic", m
         _current_key_index += 1
 
         try:
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-2.0-flash')
-
             print(f"DEBUG: Gemini Vision - Executing OCR on {len(images)} pages...")
             payload_phase1 = [prompt_extractor] + images
-            response_phase1 = model.generate_content(
+            raw_psv_text = generate_gemini_text(
+                api_key,
+                "gemini-2.0-flash",
                 payload_phase1,
-                generation_config=genai.types.GenerationConfig(max_output_tokens=8192)
+                max_output_tokens=8192,
             )
 
-            if not response_phase1 or not response_phase1.text:
+            if not raw_psv_text:
                 print("DEBUG: Gemini Vision - Phase 1 received empty response. Trying next key...")
                 continue
 
-            raw_psv_text = response_phase1.text.strip()
             raw_psv_text = re.sub(r'^```(csv|psv|text)?\s*', '', raw_psv_text, flags=re.I)
             raw_psv_text = re.sub(r'```$', '', raw_psv_text, flags=re.I)
 
@@ -278,20 +278,14 @@ def gemini_ocr_to_text(pdf_path: str, max_pages: int = 20) -> str:
     for attempt in range(len(keys)):
         api_key = keys[_current_key_index % len(keys)]
         _current_key_index += 1
-        try:
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel("gemini-2.0-flash")
-        except Exception as e:
-            print(f"DEBUG [gemini_ocr_to_text]: Gemini config failed on key {attempt + 1}/{len(keys)}: {e}")
-            continue
-
         payload = [ocr_prompt] + images
         try:
-            response = model.generate_content(
+            combined = generate_gemini_text(
+                api_key,
+                "gemini-2.0-flash",
                 payload,
-                generation_config=genai.types.GenerationConfig(max_output_tokens=8192),
+                max_output_tokens=8192,
             )
-            combined = (response.text or "").strip()
             if combined:
                 print(f"DEBUG [gemini_ocr_to_text]: Batch OCR complete - {len(combined)} chars from {len(images)} pages.")
                 return combined
@@ -307,11 +301,12 @@ def gemini_ocr_to_text(pdf_path: str, max_pages: int = 20) -> str:
         hard_fail = False
         for page_num, img in enumerate(images, 1):
             try:
-                response = model.generate_content(
+                page_text = generate_gemini_text(
+                    api_key,
+                    "gemini-2.0-flash",
                     [ocr_prompt, img],
-                    generation_config=genai.types.GenerationConfig(max_output_tokens=4096),
+                    max_output_tokens=4096,
                 )
-                page_text = (response.text or "").strip()
                 all_parts.append(f"=== PAGE {page_num} ===\n{page_text}")
                 print(f"DEBUG [gemini_ocr_to_text]: Page {page_num} OCR'd ({len(page_text)} chars)")
             except Exception as e2:

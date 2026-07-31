@@ -1,5 +1,4 @@
 import os
-import google.generativeai as genai
 from PIL import Image
 import io
 import fitz
@@ -8,6 +7,8 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Any
 import re
 import pdfplumber
+
+from gemini_client import generate_gemini_text
 
 # Load .env from project root
 env_path = Path(__file__).parent.parent / ".env"
@@ -21,15 +22,14 @@ def detect_columns_via_vision(pdf_path: Path, page_index: int = 0) -> Dict[str, 
         return None
     
     try:
-        genai.configure(api_key=api_key)
-        # Using gemini-2.0-flash for speed/quota
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        
         doc = fitz.open(str(pdf_path))
-        page = doc[page_index]
-        # High DPI for better recognition
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-        img = Image.open(io.BytesIO(pix.tobytes("png")))
+        try:
+            page = doc[page_index]
+            # High DPI for better recognition
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            img = Image.open(io.BytesIO(pix.tobytes("png")))
+        finally:
+            doc.close()
         
         prompt = """
         Identify the horizontal (x) boundaries for these columns in the bank statement:
@@ -38,8 +38,11 @@ def detect_columns_via_vision(pdf_path: Path, page_index: int = 0) -> Dict[str, 
         Use a scale of 0 to 600 (standard PDF points). If a column is missing, omit it from JSON.
         """
         
-        response = model.generate_content([prompt, img])
-        raw_text = response.text
+        raw_text = generate_gemini_text(
+            api_key,
+            "gemini-2.0-flash",
+            [prompt, img],
+        )
         # Extract JSON from potential markdown
         import json
         match = re.search(r"({.*})", raw_text, re.DOTALL)

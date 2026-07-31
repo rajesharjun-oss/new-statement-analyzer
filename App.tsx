@@ -1,5 +1,5 @@
 
-import React, { useMemo, useState, useEffect, useDeferredValue, memo } from "react";
+import React, { useMemo, useState, useDeferredValue, memo } from "react";
 import { FixedSizeList as List, areEqual } from 'react-window';
 import AutoSizer from "react-virtualized-auto-sizer";
 import {
@@ -24,9 +24,7 @@ import {
 } from 'recharts';
 
 import { Button, Card, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Progress, cn, Badge, Input } from "./components/PrimitiveUI";
-import { SettingsModal } from './components/SettingsModal';
 import { AIAnalysisWorkspace } from './components/AIAnalysisWorkspace';
-// import { analyzeBankStatement } from './services/geminiService'; // Removed
 import { analyzeDocument } from './services/analysisService';
 import { generateExcel } from './services/excelService';
 import { AnalysisResult, Transaction, DecisionSource } from './types';
@@ -138,21 +136,8 @@ export default function App() {
    const deferredSearchTerm = useDeferredValue(searchTerm);
 
    const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
-   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-   const [userApiKey, setUserApiKey] = useState<string>('');
-   const [useDeepScan, setUseDeepScan] = useState(false);
    const [activeTab, setActiveTab] = useState<"workspace" | "converter">("workspace");
 
-   useEffect(() => {
-      const storedKey = localStorage.getItem('gemini_custom_key');
-      if (storedKey) setUserApiKey(storedKey);
-   }, []);
-
-   const handleSaveSettings = (key: string) => {
-      setUserApiKey(key);
-      if (key) localStorage.setItem('gemini_custom_key', key);
-      else localStorage.removeItem('gemini_custom_key');
-   };
 
    const txns: Txn[] = useMemo(() => {
       if (!analysisResult) return [];
@@ -292,7 +277,6 @@ export default function App() {
             file.name.toLowerCase().endsWith('.csv');
 
          if (file.type === 'application/pdf' || isExcelCsv) {
-            // Use static import (defined at top)
             const result = await analyzeDocument(
                file,
                selectedBank,
@@ -300,57 +284,11 @@ export default function App() {
                   setBatchStatus(`${msg} (${progress}%)`);
                }
             );
-            // We need to update analyzeDocument signature too! Or pass it via backendService directly?
-            // analyzeDocument in analysisService.ts currently wraps analyzeWithBackend.
-            // Let's look at analysisService.ts. 
-            // WAIT - I need to update analysisService.ts first or bypass it?
-            // For now, I will modify analysisService.ts in the next step.
-            // But here I should pass it. Let's assume analysisService.ts will accept it as 2nd arg?
-            // Actually, analyzeDocument signature is (file, apiKey, onProgress).
-            // userApiKey is arguably irrelevant for local backend logic, but kept for legacy?
-            // I should update analyzeDocument to accept bankId.
 
-            console.log("DEBUG: analyzeDocument result in App:", result); // LOG 3
             setAnalysisResult(result);
             setHasFile(true);
          } else {
-            // EXISTING LOGIC FOR IMAGES (or Fallback)
-            /*
-           const reader = new FileReader();
-           reader.onload = async (e) => {
-              const base64 = (e.target?.result as string).split(',')[1];
-              try {
-                 const result = await analyzeBankStatement(
-                    base64,
-                    file.type,
-                    userApiKey,
-                    (interimTxns, progress, msg, partialStats) => {
-                       setBatchStatus(`${msg} (${progress}%)`);
-                       if (interimTxns.length > 0 && partialStats) {
-                          setAnalysisResult({
-                             transactions: interimTxns,
-                             reconciliation_failed: false,
-                             reconciliation_warnings: [],
-                             error_indices: [],
-                             currency: partialStats.currency || "NGN",
-                             organizationName: partialStats.orgName || "Scanning...",
-                             bankName: partialStats.bankName || "Scanning...",
-                          });
-                          setHasFile(true);
-                       }
-                    },
-                    useDeepScan
-                 );
-                 setAnalysisResult(result);
-                 setHasFile(true);
-              } catch (err: any) {
-                 setError(err.message || "Failed to analyze document");
-              }
-           };
-           reader.onerror = () => { setError("File reading failed"); setIsAnalyzing(false); clearInterval(timerInterval); };
-           reader.readAsDataURL(file);
-           */
-            setError("Image analysis (Gemini) is currently disabled. Please use PDF.");
+            setError("Only PDF, Excel, and CSV files are supported.");
          }
       } catch (e: any) {
          setError(e.message || "Processing failed");
@@ -433,7 +371,6 @@ export default function App() {
 
    return (
       <div className="min-h-screen font-sans text-zinc-300">
-         <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} onSave={handleSaveSettings} currentKey={userApiKey} />
 
          {/* Top Bar - Apexfy Style: Dark, Minimal, Logo Left */}
          <header className="fixed top-0 left-0 right-0 z-50 h-16 border-b border-white/[0.06] bg-[#070707]/90 backdrop-blur-md">
@@ -466,9 +403,6 @@ export default function App() {
                         </button>
                      </DropdownMenuTrigger>
                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onClick={() => setIsSettingsOpen(true)}>
-                           API Configuration
-                        </DropdownMenuItem>
                         <DropdownMenuItem>
                            Audit Logs
                         </DropdownMenuItem>
@@ -644,7 +578,7 @@ export default function App() {
                               type="file"
                               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
                               onChange={handleFileInput}
-                              accept=".pdf,.xlsx,.xls,.csv,.jpg,.jpeg,.png,.webp"
+                              accept=".pdf,.xlsx,.xls,.csv"
                               disabled={isAnalyzing}
                            />
 
@@ -706,18 +640,6 @@ export default function App() {
                                     <Button variant="primary" className="w-full text-sm">Select file</Button>
                                     <Button variant="ghost" className="w-full text-xs h-8" onClick={() => {/* TODO: Load sample */ }}>Use sample statement</Button>
 
-                                    <div className="flex items-center gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
-                                       <input
-                                          type="checkbox"
-                                          id="deepScan"
-                                          checked={useDeepScan}
-                                          onChange={(e) => setUseDeepScan(e.target.checked)}
-                                          className="w-3 h-3 rounded border-white/20 bg-white/5 accent-[#9B87FF]"
-                                       />
-                                       <label htmlFor="deepScan" className="text-[11px] text-zinc-500 cursor-pointer select-none">
-                                          Force Deep Scan (Use AI)
-                                       </label>
-                                    </div>
                                  </div>
                               </div>
                            )}

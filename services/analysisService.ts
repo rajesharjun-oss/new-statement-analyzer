@@ -19,7 +19,7 @@ export const analyzeDocument = async (
     // Expected Backend Response: { file_id, summary, downloadUrl, transactions }
 
     const transactions = backendResult.transactions || [];
-    const summary = backendResult.summary || {};
+    const summary = backendResult.summary;
     const validationStatus = String(summary.validationStatus || '').toLowerCase();
     const totalsMatch = summary.totalsMatch;
     const noTransactions = transactions.length === 0;

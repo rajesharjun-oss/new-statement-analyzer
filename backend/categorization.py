@@ -367,7 +367,7 @@ def categorize_single_transaction(txn: Dict) -> Dict:
 
 
 from openai import OpenAI
-import google.generativeai as genai
+from gemini_client import generate_gemini_text
 import httpx
 
 class AIState:
@@ -537,12 +537,10 @@ Return ONLY a JSON array of categories.
 """
     
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        response = model.generate_content(prompt)
+        response_text = generate_gemini_text(api_key, "gemini-1.5-flash", prompt)
         
         import json
-        content = _clean_ai_json(response.text)
+        content = _clean_ai_json(response_text)
         categories = json.loads(content)
         
         for i, category in enumerate(categories):
