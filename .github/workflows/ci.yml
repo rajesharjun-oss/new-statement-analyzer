@@ -29,6 +29,9 @@ jobs:
       - name: Compile backend and tests
         run: python -m compileall -q backend tests
 
+      - name: Import FastAPI app
+        run: python -c "import backend.main; print('app import ok')"
+
       - name: Run backend tests
         run: |
           python tests/test_categorization_money.py

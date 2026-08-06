@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import os
+import sys
 import uuid
 import json
 import re
@@ -14,6 +15,13 @@ from typing import Any, Dict, List, Optional
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Make backend modules importable both when the app is started as
+# `uvicorn main:app` from backend/ and as `uvicorn backend.main:app`
+# from the repository root or a platform start command.
+BACKEND_DIR = Path(__file__).resolve().parent
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
 
 from pdf_extractor import extract_transactions
 from excel_extractor import extract_excel_transactions
