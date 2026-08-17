@@ -33,6 +33,14 @@ const RULES: Rule[] = [
     confidence: 0.95
   },
   {
+    id: "R003_PENSION_INCOME",
+    priority: 3,
+    description_regex: /\bPENSION\b|\bPENCOM\b|\bPTAD\b|\bPFA\b|RETIREMENT\s+BENEFIT|RETIREMENT\s+SAVINGS|ANNUITY/i,
+    side: "credit",
+    category: "Pension Income",
+    confidence: 1.0
+  },
+  {
     id: "R005_INWARD_TRANSFERS",
     priority: 5,
     description_regex: /NIP\s*FROM|TRF\s*FROM|CREDIT\s*FROM|DEPOSIT\b|INFLOW\b/i,

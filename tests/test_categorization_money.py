@@ -48,6 +48,26 @@ class CategorizationMoneyTests(unittest.TestCase):
         self.assertEqual(result[0]["credit"], 0.0)
         self.assertIn("category", result[0])
 
+    def test_pension_credit_is_pension_income(self):
+        rows = [{
+            "date": "2026-01-31",
+            "description": "PTAD pension payment retirement benefit",
+            "remarks": "PTAD pension payment retirement benefit",
+            "debit": "0.00",
+            "credit": "250,000.00",
+            "balance": "300,000.00",
+        }]
+
+        with patch.dict(os.environ, {
+            "ANTHROPIC_API_KEY": "",
+            "OPENAI_API_KEY": "",
+            "GEMINI_API_KEY": "",
+        }):
+            result = categorize_transactions(rows)
+
+        self.assertEqual(result[0]["category"], "Pension Income")
+        self.assertEqual(result[0]["ruleId"], "R003_PENSION_INCOME")
+
 
 if __name__ == "__main__":
     unittest.main()

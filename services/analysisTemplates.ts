@@ -64,6 +64,7 @@ export const analysisTemplates: AnalysisTemplate[] = [
       { id: "sales-income", name: "Sales Income", outputLabel: "Sales Income", description: "Sales or revenue inflow.", appliesTo: "credit", includeKeywords: ["sales", "revenue", "receipt"], excludeKeywords: [], priority: 75 },
       { id: "owner-funding", name: "Owner Funding", outputLabel: "Owner Funding", description: "Capital injection or owner funding.", appliesTo: "credit", includeKeywords: ["capital", "owner", "director", "funding"], excludeKeywords: [], priority: 70 },
       { id: "loan-inflow", name: "Loan Inflow", outputLabel: "Loan Inflow", description: "Loan received.", appliesTo: "credit", includeKeywords: ["loan", "facility", "disbursement"], excludeKeywords: [], priority: 85 },
+      { id: "pension-income", name: "Pension Income", outputLabel: "Pension Income", description: "Pension, retirement benefit, annuity, or PFA inflow.", appliesTo: "credit", includeKeywords: ["pension", "pencom", "ptad", "pfa", "retirement benefit", "retirement savings", "annuity"], excludeKeywords: [], priority: 88 },
       { id: "internal-transfer", name: "Internal Transfer", outputLabel: "Internal Transfer", description: "Own-account or treasury transfers.", appliesTo: "credit", includeKeywords: ["internal", "own account", "transfer between", "sweep"], excludeKeywords: [], priority: 90 },
       { id: "refund-reversal", name: "Refund/Reversal", outputLabel: "Refund/Reversal", description: "Refunds and reversal inflows.", appliesTo: "credit", includeKeywords: ["refund", "reversal", "reversed"], excludeKeywords: [], priority: 90 },
       { id: "interest-income", name: "Interest Income", outputLabel: "Interest Income", description: "Interest credited by bank.", appliesTo: "credit", includeKeywords: ["interest"], excludeKeywords: ["withholding", "wht"], priority: 80 },
@@ -146,7 +147,7 @@ export const analysisTemplates: AnalysisTemplate[] = [
 ];
 
 const businessDefaults = [
-  "Operating Income", "Customer Payment", "Supplier Payment", "Staff Cost", "Rent",
+  "Operating Income", "Pension Income", "Customer Payment", "Supplier Payment", "Staff Cost", "Rent",
   "Transport", "Repairs and Maintenance", "Office/Admin Expense", "Bank Charges & Levies",
   "Taxes and Statutory Payments", "Internal Transfer", "Loan", "Refund", "Reversal",
   "Cash Withdrawal"

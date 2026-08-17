@@ -50,6 +50,16 @@ except ImportError:
     fitz = None
     PYMUPDF_AVAILABLE = False
 
+def should_use_pymupdf_words_for_gt_dense(bank_identifier: str, page_count: int) -> bool:
+    """
+    Central policy for GTBank/GTCO dense-row extraction.
+
+    PyMuPDF is faster, but its word ordering can scramble landscape GT tables
+    and collapse many ledger rows into a few giant transactions. Keep
+    pdfplumber as the row-word source for GT dense statements.
+    """
+    return False
+
 # Define OCR availability based on OpenAI API key presence
 OCR_AVAILABLE = bool(os.getenv("OPENAI_API_KEY"))
 
@@ -1387,7 +1397,11 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
             )
             gt_visible_doc = None
             gt_use_visible_page_words = False
-            if skip_heavy_meta_scan and PYMUPDF_AVAILABLE:
+            if (
+                skip_heavy_meta_scan
+                and PYMUPDF_AVAILABLE
+                and should_use_pymupdf_words_for_gt_dense(bank_identifier, len(pages_to_process))
+            ):
                 try:
                     gt_visible_doc = fitz.open(pdf_path)
                     gt_use_visible_page_words = True
@@ -1396,6 +1410,8 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                     print(f"DEBUG: GT dense PyMuPDF mode unavailable: {_e_gt_fitz}")
                     gt_visible_doc = None
                     gt_use_visible_page_words = False
+            elif skip_heavy_meta_scan:
+                print("DEBUG: GT dense mode preserving pdfplumber row words.")
             gt_dense_allowed_pages = None
             gt_dense_text_cache = {}
             gt_dense_header_pages = set()
