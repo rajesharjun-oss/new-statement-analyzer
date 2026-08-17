@@ -1,6 +1,6 @@
 import { AnalysisTemplate, ClassifiedTransaction } from "../types";
 import { applyDeterministicRules, cleanupTransactionDescription, normalizeNarration } from "../services/analysisRules";
-import { analysisTemplates, cloneTemplate } from "../services/analysisTemplates";
+import { analysisTemplates, cloneTemplate, createCustomAnalysisTemplate } from "../services/analysisTemplates";
 import { classifyTransactionsWithAI } from "../services/aiClassifierService";
 import { buildExportWorkbookData } from "../services/analysisExportService";
 
@@ -95,6 +95,41 @@ async function main() {
 
   const creditOnly = applyDeterministicRules(txn("Transfer from OKOJIE OPEYEMI", 0, 5000), firsTemplate);
   assert(creditOnly.category === "Out of Scope", "Credit row must be Out of Scope for debit-only FIRS template");
+
+  const customTemplate = createCustomAnalysisTemplate();
+  customTemplate.name = "Pension Review";
+  customTemplate.scope = "credit";
+  customTemplate.categories = [{
+    id: "pension-income",
+    name: "Pension Income",
+    outputLabel: "Pension Income",
+    description: "Retirement and pension inflows.",
+    appliesTo: "credit",
+    includeKeywords: ["pension", "ptad", "pfa", "retirement benefit"],
+    excludeKeywords: [],
+    priority: 90
+  }];
+  const customPension = applyDeterministicRules(txn("PTAD pension payment retirement benefit", 0, 250000), customTemplate);
+  assert(customPension.category === "Pension Income", "Custom template category rules must classify matching credit rows");
+  const customOutOfScope = applyDeterministicRules(txn("Office rent payment", 50000, 0), customTemplate);
+  assert(customOutOfScope.category === "Out of Scope", "Custom credit-only templates must mark debit rows out of scope");
+
+  const customExportData = buildExportWorkbookData({
+    transactions: [customPension],
+    template: customTemplate,
+    customInstructions: "Separate pension income from operating income.",
+    reconciliation: {
+      openingBalance: 0,
+      totalDebit: 0,
+      totalCredit: 250000,
+      expectedClosingBalance: 250000,
+      actualClosingBalance: 250000,
+      difference: 0,
+      status: "Passed"
+    }
+  });
+  assert(customExportData.rulesUsed[0]["Template Name"] === "Pension Review", "Custom template name must be exported");
+  assert(customExportData.rulesUsed[0]["Custom Instructions"] === "Separate pension income from operating income.", "Custom instructions must be exported");
 
   const originalFetch = globalThis.fetch;
   (globalThis as any).fetch = async () => ({ ok: false, status: 503, json: async () => ({}) });

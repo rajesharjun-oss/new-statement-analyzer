@@ -1,8 +1,8 @@
 import React, { useMemo, useState } from "react";
 import { BarChart3, CheckCircle2, Download, FileCheck, FileSpreadsheet, Loader2, Play, ShieldCheck, Sparkles, Upload } from "lucide-react";
-import { AnalysisTemplate, ClassifiedTransaction } from "../types";
+import { AnalysisTemplate, CATEGORIES, ClassifiedTransaction } from "../types";
 import { analyzeDocument } from "../services/analysisService";
-import { analysisTemplates, cloneTemplate } from "../services/analysisTemplates";
+import { analysisTemplates, cloneTemplate, createCustomAnalysisTemplate } from "../services/analysisTemplates";
 import { calculateCategorySummary, calculateReconciliation } from "../services/analysisRules";
 import { classifyTransactions } from "../services/classifyTransactions";
 import { exportAnalysisWorkbook } from "../services/analysisExportService";
@@ -75,10 +75,20 @@ export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) 
   const visibleCategorySummary = isDebitOnlyTemplate
     ? categorySummary.filter(row => !(row.category === "Out of Scope" && row.creditTotal > 0))
     : categorySummary;
+  const categoryOptions = useMemo(() => Array.from(new Set([
+    ...template.categories.map(rule => rule.outputLabel || rule.name).filter(Boolean),
+    ...CATEGORIES,
+    "Out of Scope",
+    "Unallocated/Review Required"
+  ])), [template.categories]);
+  const hasCategoryRules = template.categories.some(rule => (rule.outputLabel || rule.name || "").trim());
 
   const chooseTemplate = (id: string) => {
-    setTemplateId(id);
-    const next = cloneTemplate(analysisTemplates.find(t => t.id === id) || analysisTemplates[0]);
+    const source = id === "custom"
+      ? createCustomAnalysisTemplate()
+      : cloneTemplate([...loadSavedTemplates(), ...analysisTemplates].find(t => t.id === id) || analysisTemplates[0]);
+    const next = source.id === "custom" ? createCustomAnalysisTemplate() : source;
+    setTemplateId(next.id);
     setTemplate(next);
     setCustomInstructions(next.aiInstructions);
     setStep(Math.max(step, 1));
@@ -93,10 +103,27 @@ export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) 
   };
 
   const saveTemplate = () => {
+    const isBuiltInTemplate = analysisTemplates.some(t => t.id === template.id);
+    const savedId = isBuiltInTemplate ? `custom-${Date.now()}` : template.id;
+    const cleanTemplate = {
+      ...template,
+      id: savedId,
+      name: template.name.trim() || "Custom Analysis",
+      description: template.description.trim() || "User-defined statement classification.",
+      aiInstructions: customInstructions,
+      categories: template.categories.map((rule, idx) => ({
+        ...rule,
+        name: rule.name.trim() || `Category ${idx + 1}`,
+        outputLabel: rule.outputLabel.trim() || rule.name.trim() || `Category ${idx + 1}`,
+        priority: Number.isFinite(rule.priority) ? rule.priority : 10
+      }))
+    };
     const saved = loadSavedTemplates().filter(t => t.id !== template.id);
-    const nextSaved = [...saved, { ...template, aiInstructions: customInstructions }];
+    const nextSaved = [...saved, cleanTemplate];
     localStorage.setItem(savedKey, JSON.stringify(nextSaved));
     setSavedTemplates(nextSaved);
+    setTemplate(cleanTemplate);
+    setTemplateId(cleanTemplate.id);
     setStatus("Template saved locally");
   };
 
@@ -128,12 +155,17 @@ export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) 
       setError("Extract transactions before classification.");
       return;
     }
+    if (!hasCategoryRules) {
+      setError("Add at least one category rule before classification.");
+      return;
+    }
     setIsBusy(true);
     setError(null);
     try {
+      const runtimeTemplate = { ...template, aiInstructions: customInstructions };
       const rows = await classifyTransactions({
         transactions: extractedResult.transactions,
-        template,
+        template: runtimeTemplate,
         customInstructions,
         sourceFileName: fileName,
         useAI,
@@ -265,10 +297,10 @@ export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) 
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {analysisTemplates.map(item => (
-              <button key={item.id} onClick={() => chooseTemplate(item.id)} className={cn("text-left rounded-[12px] border p-3 transition-colors min-h-[104px]", templateId === item.id ? "border-[#9B87FF]/50 bg-[#9B87FF]/10 shadow-[0_0_0_1px_rgba(155,135,255,0.15)]" : "border-white/10 bg-white/[0.02] hover:bg-white/[0.04]")}>
+              <button key={item.id} onClick={() => chooseTemplate(item.id)} className={cn("text-left rounded-[12px] border p-3 transition-colors min-h-[104px]", (templateId === item.id || (item.id === "custom" && templateId.startsWith("custom-"))) ? "border-[#9B87FF]/50 bg-[#9B87FF]/10 shadow-[0_0_0_1px_rgba(155,135,255,0.15)]" : "border-white/10 bg-white/[0.02] hover:bg-white/[0.04]")}>
                 <div className="flex items-start justify-between gap-2">
                   <div className="text-sm font-semibold text-white">{item.name}</div>
-                  {templateId === item.id && <Sparkles className="w-4 h-4 text-[#9B87FF]" />}
+                  {(templateId === item.id || (item.id === "custom" && templateId.startsWith("custom-"))) && <Sparkles className="w-4 h-4 text-[#9B87FF]" />}
                 </div>
                 <p className="text-xs text-zinc-500 mt-1 line-clamp-2">{item.description}</p>
                 <Badge variant="outline" className="mt-2">{item.scope}</Badge>
@@ -314,7 +346,7 @@ export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) 
           </div>
           <div className="lg:col-span-3 flex flex-wrap gap-2">
             <Button variant={useAI ? "primary" : "outline"} onClick={() => setUseAI(v => !v)}>{useAI ? "AI fallback on" : "AI fallback off"}</Button>
-            <Button variant="primary" onClick={runClassification} disabled={isBusy || !extractedResult?.transactions?.length}>
+            <Button variant="primary" onClick={runClassification} disabled={isBusy || !extractedResult?.transactions?.length || !hasCategoryRules}>
               {isBusy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
               Classify
             </Button>
@@ -397,7 +429,7 @@ export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) 
               </Card>
             )}
           </div>
-          <TransactionPreviewTable transactions={classified} filter={filter} onFilterChange={setFilter} onManualEdit={manualEdit} />
+          <TransactionPreviewTable transactions={classified} categoryOptions={categoryOptions} filter={filter} onFilterChange={setFilter} onManualEdit={manualEdit} />
         </>
       )}
     </div>

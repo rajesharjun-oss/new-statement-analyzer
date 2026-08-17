@@ -137,11 +137,11 @@ export const analysisTemplates: AnalysisTemplate[] = [
   },
   {
     id: "custom",
-    name: "Fully custom user-defined analysis",
-    description: "Start from a blank template and define your own categories, scope, and instructions.",
+    name: "Custom analysis",
+    description: "Define your own scope, category rules, and AI instructions.",
     scope: "both",
     markUncertainAsReview: true,
-    aiInstructions: "",
+    aiInstructions: "Classify rows using only the custom categories in this template. Mark ambiguous rows Review Required and explain why.",
     categories: []
   }
 ];
@@ -166,4 +166,16 @@ analysisTemplates.find(t => t.id === "business-category")!.categories = business
 
 export function cloneTemplate(template: AnalysisTemplate): AnalysisTemplate {
   return JSON.parse(JSON.stringify(template));
+}
+
+export function createCustomAnalysisTemplate(): AnalysisTemplate {
+  const createdAt = Date.now();
+  return {
+    ...cloneTemplate(analysisTemplates.find(t => t.id === "custom")!),
+    id: `custom-${createdAt}`,
+    name: "Custom Analysis",
+    description: "User-defined statement classification.",
+    scope: "both",
+    categories: []
+  };
 }

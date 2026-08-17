@@ -500,6 +500,12 @@ async def classify_analysis(payload: AIClassifyRequest):
         }
         for c in template.get("categories", [])
     ]
+    allowed_categories = {
+        str(c.get("outputLabel") or c.get("name") or "").strip()
+        for c in categories
+        if str(c.get("outputLabel") or c.get("name") or "").strip()
+    }
+    allowed_categories.update({"Review Required", "Out of Scope"})
     instructions = payload.customInstructions or template.get("aiInstructions") or ""
     rows = [t.model_dump() for t in payload.transactions[:50]]
 
@@ -572,14 +578,16 @@ Rows:
         for item in results:
             if item.get("id") not in valid_ids:
                 continue
+            category = str(item.get("category") or "").strip()
+            category_is_allowed = category in allowed_categories
             cleaned.append({
                 "id": item.get("id"),
-                "category": item.get("category") or "Review Required",
+                "category": category if category_is_allowed else "Review Required",
                 "subCategory": item.get("subCategory"),
                 "taxAuthority": item.get("taxAuthority"),
                 "confidence": item.get("confidence") if item.get("confidence") in ["High", "Medium", "Low"] else "Low",
-                "reason": item.get("reason") or "AI classification.",
-                "reviewRequired": bool(item.get("reviewRequired") or item.get("confidence") == "Low"),
+                "reason": item.get("reason") if category_is_allowed else "AI returned a category outside the selected template.",
+                "reviewRequired": bool(item.get("reviewRequired") or item.get("confidence") == "Low" or not category_is_allowed),
                 "decisionSource": "AI",
             })
         return {"results": cleaned}

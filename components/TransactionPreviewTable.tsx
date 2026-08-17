@@ -3,7 +3,7 @@ import { AlertTriangle, Bot, CheckCircle2, Filter, Pencil, ShieldCheck } from "l
 import { ClassifiedTransaction, ConfidenceLabel } from "../types";
 import { Badge, Button } from "./PrimitiveUI";
 
-const categories = ["Review Required", "FIRS", "SIRS", "Not Applicable", "Customer Payment", "Sales Income", "Supplier Payment", "Bank Charges", "Internal Transfer", "Tax/Statutory Payment", "Operating Income", "Unallocated/Review Required"];
+const defaultCategories = ["Review Required", "FIRS", "SIRS", "Not Applicable", "Customer Payment", "Sales Income", "Pension Income", "Supplier Payment", "Bank Charges", "Internal Transfer", "Tax/Statutory Payment", "Operating Income", "Unallocated/Review Required"];
 const taxAuthorities = ["", "FIRS", "SIRS", "Not Applicable", "Review Required"];
 const confidences: ConfidenceLabel[] = ["High", "Medium", "Low"];
 
@@ -26,15 +26,18 @@ function sourceIcon(source: string) {
 
 export function TransactionPreviewTable({
   transactions,
+  categoryOptions,
   filter,
   onFilterChange,
   onManualEdit
 }: {
   transactions: ClassifiedTransaction[];
+  categoryOptions?: string[];
   filter: "all" | "review" | "low";
   onFilterChange: (filter: "all" | "review" | "low") => void;
   onManualEdit: (id: string, patch: Partial<ClassifiedTransaction>) => void;
 }) {
+  const categories = Array.from(new Set([...(categoryOptions || []), ...defaultCategories])).filter(Boolean);
   const visible = transactions.filter(t => {
     if (filter === "review") return t.reviewRequired;
     if (filter === "low") return t.confidence === "Low";

@@ -139,6 +139,7 @@ export const CATEGORIES = [
 
   // P&L - Income
   'Operating Income',
+  'Pension Income',
   'Interest Income',
 
   // P&L - Expenses
