@@ -365,6 +365,11 @@ export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) 
               </Button>
             </div>
           </div>
+          <div className="lg:col-span-12 rounded-[12px] border border-white/[0.08] bg-black/20 px-4 py-3">
+            <p className="text-xs text-zinc-300">
+              AI is optional for classification. Turning AI fallback off keeps the analysis workspace rule-based, but difficult scanned or low-quality statements may still use backend OCR or AI fallback during extraction.
+            </p>
+          </div>
         </div>
       </Card>
 
