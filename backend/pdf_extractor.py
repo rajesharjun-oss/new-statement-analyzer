@@ -88,6 +88,9 @@ BOILERPLATE_PATTERNS = [
     re.compile(r"NDIC", re.IGNORECASE),
     re.compile(r"WWW\.\S+\.COM", re.IGNORECASE),
     re.compile(r"PLOT\s+\d+.*AKIN\s+ADESOLA", re.IGNORECASE),
+    re.compile(r"\bREQUEST\s+OR\s+COMPLAINTS\s+KINDLY\s+STATEMENT\s+GENERATED\b", re.IGNORECASE),
+    re.compile(r"\bCALL\s+OUR\s+24/7\s+CONTACT\s+CENTER\b.*$", re.IGNORECASE),
+    re.compile(r"\bBY\s+INFOPOOL\s+INFORMA.?ON\s+SYSTEM\.?\s+STATEMENT\s+PRINTED\b", re.IGNORECASE),
 ]
 
 def scrub_boilerplate(text: str) -> str:
@@ -442,6 +445,8 @@ def is_noise_row(row: dict) -> bool:
     text = " ".join([
         row.get("description","") or "",
         row.get("reference","") or "",
+        row.get("value_date","") or "",
+        row.get("_raw_text","") or "",
     ]).upper()
 
     return any(k in text for k in [
@@ -934,9 +939,17 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
             if bank_identifier == "fcmb":
                  from fcmb_engine import extract_fcmb_via_coordinates
                  fc_txns, fc_meta = extract_fcmb_via_coordinates(Path(pdf_path), metadata, pdf=pdf)
-                 if fc_txns: 
-                     print(f"DEBUG: FCMB engine returned {len(fc_txns)} transactions")
-                     return [{"transactions": normalize_remarks(fc_txns), "metadata": fc_meta}]
+                 if fc_txns:
+                     fc_quality = assess_statement_total_match(fc_txns, fc_meta)
+                     if fc_quality.get("has_statement_totals") and fc_quality.get("totals_match") is False:
+                         print(
+                             f"WARN: FCMB coordinate engine returned {len(fc_txns)} rows but totals mismatch "
+                             f"(debit_diff={fc_quality.get('debit_diff')}, credit_diff={fc_quality.get('credit_diff')}). "
+                             "Falling through to generic FCMB extraction."
+                         )
+                     else:
+                         print(f"DEBUG: FCMB engine returned {len(fc_txns)} transactions")
+                         return [{"transactions": normalize_remarks(fc_txns), "metadata": fc_meta}]
 
             elif bank_identifier == "firstbank":
                  if is_searchable:
@@ -1590,13 +1603,17 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                     ref_val = (txn.get("reference") or "").strip()
                     branch_val = (txn.get("branch") or "").strip()
                     narration_val = (txn.get("description") or "").strip()
+                    clean_narration_val = narration_val.replace("\xad", "").strip()
+                    if bank_identifier == "fcmb":
+                        ref_val = scrub_boilerplate(ref_val)
+                        clean_narration_val = scrub_boilerplate(clean_narration_val)
 
                     if ref_val and ref_val not in {"'", "GAP", "'GAP"}:
                         desc_parts.append(ref_val)
                     if branch_val:
                         desc_parts.append(branch_val)
-                    if narration_val:
-                        desc_parts.append(narration_val)
+                    if clean_narration_val:
+                        desc_parts.append(clean_narration_val)
                     remarks = " ".join(desc_parts).replace("\xad", "").strip()
                     remarks = scrub_boilerplate(remarks)
                     remarks = re.sub(r"\s+", " ", remarks)
@@ -1613,7 +1630,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                         "reference": ref_val,
                         "originating_branch": branch_val,
                         "remarks": remarks,
-                        "description": narration_val.replace("\xad", "").strip(),
+                        "description": clean_narration_val,
                         "debit": deb_val,
                         "credit": cred_val,
                         "balance": parse_money(txn.get("balance", "")),
@@ -2069,6 +2086,14 @@ def parse_statement_metadata(text: str) -> Dict[str, Any]:
 
     meta = {}
 
+    currency_match = re.search(r"\bCurrency\s*:?\s*([A-Z]{3})\b", text, re.I)
+    if currency_match:
+        meta["currency"] = currency_match.group(1).upper()
+    else:
+        currency_match = re.search(r"\b(?:DOM|Domicil(?:iary|ary)?|FCY)\b[^\n\r()]*\(([A-Z]{3})\)", text, re.I)
+        if currency_match:
+            meta["currency"] = currency_match.group(1).upper()
+
     # Fidelity statements place the customer name immediately after the
     # account/currency/type block, before the address and Transactions header.
     if re.search(r"\bfidelitybank\.ng\b|\bFidelity\s+Bank\b", text, re.I):
@@ -2173,21 +2198,33 @@ def parse_statement_metadata(text: str) -> Dict[str, Any]:
         meta["account_name"] = " ".join([x.strip() for x in cleaned_name.splitlines() if x.strip()])
 
     # Statement period
-    m = re.search(r"Statement Period\s*[:\s]*([\d\-A-Za-z\s]+to[\d\-A-Za-z\s]+)", text, re.I)
+    m = re.search(
+        r"For\s+the\s+Period\s+of\s*:\s*"
+        r"(\d{1,2}[-/][A-Za-z]{3}[-/]\d{2,4})\s*To\s*"
+        r"(\d{1,2}[-/][A-Za-z]{3}[-/]\d{2,4})",
+        text,
+        re.I,
+    )
     if m:
-        meta["statement_period"] = m.group(1).strip()
+        start = parse_date_smart(m.group(1)) or m.group(1)
+        end = parse_date_smart(m.group(2)) or m.group(2)
+        meta["statement_period"] = f"{start} to {end}"
     else:
-        m = re.search(
-            r"(?:statement\s+for\s+the\s+)?period\s*:\s*"
-            r"(\d{1,2}[-/][A-Za-z]{3}[-/]\d{2,4})\s*(?:to|-)\s*"
-            r"(\d{1,2}[-/][A-Za-z]{3}[-/]\d{2,4})",
-            text,
-            re.I,
-        )
+        m = re.search(r"Statement Period\s*[:\s]*([\d\-A-Za-z\s]+to[\d\-A-Za-z\s]+)", text, re.I)
         if m:
-            start = parse_date_smart(m.group(1)) or m.group(1)
-            end = parse_date_smart(m.group(2)) or m.group(2)
-            meta["statement_period"] = f"{start} to {end}"
+            meta["statement_period"] = m.group(1).strip()
+        else:
+            m = re.search(
+                r"(?:statement\s+for\s+the\s+)?period\s*:\s*"
+                r"(\d{1,2}[-/][A-Za-z]{3}[-/]\d{2,4})\s*(?:to|-)\s*"
+                r"(\d{1,2}[-/][A-Za-z]{3}[-/]\d{2,4})",
+                text,
+                re.I,
+            )
+            if m:
+                start = parse_date_smart(m.group(1)) or m.group(1)
+                end = parse_date_smart(m.group(2)) or m.group(2)
+                meta["statement_period"] = f"{start} to {end}"
 
     # Try various patterns for totals
     # Pattern 1: "Total Debit 1,234,567.89"
