@@ -33,6 +33,7 @@ RULES = [
     Rule("R004B_GTWORLD", 4, r"\bGTW(?:ORLD)?\b|\bGTWORLD\b", "Operating Income", 0.92, "credit"),
     Rule("R004C_NIP_TRF_FROM", 4, r"\bNIP\b.*\bTRF(?:FOR|FRM|FROM)?\b|\bTRF\s*FRM\b|\bTRF\s*FROM\b|\bTRFFOR\b", "Operating Income", 0.93, "credit"),
     Rule("R004D_GAPS", 4, r"\bGAPSLITE\b|\bGAPS?\b", "Operating Income", 0.92, "credit"),
+    Rule("R004E_KEYSTONE_DCIR_INCOME", 4, r"\bKBLDCIR\s+INC\b|\bDCIR\s+INC\b", "Operating Income", 0.98, "credit"),
     Rule("R003_PENSION_INCOME", 3, r"\bPENSION\b|\bPENCOM\b|\bPTAD\b|\bPFA\b|RETIREMENT\s+BENEFIT|RETIREMENT\s+SAVINGS|ANNUITY", "Pension Income", 1.0, "credit"),
 
     Rule("R005_INWARD_TRANSFERS", 5, r"NIP\s*FROM|TRF\s*FROM|CREDIT\s*FROM|DEPOSIT\b|INFLOW\b", "Operating Income", 0.9, "credit"),
@@ -267,8 +268,6 @@ def categorize_single_transaction(txn: Dict) -> Dict:
     confidence = 0.0
     rule_id = None
     decision_source = None
-
-    decision_source = None
     
     # 0. CHECK REVERSALS
     if re.search(r"REVERSAL|REV\b|RET\b|ERR\b", norm_desc) or re.search(r"REV\s*TRF", norm_desc):
@@ -350,7 +349,7 @@ def categorize_single_transaction(txn: Dict) -> Dict:
         else:
             updated_cat = "Uncategorized Expense" if is_debit else "Uncategorized Income"
             confidence = 0.0
-            decision_source = "AI"
+            decision_source = "SYSTEM"
 
     txn['category'] = updated_cat
     txn['confidence'] = confidence

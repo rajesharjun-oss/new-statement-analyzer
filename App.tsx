@@ -256,6 +256,7 @@ export default function App() {
    }, [txns]);
 
    const [batchStatus, setBatchStatus] = useState<string>("");
+   const [analysisProgress, setAnalysisProgress] = useState(0);
 
    const handleFileProcess = async (file: File) => {
       setAnalysisResult(null); // FORCE RESET - DO ACTUAL WORK
@@ -265,6 +266,7 @@ export default function App() {
       setError(null);
       setProcessingTime(0);
       setBatchStatus("");
+      setAnalysisProgress(0);
 
       const startTime = Date.now();
       const timerInterval = setInterval(() => {
@@ -283,6 +285,7 @@ export default function App() {
                selectedBank,
                (msg, progress) => {
                   setBatchStatus(`${msg} (${progress}%)`);
+                  setAnalysisProgress(progress);
                }
             );
 
@@ -300,6 +303,7 @@ export default function App() {
          clearInterval(timerInterval);
          setProcessingTime((Date.now() - startTime) / 1000);
          setBatchStatus("");
+         setAnalysisProgress(0);
       }
    };
 
@@ -598,7 +602,7 @@ export default function App() {
                                  </div>
 
                                  <div className="space-y-2">
-                                    <Progress value={processingTime > 3 ? (processingTime > 15 ? 90 : 75) : 25} />
+                                    <Progress value={analysisProgress} />
                                     <p className="text-xs text-zinc-500 animate-pulse">{loadingStatus}</p>
                                  </div>
                               </div>

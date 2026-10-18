@@ -48,6 +48,14 @@ const RULES: Rule[] = [
     category: "Operating Income",
     confidence: 0.9
   },
+  {
+    id: "R004E_KEYSTONE_DCIR_INCOME",
+    priority: 4,
+    description_regex: /\bKBLDCIR\s+INC\b|\bDCIR\s+INC\b/i,
+    side: "credit",
+    category: "Operating Income",
+    confidence: 0.98
+  },
   // STAFF (High Priority)
   {
     id: "R006_SALARY_PAYROLL",
@@ -316,13 +324,13 @@ export const categorizeTransaction = (t: Transaction): Transaction => {
     else if (isDebit && /(?:TRF|NIP|FRM|TO|MNY|TRANSFER|PYMT|PAYMENT|WEB|POS|ATM)/.test(normDesc)) {
       updated.category = "Inter-Account / Treasury Transfer";
       updated.confidence = 0.6;
-      updated.decision_source = 'AI';
+      updated.decision_source = 'SYSTEM';
     }
     // C. Everything else without a clear trigger remains Unallocated
     else {
       updated.category = "Unallocated";
       updated.confidence = 0.0;
-      updated.decision_source = 'AI';
+      updated.decision_source = 'SYSTEM';
     }
   }
 

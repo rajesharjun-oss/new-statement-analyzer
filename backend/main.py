@@ -177,6 +177,7 @@ async def analyze_statement(
     file: UploadFile = File(...),
     bank: str = Form("auto")  # auto, gtbank, accessbank, firstbank, zenith, uba, etc.
 ):
+    request_started = time.perf_counter()
     print(f"\n{'!'*40}")
     normalized_bank = normalize_bank_id(bank)
     filename_lower = (file.filename or "").lower()
@@ -210,7 +211,13 @@ async def analyze_statement(
         # Step 1: Extract transactions (Non-blocking background thread)
         import asyncio
         if file_ext == ".pdf":
+            extraction_started = time.perf_counter()
             statement_results = await asyncio.to_thread(extract_transactions, stored_path, bank_identifier=normalized_bank)
+            print(
+                "INFO [ANALYZE-TIMING] "
+                f"extraction={time.perf_counter() - extraction_started:.2f}s "
+                f"requested_bank={normalized_bank}"
+            )
 
             # Access PDFs must not be allowed to surface a weaker generic parse.
             # On Cloud Run, auto-detection can occasionally choose a partial path
@@ -329,7 +336,7 @@ async def analyze_statement(
                 empty_pct = empty_desc_count / len(txns)
                 detected_bank = meta.get('bank', 'generic')
 
-                if empty_pct > 0.25 and detected_bank not in ['gtbank', 'providus', 'zenith', 'access', 'uba', 'fcmb', 'wema', 'sterling'] and file_ext == '.pdf':
+                if empty_pct > 0.25 and detected_bank not in ['gtbank', 'providus', 'zenith', 'access', 'uba', 'fcmb', 'keystone', 'wema', 'sterling'] and file_ext == '.pdf':
                     print(f'WARN: {empty_pct:.0%} empty descriptions. Retrying statement with generic mapping...')
                     from pdf_extractor import extract_transactions as _et
                     retry_results = await asyncio.to_thread(_et, stored_path, bank_identifier='generic')
@@ -343,7 +350,13 @@ async def analyze_statement(
                               break
             
             # Step 3: Categorize (rules + AI fallback)
+            categorization_started = time.perf_counter()
             categorized_txns = categorize_transactions(txns)
+            print(
+                "INFO [ANALYZE-TIMING] "
+                f"categorization={time.perf_counter() - categorization_started:.2f}s "
+                f"transactions={len(txns)}"
+            )
             
             processed_statements.append({
                 "transactions": categorized_txns,
@@ -352,7 +365,9 @@ async def analyze_statement(
             })
 
         # Step 4: Generate Excel (Pass all statements)
+        excel_started = time.perf_counter()
         generate_excel(processed_statements, {}, excel_path)
+        print(f"INFO [ANALYZE-TIMING] excel={time.perf_counter() - excel_started:.2f}s")
 
         # Build combined summary based on ALL statements
         total_debit = 0.0
@@ -403,7 +418,7 @@ async def analyze_statement(
             "transactionCount": total_txns,
             "validationStatus": primary_validation.get("status", "Unknown"),
             "totalsMatch": primary_validation.get("totals_match", None),
-            "bank": bank.lower(),
+            "bank": primary_meta.get("bank") or normalized_bank,
             "multiStatement": len(processed_statements) > 1,
             "statementCount": len(processed_statements)
         }
@@ -425,7 +440,7 @@ async def analyze_statement(
         #         "total_credits": total_credit
         #     })
 
-        return {
+        response_payload = {
             "file_id": file_id, 
             "backend_version": "v2.1-STABLE-FINAL-CORP-V10",
             "summary": {
@@ -435,6 +450,12 @@ async def analyze_statement(
             "downloadUrl": download_url,
             "transactions": preview_txns
         }
+        print(
+            "INFO [ANALYZE-TIMING] "
+            f"total={time.perf_counter() - request_started:.2f}s "
+            f"detected_bank={summary['bank']} transactions={total_txns}"
+        )
+        return response_payload
 
     except HTTPException:
         raise

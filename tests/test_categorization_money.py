@@ -68,6 +68,45 @@ class CategorizationMoneyTests(unittest.TestCase):
         self.assertEqual(result[0]["category"], "Pension Income")
         self.assertEqual(result[0]["ruleId"], "R003_PENSION_INCOME")
 
+    def test_keystone_dcir_credit_is_operating_income(self):
+        rows = [{
+            "date": "2024-01-04",
+            "description": "KBLDCIR Inc/2401032200006790 DCIR Inc/2401032200006790 Txn Amount - NGN12.00",
+            "debit": 0,
+            "credit": 12,
+            "balance": 694831.60,
+        }]
+
+        with patch.dict(os.environ, {
+            "ANTHROPIC_API_KEY": "",
+            "OPENAI_API_KEY": "",
+            "GEMINI_API_KEY": "",
+        }):
+            result = categorize_transactions(rows)
+
+        self.assertEqual(result[0]["category"], "Operating Income")
+        self.assertEqual(result[0]["ruleId"], "R004E_KEYSTONE_DCIR_INCOME")
+        self.assertEqual(result[0]["decision_source"], "RULE")
+
+    def test_unmatched_credit_is_not_mislabeled_as_ai(self):
+        rows = [{
+            "date": "2024-01-04",
+            "description": "UNRECOGNIZED CREDIT NARRATION",
+            "debit": 0,
+            "credit": 12,
+            "balance": 694831.60,
+        }]
+
+        with patch.dict(os.environ, {
+            "ANTHROPIC_API_KEY": "",
+            "OPENAI_API_KEY": "",
+            "GEMINI_API_KEY": "",
+        }):
+            result = categorize_transactions(rows)
+
+        self.assertEqual(result[0]["category"], "Uncategorized Income")
+        self.assertEqual(result[0]["decision_source"], "SYSTEM")
+
 
 if __name__ == "__main__":
     unittest.main()

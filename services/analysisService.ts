@@ -7,7 +7,7 @@ export const analyzeDocument = async (
     onProgress: (msg: string, progress: number) => void
 ): Promise<AnalysisResult> => {
 
-    onProgress("Uploading to backend...", 10);
+    onProgress("Preparing statement...", 2);
 
     // Call the Python Backend
     const backendResult = await analyzeWithBackend(file, bankId, onProgress);
