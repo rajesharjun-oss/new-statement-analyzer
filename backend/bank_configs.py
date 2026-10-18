@@ -146,6 +146,26 @@ BANK_CONFIGS = {
             "closing_balance": r"Closing Balance[:\s]+([\d,]+\.\d{2})"
         }
     },
+    "keystone": {
+        "name": "Keystone Bank",
+        "header_patterns": {
+            "trans_date": r"Date",
+            "value_date": r"V\.\s*Date",
+            "reference": r"Ref",
+            "debit": r"Debit",
+            "credit": r"Credit",
+            "balance": r"Balance",
+            "remarks": r"Narration"
+        },
+        "metadata_patterns": {
+            "account_name": r"Account Name\s+(.+)",
+            "statement_period": r"Summary Statement for\s+(.+?)\s+To\s+(.+?)\s+Account No",
+            "total_debit": r"Total Debits?\s*-?\s*([\d,]+\.\d{2})",
+            "total_credit": r"Total Credits?\s*-?\s*([\d,]+\.\d{2})",
+            "opening_balance": r"Opening Balance\s*-?\s*([\d,]+\.\d{2})",
+            "closing_balance": r"Closing Balance\s*-?\s*([\d,]+\.\d{2})"
+        }
+    },
     "sterling": {
         "name": "Sterling Bank",
         "header_patterns": {

@@ -12,6 +12,7 @@ Extract, validate, categorize, and export transactions from Nigerian bank statem
 - UBA (searchable PDFs and OCR fallback)
 - Wema Bank
 - FCMB
+- Keystone Bank
 - Zenith Bank
 - GTBank / GTCO, including multi-statement bundles
 - Providus Bank

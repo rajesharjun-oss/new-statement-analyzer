@@ -17,6 +17,7 @@ from zenith_engine import extract_zenith_via_coordinates
 from wema_engine import extract_wema_via_coordinates
 from sterling_engine import extract_sterling_via_coordinates, detect_sterling_columns
 from fcmb_engine import extract_fcmb_via_coordinates
+from keystone_engine import extract_keystone_via_coordinates
 from utils import parse_date_smart, DATE_DMY_RE, DATE_MDY_SL_RE, DATE_DMY_YY_RE, ECO_DATE_RE, BARE_MONTH_RE, YEAR_TOKEN_RE
 try:
     from standard_ocr import extract_text_with_gemini_vision, extract_transactions_via_ai
@@ -563,6 +564,8 @@ def detect_template(first_page_text: str) -> str:
         return "gtbank"  # Route both to GTBank logic
     if "providus" in header_text:
         return "providus"
+    if "keystone bank" in header_text or "keystonebankng.com" in header_text:
+        return "keystone"
     if "zenith" in header_text:
         return "zenith"
     if "access bank" in header_text or "access diamond" in header_text:
@@ -909,6 +912,12 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
             if bank_identifier == "providus":
                  prov_txns, prov_meta = extract_providus_via_tables(Path(pdf_path), metadata, pdf=pdf)
                  if prov_txns: return [{"transactions": normalize_remarks(prov_txns), "metadata": prov_meta}]
+
+            if bank_identifier == "keystone":
+                 ks_txns, ks_meta = extract_keystone_via_coordinates(Path(pdf_path), metadata, pdf=pdf)
+                 if ks_txns:
+                     return [{"transactions": normalize_remarks(ks_txns), "metadata": ks_meta}]
+                 print("WARN: Keystone coordinate engine returned 0 transactions. Falling through to generic extraction path.")
 
             if bank_identifier == "zenith":
                  try:

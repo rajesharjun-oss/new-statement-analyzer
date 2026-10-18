@@ -74,6 +74,7 @@ function prettifyBankName(rawBank: string) {
       wema: "Wema Bank",
       providus: "Providus Bank",
       fcmb: "FCMB",
+      keystone: "Keystone Bank",
       sterling: "Sterling Bank",
       standard_chartered: "Standard Chartered",
    };
@@ -632,6 +633,7 @@ export default function App() {
                                           <option value="wema">Wema Bank</option>
                                           <option value="providus">Providus Bank</option>
                                           <option value="fcmb">FCMB</option>
+                                          <option value="keystone">Keystone Bank</option>
                                           <option value="sterling">Sterling Bank</option>
                                           <option value="standard_chartered">Standard Chartered</option>
                                        </select>
