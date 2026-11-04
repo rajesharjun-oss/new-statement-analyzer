@@ -22,6 +22,10 @@ WEMA_HEADER_SCAN_PAGES=12
 ALLOWED_ORIGINS=http://localhost:5000,http://127.0.0.1:5000
 MAX_UPLOAD_BYTES=20971520
 TEMP_FILE_TTL_SECONDS=3600
+MAX_CLASSIFY_TRANSACTIONS=500
+MAX_CLASSIFY_INSTRUCTIONS_CHARS=4000
+MAX_NARRATIVE_PAYLOAD_CHARS=100000
+MAX_AI_REQUEST_BYTES=1048576
 ENABLE_API_DOCS=false
 DEBUG_ERRORS=false
 ```
@@ -38,6 +42,8 @@ Useful endpoints:
 
 - `GET /health`
 - `POST /analyze`
+- `POST /classify-analysis`
+- `POST /analysis-narrative`
 - `GET /download/{file_id}`
 
-The Vite frontend proxies `/analyze` and `/download` to this backend in local development.
+The Vite frontend proxies these API endpoints to the backend in local development. Classification and narrative endpoints use deterministic inputs and only call an AI provider when a corresponding environment key is configured.

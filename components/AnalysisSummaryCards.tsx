@@ -1,5 +1,5 @@
 import React from "react";
-import { AlertTriangle, Bot, CheckCircle2, ClipboardCheck, FileSpreadsheet, Pencil, Scale, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Bot, BrainCircuit, CheckCircle2, ClipboardCheck, FileSpreadsheet, Pencil, Scale, ShieldCheck } from "lucide-react";
 import { Badge, Card } from "./PrimitiveUI";
 import { ClassifiedTransaction, ReconciliationCheck } from "../types";
 
@@ -20,11 +20,12 @@ export function AnalysisSummaryCards({
       acc.total += 1;
       if (t.decisionSource === "RULE") acc.rule += 1;
       if (t.decisionSource === "AI") acc.ai += 1;
+      if (t.decisionSource === "MEMORY") acc.memory += 1;
       if (t.decisionSource === "MANUAL") acc.manual += 1;
       if (t.reviewRequired || t.confidence === "Low") acc.review += 1;
       return acc;
     },
-    { total: 0, rule: 0, ai: 0, manual: 0, review: 0 }
+    { total: 0, rule: 0, ai: 0, memory: 0, manual: 0, review: 0 }
   );
 
   const cards = [
@@ -35,6 +36,7 @@ export function AnalysisSummaryCards({
     { label: "Closing", value: money(reconciliation.actualClosingBalance), icon: ClipboardCheck, tone: "text-zinc-300" },
     { label: "Rule Classified", value: counts.rule, icon: ShieldCheck, tone: "text-[#3CDCAB]" },
     { label: "AI Classified", value: counts.ai, icon: Bot, tone: "text-[#9B87FF]" },
+    { label: "Memory Classified", value: counts.memory, icon: BrainCircuit, tone: "text-[#9B87FF]" },
     { label: "Manual Edits", value: counts.manual, icon: Pencil, tone: "text-[#FFB43C]" },
     { label: "Review Queue", value: counts.review, icon: AlertTriangle, tone: "text-[#FF5A78]" }
   ];

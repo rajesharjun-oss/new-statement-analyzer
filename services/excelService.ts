@@ -1,10 +1,8 @@
 
-import * as XLSX_PKG from 'xlsx';
 import { Transaction } from '../types';
+import { sanitizeSpreadsheetText } from './spreadsheetSecurity';
 
-const XLSX = XLSX_PKG;
-
-export const generateExcel = (
+export const generateExcel = async (
   transactions: Transaction[],
   warnings: string[],
   reconciliationFailed: boolean,
@@ -13,6 +11,7 @@ export const generateExcel = (
   bankName: string,
   fileNameOverride?: string
 ) => {
+  const XLSX = await import('xlsx');
   const wb = XLSX.utils.book_new();
 
   // Define Border Style
@@ -43,13 +42,13 @@ export const generateExcel = (
     if (t.is_reversal) notes = `[REVERSAL] ${notes}`;
 
     return {
-      Date: t.date,
-      Description: t.description,
-      Category: t.category,
+      Date: sanitizeSpreadsheetText(t.date),
+      Description: sanitizeSpreadsheetText(t.description),
+      Category: sanitizeSpreadsheetText(t.category),
       Debit: t.debit || 0,
       Credit: t.credit || 0,
       Balance: t.balance || 0,
-      Notes: notes
+      Notes: sanitizeSpreadsheetText(notes)
     };
   });
 
@@ -90,13 +89,13 @@ export const generateExcel = (
 
   const summaryData = [
     ["Report Metadata", ""],
-    ["Organization", organizationName],
-    ["Bank", bankName],
+    ["Organization", sanitizeSpreadsheetText(organizationName)],
+    ["Bank", sanitizeSpreadsheetText(bankName)],
     ["Analysis Date", new Date().toISOString().split('T')[0]],
     [""],
     ["Reconciliation Status", reconciliationFailed ? "FAILED" : "PASSED"],
-    ["Warnings", (warnings || []).join("; ") || "None"],
-    ["Currency", currency],
+    ["Warnings", sanitizeSpreadsheetText((warnings || []).join("; ") || "None")],
+    ["Currency", sanitizeSpreadsheetText(currency)],
     [""],
     ["Metric", "Value"],
     ["Opening Balance (Calc)", openingBalance],
@@ -105,10 +104,10 @@ export const generateExcel = (
     ["Total Credits", totalCredit],
     [""],
     ["Income by Category", "Amount"],
-    ...Object.entries(incomeSummary).map(([cat, val]) => [cat, val]),
+    ...Object.entries(incomeSummary).map(([cat, val]) => [sanitizeSpreadsheetText(cat), val]),
     [""],
     ["Expenses by Category", "Amount"],
-    ...Object.entries(expenseSummary).map(([cat, val]) => [cat, val])
+    ...Object.entries(expenseSummary).map(([cat, val]) => [sanitizeSpreadsheetText(cat), val])
   ];
 
   const wsSummary = XLSX.utils.aoa_to_sheet(summaryData);

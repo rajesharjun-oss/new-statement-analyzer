@@ -45,6 +45,7 @@ backend/temp_uploads/
 artifacts/debug-output/
 
 # Statement artifacts
+outputs/
 **/statement-analysis-*.xlsx
 **/*.phase1.raw.psv
 backend/statements.db

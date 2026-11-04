@@ -9,6 +9,11 @@
     "expected_total_credit": 74931500.0,
     "expected_opening_balance": 27133148.42,
     "expected_closing_balance": 61901247.64,
+    "minimum_description_coverage": 0.98,
+    "minimum_date_coverage": 1.0,
+    "minimum_amount_direction_coverage": 0.99,
+    "minimum_balance_continuity_coverage": 0.95,
+    "minimum_score": 95,
     "tolerance": 0.01,
     "notes": "Guards against Access column drift where debits shift into credits and credits shift into balance."
   },

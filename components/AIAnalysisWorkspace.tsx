@@ -1,12 +1,16 @@
-import React, { useMemo, useState } from "react";
-import { BarChart3, CheckCircle2, Download, FileCheck, FileSpreadsheet, Loader2, Play, ShieldCheck, Sparkles, Upload } from "lucide-react";
-import { AnalysisTemplate, CATEGORIES, ClassifiedTransaction } from "../types";
+import React, { useEffect, useMemo, useState } from "react";
+import { BarChart3, CheckCircle2, Download, FileCheck, FileSpreadsheet, Loader2, Play, ShieldCheck, Sparkles, Trash2, Upload } from "lucide-react";
+import { AnalysisNarrative, AnalysisTemplate, CATEGORIES, ClassifiedTransaction } from "../types";
 import { analyzeDocument } from "../services/analysisService";
 import { analysisTemplates, cloneTemplate, createCustomAnalysisTemplate } from "../services/analysisTemplates";
-import { calculateCategorySummary, calculateReconciliation } from "../services/analysisRules";
+import { buildDeterministicNarrative, calculateAnalysisInsights, calculateAnalysisQuality, calculateCategorySummary, calculateReconciliation } from "../services/analysisRules";
 import { classifyTransactions } from "../services/classifyTransactions";
 import { exportAnalysisWorkbook } from "../services/analysisExportService";
+import { categoryMemoryCount, clearCategoryMemory, rememberCategoryDecision } from "../services/analysisMemory";
+import { generateAINarrative } from "../services/analysisNarrativeService";
 import { AnalysisSummaryCards } from "./AnalysisSummaryCards";
+import { AnalysisQualityPanel } from "./AnalysisQualityPanel";
+import { AnalysisInsightsPanel } from "./AnalysisInsightsPanel";
 import { RulesBuilder } from "./RulesBuilder";
 import { TransactionPreviewTable } from "./TransactionPreviewTable";
 import { Badge, Button, Card, Progress, cn } from "./PrimitiveUI";
@@ -14,7 +18,7 @@ import { Badge, Button, Card, Progress, cn } from "./PrimitiveUI";
 const savedKey = "ledger_ai_analysis_templates";
 
 function safeName(value: string) {
-  return (value || "AI Analysis").replace(/[^a-z0-9]+/gi, "_").replace(/_+/g, "_");
+  return (value || "Statement Analysis").replace(/[^a-z0-9]+/gi, "_").replace(/_+/g, "_");
 }
 
 function titleCaseFilePart(value: string, dropAnd = false) {
@@ -33,7 +37,7 @@ function titleCaseFilePart(value: string, dropAnd = false) {
 
 function buildExportFileName(organizationName: string | undefined, templateName: string) {
   const org = titleCaseFilePart(organizationName && organizationName !== "Unknown Org" ? organizationName : "Unknown Org", true);
-  const analysis = titleCaseFilePart(templateName || "AI Analysis");
+  const analysis = titleCaseFilePart(templateName || "Statement Analysis");
   return `${org}_${analysis}.xlsx`;
 }
 
@@ -56,7 +60,9 @@ export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) 
       return [];
     }
   });
-  const [useAI, setUseAI] = useState(true);
+  const [useAI, setUseAI] = useState(false);
+  const [aiNarrative, setAiNarrative] = useState<AnalysisNarrative | null>(null);
+  const [isGeneratingNarrative, setIsGeneratingNarrative] = useState(false);
   const [filter, setFilter] = useState<"all" | "review" | "low">("all");
 
   const reconciliation = useMemo(() => calculateReconciliation(
@@ -66,7 +72,12 @@ export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) 
   ), [classified, extractedResult]);
 
   const categorySummary = useMemo(() => calculateCategorySummary(classified).slice(0, 8), [classified]);
+  const qualityReport = useMemo(() => calculateAnalysisQuality(classified, reconciliation), [classified, reconciliation]);
+  const insights = useMemo(() => calculateAnalysisInsights(classified, qualityReport), [classified, qualityReport]);
+  const deterministicNarrative = useMemo(() => buildDeterministicNarrative(classified, insights, qualityReport), [classified, insights, qualityReport]);
+  const narrative = aiNarrative || deterministicNarrative;
   const reviewCount = classified.filter(t => t.reviewRequired || t.confidence === "Low").length;
+  const rememberedDecisions = categoryMemoryCount(template.id);
   const outputFileName = buildExportFileName(extractedResult?.organizationName, template.name);
   const isDebitOnlyTemplate = template.scope === "debit";
   const outOfScopeCredits = classified
@@ -82,6 +93,10 @@ export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) 
     "Unallocated/Review Required"
   ])), [template.categories]);
   const hasCategoryRules = template.categories.some(rule => (rule.outputLabel || rule.name || "").trim());
+
+  useEffect(() => {
+    setAiNarrative(null);
+  }, [classified]);
 
   const chooseTemplate = (id: string) => {
     const source = id === "custom"
@@ -182,27 +197,68 @@ export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) 
   };
 
   const manualEdit = (id: string, patch: Partial<ClassifiedTransaction>) => {
-    setClassified(rows => rows.map(row => row.id === id ? {
-      ...row,
-      ...patch,
-      decisionSource: "MANUAL",
-      reason: patch.reason || row.reason || "Manual review update."
-    } : row));
+    setClassified(rows => rows.map(row => {
+      if (row.id !== id) return row;
+      const categoryWasResolved = patch.category && !["Review Required", "Unallocated", "Uncategorized", "Unallocated/Review Required"].includes(patch.category);
+      const updated: ClassifiedTransaction = {
+        ...row,
+        ...patch,
+        ...(categoryWasResolved ? { confidence: "High", reviewRequired: false } : {}),
+        decisionSource: "MANUAL",
+        reason: patch.reason || (categoryWasResolved ? "Category confirmed by human review." : row.reason || "Manual review update.")
+      };
+      if (categoryWasResolved) rememberCategoryDecision(updated, template.id);
+      return updated;
+    }));
   };
 
-  const handleExport = () => {
+  const forgetReviewedDecisions = () => {
+    if (!rememberedDecisions) return;
+    if (!window.confirm(`Clear ${rememberedDecisions} remembered decision(s) for this analysis template?`)) return;
+    clearCategoryMemory(template.id);
+    setStatus("Remembered decisions cleared");
+  };
+
+  const generateNarrative = async () => {
+    if (!useAI) {
+      setError("Turn on AI fallback before requesting an AI narrative.");
+      return;
+    }
+    setIsGeneratingNarrative(true);
+    setError(null);
+    setStatus("Generating a cited narrative from verified metrics");
+    try {
+      const generated = await generateAINarrative({ insights, quality: qualityReport, deterministicNarrative });
+      setAiNarrative(generated);
+      setStatus("AI narrative generated with validated evidence IDs");
+    } catch (narrativeError: any) {
+      setError(narrativeError?.message || "AI narrative generation is unavailable.");
+      setStatus("Deterministic narrative retained");
+    } finally {
+      setIsGeneratingNarrative(false);
+    }
+  };
+
+  const handleExport = async () => {
     if (!classified.length) {
       setError("Classify or preview transactions before export.");
       return;
     }
-    exportAnalysisWorkbook({
-      transactions: classified,
-      template,
-      customInstructions,
-      openingBalance: extractedResult?.statement_summary?.opening_balance,
-      closingBalance: extractedResult?.statement_summary?.closing_balance,
-      fileName: outputFileName
-    });
+    setStatus("Building analysis workbook");
+    try {
+      await exportAnalysisWorkbook({
+        transactions: classified,
+        template,
+        customInstructions,
+        openingBalance: extractedResult?.statement_summary?.opening_balance,
+        closingBalance: extractedResult?.statement_summary?.closing_balance,
+        narrative,
+        fileName: outputFileName
+      });
+      setStatus("Analysis workbook exported");
+    } catch (exportError: any) {
+      setError(exportError?.message || "Analysis workbook export failed.");
+    }
   };
 
   const steps = ["Upload & Extract", "Choose Analysis", "Rules Builder", "Preview & Review", "Export"];
@@ -217,7 +273,7 @@ export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) 
               <Badge variant={isBusy ? "warning" : "success"}>{isBusy ? "Processing" : "Ready"}</Badge>
               {extractedResult?.backend_version && <Badge variant="outline">API {extractedResult.backend_version}</Badge>}
             </div>
-            <h1 className="text-[30px] font-bold text-white tracking-tight">AI Analysis Workspace</h1>
+            <h1 className="text-[30px] font-bold text-white tracking-tight">Statement Analysis Workspace</h1>
             <p className="text-sm text-zinc-400 mt-2">Extract clean transaction rows, apply deterministic audit rules, review exceptions, and export a professional workbook.</p>
           </div>
           <div className="grid grid-cols-3 gap-2 min-w-[260px]">
@@ -350,6 +406,9 @@ export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) 
               {isBusy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
               Classify
             </Button>
+            <Button size="sm" variant="ghost" onClick={forgetReviewedDecisions} disabled={!rememberedDecisions} title="Clear remembered human category decisions">
+              <Trash2 className="mr-2 h-4 w-4" /> Memory {rememberedDecisions}
+            </Button>
           </div>
           <div className="lg:col-span-4 rounded-[12px] border border-white/[0.08] bg-black/20 p-4">
             <div className="flex items-center justify-between gap-3">
@@ -368,6 +427,7 @@ export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) 
           <div className="lg:col-span-12 rounded-[12px] border border-white/[0.08] bg-black/20 px-4 py-3">
             <p className="text-xs text-zinc-300">
               AI is optional for classification. Turning AI fallback off keeps the analysis workspace rule-based, but difficult scanned or low-quality statements may still use backend OCR or AI fallback during extraction.
+              When enabled, unresolved narrations or compact verified metrics can be sent to the AI provider configured on the backend.
             </p>
           </div>
         </div>
@@ -400,6 +460,14 @@ export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) 
       {classified.length > 0 && (
         <>
           <AnalysisSummaryCards transactions={classified} reconciliation={reconciliation} />
+          <AnalysisQualityPanel report={qualityReport} />
+          <AnalysisInsightsPanel
+            insights={insights}
+            narrative={narrative}
+            aiEnabled={useAI}
+            isGeneratingNarrative={isGeneratingNarrative}
+            onGenerateNarrative={generateNarrative}
+          />
           <div className="flex items-center gap-2">
             <BarChart3 className="w-4 h-4 text-[#9B87FF]" />
             <h3 className="text-sm font-semibold text-white">Category Totals</h3>

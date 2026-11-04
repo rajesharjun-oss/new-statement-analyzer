@@ -1,5 +1,6 @@
 import { Transaction } from '../types';
-import * as pdfjsLib from 'pdfjs-dist/build/pdf';
+import * as pdfjsLib from 'pdfjs-dist/build/pdf.mjs';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 interface TextItem {
     str: string;
@@ -26,11 +27,11 @@ const MIN_COLUMN_GAP = 15;
 
 export const runBatch = async (arrayBuffer: ArrayBuffer): Promise<{ transactions: Transaction[], metadata: any }> => {
     if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
-        pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+        pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
     }
 
     try {
-        const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+        const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer, isEvalSupported: false });
         const pdf = await loadingTask.promise;
         console.log(`DEBUG: PDF Loaded. Pages: ${pdf.numPages}`);
         const allTransactions: Transaction[] = [];

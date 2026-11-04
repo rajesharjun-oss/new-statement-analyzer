@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Form
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -50,6 +50,13 @@ class AIClassifyRequest(BaseModel):
     template: Dict[str, Any]
     customInstructions: Optional[str] = ""
 
+
+class AINarrativeRequest(BaseModel):
+    insights: Dict[str, Any]
+    quality: Dict[str, Any]
+    deterministicNarrative: Dict[str, Any]
+    allowedEvidenceIds: List[str]
+
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "message": "Backend is reachable"}
@@ -84,6 +91,12 @@ MAX_UPLOAD_BYTES = env_int("MAX_UPLOAD_BYTES", 20 * 1024 * 1024)
 TEMP_FILE_TTL_SECONDS = env_int("TEMP_FILE_TTL_SECONDS", 60 * 60)
 MAX_CLASSIFY_TRANSACTIONS = env_int("MAX_CLASSIFY_TRANSACTIONS", 500)
 MAX_CLASSIFY_INSTRUCTIONS_CHARS = env_int("MAX_CLASSIFY_INSTRUCTIONS_CHARS", 4000)
+MAX_NARRATIVE_PAYLOAD_CHARS = env_int("MAX_NARRATIVE_PAYLOAD_CHARS", 100_000)
+MAX_AI_REQUEST_BYTES = env_int("MAX_AI_REQUEST_BYTES", 1_048_576)
+RATE_LIMIT_WINDOW_SECONDS = env_int("RATE_LIMIT_WINDOW_SECONDS", 60)
+ANALYZE_RATE_LIMIT = env_int("ANALYZE_RATE_LIMIT", 20)
+CLASSIFY_RATE_LIMIT = env_int("CLASSIFY_RATE_LIMIT", 30)
+NARRATIVE_RATE_LIMIT = env_int("NARRATIVE_RATE_LIMIT", 10)
 SUPPORTED_FILE_EXTS = {".pdf", ".xlsx", ".xls", ".csv"}
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 FILE_SIGNATURES = {
@@ -132,6 +145,50 @@ def validate_upload_content(file_ext: str, content: bytes) -> None:
 async def startup_cleanup():
     cleanup_stale_temp_files()
 
+
+request_buckets: Dict[str, List[float]] = {}
+
+
+@app.middleware("http")
+async def reject_oversized_ai_requests(request: Request, call_next):
+    if request.method == "POST" and request.url.path in {"/classify-analysis", "/analysis-narrative"}:
+        try:
+            content_length = int(request.headers.get("content-length", "0"))
+        except ValueError:
+            content_length = 0
+        if content_length > MAX_AI_REQUEST_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": "Request body is too large."},
+                headers={"Cache-Control": "no-store"},
+            )
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def rate_limit_expensive_routes(request: Request, call_next):
+    route_limits = {
+        "/analyze": ANALYZE_RATE_LIMIT,
+        "/classify-analysis": CLASSIFY_RATE_LIMIT,
+        "/analysis-narrative": NARRATIVE_RATE_LIMIT,
+    }
+    limit = route_limits.get(request.url.path)
+    if limit and request.method == "POST":
+        now = time.monotonic()
+        client = request.client.host if request.client else "unknown"
+        key = f"{request.url.path}:{client}"
+        recent = [timestamp for timestamp in request_buckets.get(key, []) if now - timestamp < RATE_LIMIT_WINDOW_SECONDS]
+        if len(recent) >= limit:
+            retry_after = max(1, int(RATE_LIMIT_WINDOW_SECONDS - (now - recent[0])))
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Request limit exceeded. Retry later."},
+                headers={"Retry-After": str(retry_after), "Cache-Control": "no-store"},
+            )
+        recent.append(now)
+        request_buckets[key] = recent
+    return await call_next(request)
+
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
@@ -140,7 +197,7 @@ async def add_security_headers(request: Request, call_next):
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
-    if request.url.path.startswith(("/analyze", "/download", "/classify-analysis")):
+    if request.url.path.startswith(("/analyze", "/download", "/classify-analysis", "/analysis-narrative")):
         response.headers.setdefault("Cache-Control", "no-store")
     return response
 
@@ -158,6 +215,10 @@ def normalize_bank_id(bank: str) -> str:
         "access_bank": "access",
         "access-bank": "access",
         "access bank": "access",
+        "monie point": "moniepoint",
+        "moniepoint bank": "moniepoint",
+        "moniepoint mfb": "moniepoint",
+        "o pay": "opay",
     }
     return aliases.get(value, value)
 
@@ -336,7 +397,7 @@ async def analyze_statement(
                 empty_pct = empty_desc_count / len(txns)
                 detected_bank = meta.get('bank', 'generic')
 
-                if empty_pct > 0.25 and detected_bank not in ['gtbank', 'providus', 'zenith', 'access', 'uba', 'fcmb', 'keystone', 'wema', 'sterling'] and file_ext == '.pdf':
+                if empty_pct > 0.25 and detected_bank not in ['gtbank', 'providus', 'zenith', 'access', 'uba', 'fcmb', 'keystone', 'wema', 'sterling', 'moniepoint', 'opay'] and file_ext == '.pdf':
                     print(f'WARN: {empty_pct:.0%} empty descriptions. Retrying statement with generic mapping...')
                     from pdf_extractor import extract_transactions as _et
                     retry_results = await asyncio.to_thread(_et, stored_path, bank_identifier='generic')
@@ -615,6 +676,94 @@ Rows:
     except Exception as e:
         print(f"WARN: AI analysis classifier failed: {e}")
         return _fallback_results()
+
+
+def clean_narrative_response(data: Dict[str, Any], allowed_ids: set, fallback_summary: str) -> Dict[str, Any]:
+    findings = []
+    for item in data.get("findings", [])[:8]:
+        evidence_ids = [
+            str(value) for value in item.get("evidenceTransactionIds", [])[:25]
+            if str(value) in allowed_ids
+        ]
+        findings.append({
+            "title": str(item.get("title") or "Analysis finding")[:120],
+            "body": str(item.get("body") or "")[:800],
+            "severity": item.get("severity") if item.get("severity") in {"Positive", "Neutral", "Review"} else "Neutral",
+            "evidenceTransactionIds": evidence_ids,
+        })
+    return {
+        "generatedBy": "AI",
+        "summary": str(data.get("summary") or fallback_summary or "")[:1200],
+        "findings": findings,
+        "caveats": [str(value)[:500] for value in data.get("caveats", [])[:8]],
+    }
+
+
+@app.post("/analysis-narrative")
+async def analysis_narrative(payload: AINarrativeRequest):
+    """Render verified deterministic metrics into a cited narrative."""
+    request_data = payload.model_dump()
+    if len(json.dumps(request_data, ensure_ascii=False)) > MAX_NARRATIVE_PAYLOAD_CHARS:
+        raise HTTPException(status_code=413, detail="Narrative input is too large")
+
+    allowed_ids = {str(value) for value in payload.allowedEvidenceIds[:250] if str(value).strip()}
+    prompt = f"""
+Write a concise bank-statement analysis using ONLY the verified facts below.
+Do not calculate new totals, invent transactions, identify fraud, or provide legal/tax conclusions.
+Every finding must cite only transaction IDs from allowedEvidenceIds.
+Return strict JSON only:
+{{"summary":"string","findings":[{{"title":"string","body":"string","severity":"Positive/Neutral/Review","evidenceTransactionIds":["id"]}}],"caveats":["string"]}}
+
+Verified insights:
+{json.dumps(payload.insights, ensure_ascii=False)}
+
+Quality gate:
+{json.dumps(payload.quality, ensure_ascii=False)}
+
+Deterministic narrative:
+{json.dumps(payload.deterministicNarrative, ensure_ascii=False)}
+
+allowedEvidenceIds:
+{json.dumps(sorted(allowed_ids), ensure_ascii=False)}
+"""
+
+    try:
+        if os.getenv("OPENAI_API_KEY"):
+            from openai import OpenAI
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            response = client.chat.completions.create(
+                model=os.getenv("OPENAI_NARRATIVE_MODEL", os.getenv("OPENAI_CLASSIFIER_MODEL", "gpt-4o-mini")),
+                messages=[
+                    {"role": "system", "content": "You summarize verified financial metrics and cite only supplied transaction IDs."},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0,
+            )
+            data = json.loads(response.choices[0].message.content or "{}")
+        elif os.getenv("ANTHROPIC_API_KEY"):
+            import anthropic
+            client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+            response = client.messages.create(
+                model=os.getenv("ANTHROPIC_NARRATIVE_MODEL", os.getenv("ANTHROPIC_CLASSIFIER_MODEL", "claude-3-haiku-20240307")),
+                max_tokens=1800,
+                temperature=0,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            data = json.loads(response.content[0].text if response.content else "{}")
+        else:
+            raise HTTPException(status_code=503, detail="AI narrative provider is not configured")
+
+        return clean_narrative_response(
+            data,
+            allowed_ids,
+            str(payload.deterministicNarrative.get("summary") or ""),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"WARN: AI narrative generation failed: {exc}")
+        raise HTTPException(status_code=503, detail="AI narrative generation is unavailable")
 
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str):

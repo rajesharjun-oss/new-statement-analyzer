@@ -7,7 +7,7 @@ export default defineConfig(() => {
     server: {
       port: 5000,
       host: '0.0.0.0',
-      allowedHosts: true as const,
+      allowedHosts: ['localhost', '127.0.0.1'],
       proxy: {
         '/health': {
           target: 'http://127.0.0.1:8000',
@@ -27,13 +27,25 @@ export default defineConfig(() => {
           timeout: 1800000,
           proxyTimeout: 1800000,
         },
+        '/classify-analysis': {
+          target: 'http://127.0.0.1:8000',
+          changeOrigin: true,
+          timeout: 120000,
+          proxyTimeout: 120000,
+        },
+        '/analysis-narrative': {
+          target: 'http://127.0.0.1:8000',
+          changeOrigin: true,
+          timeout: 120000,
+          proxyTimeout: 120000,
+        },
       },
     },
     plugins: [react()],
 
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(import.meta.dirname, '.'),
       }
     }
   };

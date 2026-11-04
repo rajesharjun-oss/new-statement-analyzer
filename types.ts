@@ -84,6 +84,122 @@ export interface ReconciliationCheck {
   status: 'Passed' | 'Failed' | 'Unverified';
 }
 
+export type AnalysisQualitySeverity = 'Critical' | 'Warning' | 'Info';
+
+export interface AnalysisQualityIssue {
+  code: string;
+  severity: AnalysisQualitySeverity;
+  count: number;
+  message: string;
+  transactionIds: string[];
+}
+
+export interface AnalysisQualityReport {
+  score: number;
+  grade: 'Excellent' | 'Good' | 'Needs Review' | 'Unreliable';
+  status: 'Passed' | 'Review Required' | 'Failed';
+  transactionCount: number;
+  classificationCoveragePercent: number;
+  highConfidencePercent: number;
+  sourceEvidencePercent: number;
+  reviewCount: number;
+  duplicateCount: number;
+  missingDescriptionCount: number;
+  invalidDateCount: number;
+  outOfOrderDateCount: number;
+  invalidAmountDirectionCount: number;
+  balanceContinuityIssueCount: number;
+  issues: AnalysisQualityIssue[];
+}
+
+export interface AnalysisEvidenceTransaction {
+  id: string;
+  date: string;
+  description: string;
+  amount: number;
+  direction: 'Debit' | 'Credit';
+}
+
+export interface AnalysisMonthlyTrend {
+  month: string;
+  debitTotal: number;
+  creditTotal: number;
+  netMovement: number;
+  transactionCount: number;
+  netChangePercent: number | null;
+}
+
+export interface AnalysisCounterpartySummary {
+  counterparty: string;
+  direction: 'Debit' | 'Credit';
+  totalAmount: number;
+  transactionCount: number;
+  sharePercent: number;
+  transactionIds: string[];
+}
+
+export interface AnalysisRecurringPattern {
+  counterparty: string;
+  direction: 'Debit' | 'Credit';
+  typicalAmount: number;
+  transactionCount: number;
+  cadence: 'Weekly' | 'Monthly' | 'Recurring';
+  transactionIds: string[];
+}
+
+export interface AnalysisAnomaly {
+  transactionId: string;
+  type: 'Unusual Amount' | 'High-value Review' | 'Balance Discontinuity';
+  severity: 'High' | 'Medium';
+  date: string;
+  description: string;
+  amount: number;
+  direction: 'Debit' | 'Credit';
+  reason: string;
+}
+
+export interface AnalysisInsights {
+  periodStart: string | null;
+  periodEnd: string | null;
+  activeMonths: number;
+  netCashFlow: number;
+  averageMonthlyDebit: number;
+  averageMonthlyCredit: number;
+  largestDebit: AnalysisEvidenceTransaction | null;
+  largestCredit: AnalysisEvidenceTransaction | null;
+  topCounterpartyConcentrationPercent: number;
+  monthlyTrends: AnalysisMonthlyTrend[];
+  topCounterparties: AnalysisCounterpartySummary[];
+  recurringPatterns: AnalysisRecurringPattern[];
+  anomalies: AnalysisAnomaly[];
+}
+
+export interface AnalysisNarrativeFinding {
+  title: string;
+  body: string;
+  severity: 'Positive' | 'Neutral' | 'Review';
+  evidenceTransactionIds: string[];
+}
+
+export interface AnalysisNarrative {
+  generatedBy: 'DETERMINISTIC' | 'AI';
+  summary: string;
+  findings: AnalysisNarrativeFinding[];
+  caveats: string[];
+}
+
+export interface AnalysisCategoryMemoryEntry {
+  id: string;
+  templateId: string;
+  narrationFingerprint: string;
+  category: string;
+  subCategory: string | null;
+  taxAuthority: ClassifiedTransaction['taxAuthority'];
+  useCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AnalysisStatistics {
   total_txns: number;
   rule_hits: number;

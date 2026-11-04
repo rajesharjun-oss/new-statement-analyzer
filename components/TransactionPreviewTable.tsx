@@ -1,5 +1,5 @@
 import React from "react";
-import { AlertTriangle, Bot, CheckCircle2, Filter, Pencil, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Bot, BrainCircuit, CheckCircle2, Filter, Pencil, ShieldCheck } from "lucide-react";
 import { ClassifiedTransaction, ConfidenceLabel } from "../types";
 import { Badge, Button } from "./PrimitiveUI";
 
@@ -19,6 +19,7 @@ function confidenceVariant(confidence: ConfidenceLabel) {
 
 function sourceIcon(source: string) {
   if (source === "AI") return <Bot className="w-3 h-3 mr-1" />;
+  if (source === "MEMORY") return <BrainCircuit className="w-3 h-3 mr-1" />;
   if (source === "MANUAL") return <Pencil className="w-3 h-3 mr-1" />;
   if (source === "RULE") return <ShieldCheck className="w-3 h-3 mr-1" />;
   return <CheckCircle2 className="w-3 h-3 mr-1" />;
@@ -54,7 +55,7 @@ export function TransactionPreviewTable({
             <Filter className="w-4 h-4 text-[#9B87FF]" />
             <h3 className="text-sm font-semibold text-white">Preview & Review Queue</h3>
           </div>
-          <p className="text-xs text-zinc-500 mt-1">{visible.length} rows visible • {reviewCount} review required • {lowCount} low confidence</p>
+          <p className="text-xs text-zinc-500 mt-1">{visible.length} rows visible | {reviewCount} review required | {lowCount} low confidence</p>
         </div>
         <div className="flex flex-wrap gap-2">
           {(["all", "review", "low"] as const).map(option => (
@@ -103,7 +104,7 @@ export function TransactionPreviewTable({
                   </div>
                 </td>
                 <td className="px-3 py-2">
-                  <Badge variant={t.decisionSource === "AI" ? "purple" : t.decisionSource === "MANUAL" ? "warning" : t.decisionSource === "RULE" ? "success" : "outline"} className="inline-flex items-center">
+                  <Badge variant={t.decisionSource === "AI" || t.decisionSource === "MEMORY" ? "purple" : t.decisionSource === "MANUAL" ? "warning" : t.decisionSource === "RULE" ? "success" : "outline"} className="inline-flex items-center">
                     {sourceIcon(t.decisionSource)}{t.decisionSource}
                   </Badge>
                 </td>

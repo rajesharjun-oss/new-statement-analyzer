@@ -77,6 +77,8 @@ function prettifyBankName(rawBank: string) {
       keystone: "Keystone Bank",
       sterling: "Sterling Bank",
       standard_chartered: "Standard Chartered",
+      moniepoint: "Moniepoint",
+      opay: "OPay",
    };
    return map[bank] || (rawBank || "Bank");
 }
@@ -357,7 +359,7 @@ export default function App() {
       }
 
       try {
-         generateExcel(
+         await generateExcel(
             analysisResult.transactions,
             analysisResult.reconciliation_warnings,
             analysisResult.reconciliation_failed,
@@ -441,7 +443,7 @@ export default function App() {
                         : "bg-white/[0.02] text-zinc-400 border-white/[0.08] hover:text-white"
                   )}
                >
-                  AI Analysis Workspace
+                  Analysis Workspace
                </button>
             </div>
 
@@ -640,6 +642,8 @@ export default function App() {
                                           <option value="keystone">Keystone Bank</option>
                                           <option value="sterling">Sterling Bank</option>
                                           <option value="standard_chartered">Standard Chartered</option>
+                                          <option value="moniepoint">Moniepoint</option>
+                                          <option value="opay">OPay</option>
                                        </select>
                                     </div>
 

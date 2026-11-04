@@ -1,4 +1,14 @@
-import { AnalysisTemplate, ClassifiedTransaction, ConfidenceLabel, ReconciliationCheck, Transaction } from "../types";
+import {
+  AnalysisQualityIssue,
+  AnalysisQualityReport,
+  AnalysisInsights,
+  AnalysisNarrative,
+  AnalysisTemplate,
+  ClassifiedTransaction,
+  ConfidenceLabel,
+  ReconciliationCheck,
+  Transaction
+} from "../types";
 
 const reviewCategory = "Review Required";
 const notApplicableKeywords = [
@@ -53,6 +63,49 @@ const commonTransferChargeAmounts = [1.25, 2.5, 3.75, 6.83, 10, 10.75, 25, 26.88
 function money(value: unknown): number {
   const n = typeof value === "number" ? value : Number(String(value ?? "0").replace(/,/g, ""));
   return Number.isFinite(n) ? n : 0;
+}
+
+function toMinorUnits(value: unknown): number {
+  return Math.round(money(value) * 100);
+}
+
+function fromMinorUnits(value: number): number {
+  return value / 100;
+}
+
+function percent(count: number, total: number): number {
+  return total > 0 ? Math.round((count / total) * 1000) / 10 : 0;
+}
+
+function validUtcDate(year: number, month: number, day: number): number | null {
+  const value = Date.UTC(year, month - 1, day);
+  const date = new Date(value);
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  return value;
+}
+
+export function parseTransactionDate(value: unknown): number | null {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+
+  let match = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (match) return validUtcDate(Number(match[1]), Number(match[2]), Number(match[3]));
+
+  match = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2}|\d{4})$/);
+  if (match) {
+    const year = Number(match[3]) < 100 ? 2000 + Number(match[3]) : Number(match[3]);
+    return validUtcDate(year, Number(match[2]), Number(match[1]));
+  }
+
+  match = text.match(/^(\d{1,2})[-\s]([A-Za-z]{3,9})[-\s](\d{2}|\d{4})$/);
+  if (match) {
+    const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    const month = months.indexOf(match[2].slice(0, 3).toLowerCase()) + 1;
+    const year = Number(match[3]) < 100 ? 2000 + Number(match[3]) : Number(match[3]);
+    return month > 0 ? validUtcDate(year, month, Number(match[1])) : null;
+  }
+
+  return null;
 }
 
 function tokenizeKeywords(value: string): string[] {
@@ -448,9 +501,9 @@ export function calculateCategorySummary(transactions: ClassifiedTransaction[]) 
   transactions.forEach(t => {
     const category = t.category || reviewCategory;
     const row = map.get(category) || { category, debitTotal: 0, creditTotal: 0, netMovement: 0, transactionCount: 0 };
-    row.debitTotal += money(t.debit);
-    row.creditTotal += money(t.credit);
-    row.netMovement = row.creditTotal - row.debitTotal;
+    row.debitTotal = fromMinorUnits(toMinorUnits(row.debitTotal) + toMinorUnits(t.debit));
+    row.creditTotal = fromMinorUnits(toMinorUnits(row.creditTotal) + toMinorUnits(t.credit));
+    row.netMovement = fromMinorUnits(toMinorUnits(row.creditTotal) - toMinorUnits(row.debitTotal));
     row.transactionCount += 1;
     map.set(category, row);
   });
@@ -465,9 +518,9 @@ export function calculateMonthlySummary(transactions: ClassifiedTransaction[]) {
     const category = t.category || reviewCategory;
     const key = `${month}|${category}`;
     const row = map.get(key) || { month, category, debitTotal: 0, creditTotal: 0, netMovement: 0, transactionCount: 0 };
-    row.debitTotal += money(t.debit);
-    row.creditTotal += money(t.credit);
-    row.netMovement = row.creditTotal - row.debitTotal;
+    row.debitTotal = fromMinorUnits(toMinorUnits(row.debitTotal) + toMinorUnits(t.debit));
+    row.creditTotal = fromMinorUnits(toMinorUnits(row.creditTotal) + toMinorUnits(t.credit));
+    row.netMovement = fromMinorUnits(toMinorUnits(row.creditTotal) - toMinorUnits(row.debitTotal));
     row.transactionCount += 1;
     map.set(key, row);
   });
@@ -480,14 +533,480 @@ export function calculateReconciliation(
   closingBalance?: number | null,
   tolerance = 0.05
 ): ReconciliationCheck {
-  const totalDebit = transactions.reduce((sum, t) => sum + money(t.debit), 0);
-  const totalCredit = transactions.reduce((sum, t) => sum + money(t.credit), 0);
+  const totalDebitMinor = transactions.reduce((sum, t) => sum + toMinorUnits(t.debit), 0);
+  const totalCreditMinor = transactions.reduce((sum, t) => sum + toMinorUnits(t.credit), 0);
   const first = transactions[0];
   const last = transactions[transactions.length - 1];
-  const opening = openingBalance ?? (first ? first.balance + first.debit - first.credit : null);
-  const actualClosing = closingBalance ?? (last ? last.balance : null);
-  const expectedClosingBalance = opening === null ? null : opening + totalCredit - totalDebit;
-  const difference = expectedClosingBalance === null || actualClosing === null ? null : actualClosing - expectedClosingBalance;
-  const status = difference === null ? "Unverified" : Math.abs(difference) <= tolerance ? "Passed" : "Failed";
-  return { openingBalance: opening, totalDebit, totalCredit, expectedClosingBalance, actualClosingBalance: actualClosing, difference, status };
+  const hasExtractedBalances = transactions.some(transaction => toMinorUnits(transaction.balance) !== 0);
+  const openingMinor = openingBalance !== undefined && openingBalance !== null
+    ? toMinorUnits(openingBalance)
+    : first && hasExtractedBalances
+      ? toMinorUnits(first.balance) + toMinorUnits(first.debit) - toMinorUnits(first.credit)
+      : null;
+  const actualClosingMinor = closingBalance !== undefined && closingBalance !== null
+    ? toMinorUnits(closingBalance)
+    : last && hasExtractedBalances
+      ? toMinorUnits(last.balance)
+      : null;
+  const expectedClosingMinor = openingMinor === null ? null : openingMinor + totalCreditMinor - totalDebitMinor;
+  const differenceMinor = expectedClosingMinor === null || actualClosingMinor === null
+    ? null
+    : actualClosingMinor - expectedClosingMinor;
+  const toleranceMinor = Math.max(0, toMinorUnits(tolerance));
+  const status = differenceMinor === null ? "Unverified" : Math.abs(differenceMinor) <= toleranceMinor ? "Passed" : "Failed";
+  return {
+    openingBalance: openingMinor === null ? null : fromMinorUnits(openingMinor),
+    totalDebit: fromMinorUnits(totalDebitMinor),
+    totalCredit: fromMinorUnits(totalCreditMinor),
+    expectedClosingBalance: expectedClosingMinor === null ? null : fromMinorUnits(expectedClosingMinor),
+    actualClosingBalance: actualClosingMinor === null ? null : fromMinorUnits(actualClosingMinor),
+    difference: differenceMinor === null ? null : fromMinorUnits(differenceMinor),
+    status
+  };
+}
+
+function transactionIds(rows: ClassifiedTransaction[]): string[] {
+  return rows.slice(0, 100).map(row => row.id);
+}
+
+export function calculateAnalysisQuality(
+  transactions: ClassifiedTransaction[],
+  reconciliation: ReconciliationCheck
+): AnalysisQualityReport {
+  const total = transactions.length;
+  if (total === 0) {
+    return {
+      score: 0,
+      grade: "Unreliable",
+      status: "Failed",
+      transactionCount: 0,
+      classificationCoveragePercent: 0,
+      highConfidencePercent: 0,
+      sourceEvidencePercent: 0,
+      reviewCount: 0,
+      duplicateCount: 0,
+      missingDescriptionCount: 0,
+      invalidDateCount: 0,
+      outOfOrderDateCount: 0,
+      invalidAmountDirectionCount: 0,
+      balanceContinuityIssueCount: 0,
+      issues: [{
+        code: "NO_TRANSACTIONS",
+        severity: "Critical",
+        count: 1,
+        message: "No transactions are available for analysis.",
+        transactionIds: []
+      }]
+    };
+  }
+
+  const reviewRows = transactions.filter(row => {
+    const category = String(row.category || "").trim().toLowerCase();
+    return row.reviewRequired || ["review required", "unallocated", "uncategorized", "unallocated/review required"].includes(category);
+  });
+  const highConfidenceRows = transactions.filter(row => row.confidence === "High");
+  const missingDescriptionRows = transactions.filter(row => !String(row.description || "").trim());
+  const invalidDateRows = transactions.filter(row => parseTransactionDate(row.transactionDate || row.date) === null);
+  const evidenceGapRows = transactions.filter(row => {
+    const locator = (row.pageNumber ?? row.page_number ?? row._page ?? row.rowNumber) !== undefined;
+    const sourceText = String(row.rawText || row.description || "").trim();
+    return !String(row.sourceFileName || "").trim() || !locator || !sourceText;
+  });
+  const invalidAmountRows = transactions.filter(row => {
+    const debit = toMinorUnits(row.debit);
+    const credit = toMinorUnits(row.credit);
+    const balanceMarkerText = normalizeNarration(`${row.category} ${row.description}`);
+    const isBalanceMarker = balanceMarkerText.includes("opening balance") || balanceMarkerText.includes("closing balance");
+    return debit < 0 || credit < 0 || (debit > 0 && credit > 0) || (!isBalanceMarker && debit === 0 && credit === 0);
+  });
+
+  const duplicateRows: ClassifiedTransaction[] = [];
+  const seen = new Set<string>();
+  transactions.forEach(row => {
+    const key = [
+      String(row.transactionDate || row.date || "").trim().toLowerCase(),
+      normalizeNarration(row.reference || ""),
+      normalizeNarration(row.description || ""),
+      toMinorUnits(row.debit),
+      toMinorUnits(row.credit),
+      toMinorUnits(row.balance)
+    ].join("|");
+    if (seen.has(key)) duplicateRows.push(row);
+    else seen.add(key);
+  });
+
+  const datedRows = transactions
+    .map(row => ({ row, value: parseTransactionDate(row.transactionDate || row.date) }))
+    .filter((item): item is { row: ClassifiedTransaction; value: number } => item.value !== null);
+  const ascending = datedRows.length < 2 || datedRows[datedRows.length - 1].value >= datedRows[0].value;
+  const outOfOrderRows: ClassifiedTransaction[] = [];
+  for (let index = 1; index < datedRows.length; index += 1) {
+    const previous = datedRows[index - 1];
+    const current = datedRows[index];
+    if ((ascending && current.value < previous.value) || (!ascending && current.value > previous.value)) {
+      outOfOrderRows.push(current.row);
+    }
+  }
+
+  const balanceIssueRows: ClassifiedTransaction[] = [];
+  const balanceToleranceMinor = 5;
+  for (let index = 1; index < transactions.length; index += 1) {
+    const previous = transactions[index - 1];
+    const current = transactions[index];
+    const previousBalance = toMinorUnits(previous.balance);
+    const currentBalance = toMinorUnits(current.balance);
+    if (previousBalance === 0 || currentBalance === 0) continue;
+
+    const difference = ascending
+      ? currentBalance - (previousBalance + toMinorUnits(current.credit) - toMinorUnits(current.debit))
+      : previousBalance - (currentBalance + toMinorUnits(previous.credit) - toMinorUnits(previous.debit));
+    if (Math.abs(difference) > balanceToleranceMinor) balanceIssueRows.push(current);
+  }
+
+  const issues: AnalysisQualityIssue[] = [];
+  const addIssue = (
+    code: string,
+    severity: AnalysisQualityIssue["severity"],
+    rows: ClassifiedTransaction[],
+    message: string,
+    count = rows.length
+  ) => {
+    if (count > 0) issues.push({ code, severity, count, message, transactionIds: transactionIds(rows) });
+  };
+
+  if (reconciliation.status === "Failed") {
+    issues.push({
+      code: "RECONCILIATION_FAILED",
+      severity: "Critical",
+      count: 1,
+      message: "Opening balance plus credits minus debits does not equal the closing balance.",
+      transactionIds: []
+    });
+  } else if (reconciliation.status === "Unverified") {
+    issues.push({
+      code: "RECONCILIATION_UNVERIFIED",
+      severity: "Warning",
+      count: 1,
+      message: "Opening or closing balance is unavailable, so reconciliation cannot be verified.",
+      transactionIds: []
+    });
+  }
+  addIssue("INVALID_AMOUNT_DIRECTION", "Critical", invalidAmountRows, "Rows contain negative amounts, both debit and credit, or no monetary movement.");
+  addIssue("BALANCE_CONTINUITY", "Warning", balanceIssueRows, "Running balances do not follow the transaction movement within the configured tolerance.");
+  addIssue("POSSIBLE_DUPLICATE", "Warning", duplicateRows, "Exact duplicate transaction signatures require review.");
+  addIssue("MISSING_DESCRIPTION", "Warning", missingDescriptionRows, "Transaction descriptions are missing.");
+  addIssue("INVALID_DATE", "Warning", invalidDateRows, "Transaction dates are missing or use an unsupported format.");
+  addIssue("DATE_ORDER_ANOMALY", "Info", outOfOrderRows, "Transaction dates break the statement's dominant sort order.");
+  addIssue("SOURCE_EVIDENCE_GAP", "Warning", evidenceGapRows, "Rows lack a source file, row/page locator, or source narration.");
+  addIssue("REVIEW_REQUIRED", "Warning", reviewRows, "Rows remain unresolved and require a human decision.");
+
+  const sourceEvidencePercent = percent(total - evidenceGapRows.length, total);
+  let score = 100;
+  if (reconciliation.status === "Failed") score -= 35;
+  if (reconciliation.status === "Unverified") score -= 8;
+  score -= Math.min(20, invalidAmountRows.length * 5);
+  score -= Math.min(20, balanceIssueRows.length * 2);
+  score -= Math.min(12, duplicateRows.length * 2);
+  score -= Math.min(10, missingDescriptionRows.length * 2);
+  score -= Math.min(8, invalidDateRows.length * 2);
+  score -= Math.min(4, outOfOrderRows.length);
+  score -= Math.min(20, Math.round((reviewRows.length / total) * 20));
+  score -= Math.min(10, Math.round((100 - sourceEvidencePercent) / 10));
+  score = Math.max(0, Math.min(100, score));
+
+  const hasCriticalIssue = issues.some(issue => issue.severity === "Critical");
+  const hasReviewIssue = issues.some(issue => issue.severity === "Warning");
+  const status = hasCriticalIssue ? "Failed" : (hasReviewIssue || reconciliation.status !== "Passed") ? "Review Required" : "Passed";
+  const grade = score >= 95 ? "Excellent" : score >= 85 ? "Good" : score >= 65 ? "Needs Review" : "Unreliable";
+
+  return {
+    score,
+    grade,
+    status,
+    transactionCount: total,
+    classificationCoveragePercent: percent(total - reviewRows.length, total),
+    highConfidencePercent: percent(highConfidenceRows.length, total),
+    sourceEvidencePercent,
+    reviewCount: reviewRows.length,
+    duplicateCount: duplicateRows.length,
+    missingDescriptionCount: missingDescriptionRows.length,
+    invalidDateCount: invalidDateRows.length,
+    outOfOrderDateCount: outOfOrderRows.length,
+    invalidAmountDirectionCount: invalidAmountRows.length,
+    balanceContinuityIssueCount: balanceIssueRows.length,
+    issues
+  };
+}
+
+function counterpartyLabel(transaction: ClassifiedTransaction): string {
+  const normalized = normalizeNarration(transaction.description || transaction.rawText || "")
+    .replace(/\b[a-z0-9]*\d{5,}[a-z0-9]*\b/g, " ")
+    .replace(/\b(?:nip|neft|cob|trf|transfer|payment|paid|from|to|for|ref|reference|txn|transaction|amount|ngn|debit|credit|online|mobile|bank)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return (normalized || normalizeNarration(transaction.description) || "unidentified counterparty")
+    .slice(0, 72)
+    .toUpperCase();
+}
+
+function quantile(values: number[], position: number): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = (sorted.length - 1) * position;
+  const lower = Math.floor(index);
+  const upper = Math.ceil(index);
+  if (lower === upper) return sorted[lower];
+  return sorted[lower] + (sorted[upper] - sorted[lower]) * (index - lower);
+}
+
+function evidenceTransaction(transaction: ClassifiedTransaction, direction: "Debit" | "Credit") {
+  return {
+    id: transaction.id,
+    date: transaction.transactionDate || transaction.date,
+    description: transaction.description,
+    amount: direction === "Debit" ? transaction.debit : transaction.credit,
+    direction
+  };
+}
+
+export function calculateAnalysisInsights(
+  transactions: ClassifiedTransaction[],
+  qualityReport?: AnalysisQualityReport
+): AnalysisInsights {
+  const totalDebitMinor = transactions.reduce((sum, row) => sum + toMinorUnits(row.debit), 0);
+  const totalCreditMinor = transactions.reduce((sum, row) => sum + toMinorUnits(row.credit), 0);
+  const dated = transactions
+    .map(row => ({ row, timestamp: parseTransactionDate(row.transactionDate || row.date) }))
+    .filter((item): item is { row: ClassifiedTransaction; timestamp: number } => item.timestamp !== null)
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  const monthlyMap = new Map<string, { debitMinor: number; creditMinor: number; count: number }>();
+  dated.forEach(({ row, timestamp }) => {
+    const date = new Date(timestamp);
+    const month = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+    const current = monthlyMap.get(month) || { debitMinor: 0, creditMinor: 0, count: 0 };
+    current.debitMinor += toMinorUnits(row.debit);
+    current.creditMinor += toMinorUnits(row.credit);
+    current.count += 1;
+    monthlyMap.set(month, current);
+  });
+  const monthlyTrends = Array.from(monthlyMap.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([month, value], index, rows) => {
+      const netMinor = value.creditMinor - value.debitMinor;
+      const previous = index > 0 ? rows[index - 1][1] : null;
+      const previousNetMinor = previous ? previous.creditMinor - previous.debitMinor : null;
+      return {
+        month,
+        debitTotal: fromMinorUnits(value.debitMinor),
+        creditTotal: fromMinorUnits(value.creditMinor),
+        netMovement: fromMinorUnits(netMinor),
+        transactionCount: value.count,
+        netChangePercent: previousNetMinor === null || previousNetMinor === 0
+          ? null
+          : Math.round(((netMinor - previousNetMinor) / Math.abs(previousNetMinor)) * 1000) / 10
+      };
+    });
+
+  let largestDebitRow: ClassifiedTransaction | null = null;
+  let largestCreditRow: ClassifiedTransaction | null = null;
+  transactions.forEach(row => {
+    if (toMinorUnits(row.debit) > toMinorUnits(largestDebitRow?.debit)) largestDebitRow = row;
+    if (toMinorUnits(row.credit) > toMinorUnits(largestCreditRow?.credit)) largestCreditRow = row;
+  });
+
+  const counterparties = new Map<string, { name: string; direction: "Debit" | "Credit"; totalMinor: number; ids: string[] }>();
+  const addCounterparty = (row: ClassifiedTransaction, direction: "Debit" | "Credit", amountMinor: number) => {
+    if (amountMinor <= 0) return;
+    const name = counterpartyLabel(row);
+    const key = `${direction}|${name}`;
+    const current = counterparties.get(key) || { name, direction, totalMinor: 0, ids: [] };
+    current.totalMinor += amountMinor;
+    current.ids.push(row.id);
+    counterparties.set(key, current);
+  };
+  transactions.forEach(row => {
+    addCounterparty(row, "Debit", toMinorUnits(row.debit));
+    addCounterparty(row, "Credit", toMinorUnits(row.credit));
+  });
+  const topCounterparties = Array.from(counterparties.values())
+    .map(item => {
+      const directionTotal = item.direction === "Debit" ? totalDebitMinor : totalCreditMinor;
+      return {
+        counterparty: item.name,
+        direction: item.direction,
+        totalAmount: fromMinorUnits(item.totalMinor),
+        transactionCount: item.ids.length,
+        sharePercent: directionTotal > 0 ? Math.round((item.totalMinor / directionTotal) * 1000) / 10 : 0,
+        transactionIds: item.ids.slice(0, 100)
+      };
+    })
+    .sort((a, b) => b.totalAmount - a.totalAmount)
+    .slice(0, 12);
+
+  const recurringGroups = new Map<string, { name: string; direction: "Debit" | "Credit"; amountMinor: number; dates: number[]; ids: string[] }>();
+  transactions.forEach(row => {
+    const timestamp = parseTransactionDate(row.transactionDate || row.date);
+    if (timestamp === null) return;
+    (["Debit", "Credit"] as const).forEach(direction => {
+      const amountMinor = toMinorUnits(direction === "Debit" ? row.debit : row.credit);
+      if (amountMinor <= 0) return;
+      const name = counterpartyLabel(row);
+      const key = `${direction}|${name}|${amountMinor}`;
+      const current = recurringGroups.get(key) || { name, direction, amountMinor, dates: [], ids: [] };
+      current.dates.push(timestamp);
+      current.ids.push(row.id);
+      recurringGroups.set(key, current);
+    });
+  });
+  const recurringPatterns = Array.from(recurringGroups.values())
+    .filter(group => group.ids.length >= 3 && new Set(group.dates.map(value => new Date(value).toISOString().slice(0, 7))).size >= 2)
+    .map(group => {
+      const dates = [...group.dates].sort((a, b) => a - b);
+      const gaps = dates.slice(1).map((value, index) => (value - dates[index]) / 86_400_000);
+      const typicalGap = quantile(gaps, 0.5);
+      const cadence = typicalGap >= 6 && typicalGap <= 8 ? "Weekly" : typicalGap >= 25 && typicalGap <= 35 ? "Monthly" : "Recurring";
+      return {
+        counterparty: group.name,
+        direction: group.direction,
+        typicalAmount: fromMinorUnits(group.amountMinor),
+        transactionCount: group.ids.length,
+        cadence: cadence as "Weekly" | "Monthly" | "Recurring",
+        transactionIds: group.ids.slice(0, 100)
+      };
+    })
+    .sort((a, b) => b.transactionCount - a.transactionCount)
+    .slice(0, 20);
+
+  const anomalies = new Map<string, AnalysisInsights["anomalies"][number]>();
+  const detectAmountAnomalies = (direction: "Debit" | "Credit") => {
+    const rows = transactions.filter(row => toMinorUnits(direction === "Debit" ? row.debit : row.credit) > 0);
+    if (rows.length < 8) return;
+    const amounts = rows.map(row => direction === "Debit" ? row.debit : row.credit);
+    const median = quantile(amounts, 0.5);
+    const firstQuartile = quantile(amounts, 0.25);
+    const thirdQuartile = quantile(amounts, 0.75);
+    const threshold = Math.max(thirdQuartile + (thirdQuartile - firstQuartile) * 1.5, median * 3);
+    rows.filter(row => (direction === "Debit" ? row.debit : row.credit) > threshold).forEach(row => {
+      const amount = direction === "Debit" ? row.debit : row.credit;
+      anomalies.set(row.id, {
+        transactionId: row.id,
+        type: "Unusual Amount",
+        severity: amount > threshold * 2 ? "High" : "Medium",
+        date: row.transactionDate || row.date,
+        description: row.description,
+        amount,
+        direction,
+        reason: `Amount exceeds the robust ${direction.toLowerCase()} threshold of ${threshold.toFixed(2)}.`
+      });
+    });
+  };
+  detectAmountAnomalies("Debit");
+  detectAmountAnomalies("Credit");
+
+  const upperQuartile = quantile(
+    transactions.map(row => Math.max(row.debit || 0, row.credit || 0)).filter(value => value > 0),
+    0.75
+  );
+  transactions
+    .filter(row => row.reviewRequired && Math.max(row.debit || 0, row.credit || 0) >= upperQuartile && upperQuartile > 0)
+    .forEach(row => {
+      if (anomalies.has(row.id)) return;
+      const direction = row.debit > 0 ? "Debit" : "Credit";
+      anomalies.set(row.id, {
+        transactionId: row.id,
+        type: "High-value Review",
+        severity: "High",
+        date: row.transactionDate || row.date,
+        description: row.description,
+        amount: direction === "Debit" ? row.debit : row.credit,
+        direction,
+        reason: "High-value transaction remains unresolved in the human review queue."
+      });
+    });
+
+  const balanceIssue = qualityReport?.issues.find(issue => issue.code === "BALANCE_CONTINUITY");
+  balanceIssue?.transactionIds.forEach(id => {
+    const row = transactions.find(transaction => transaction.id === id);
+    if (!row || anomalies.has(id)) return;
+    const direction = row.debit > 0 ? "Debit" : "Credit";
+    anomalies.set(id, {
+      transactionId: id,
+      type: "Balance Discontinuity",
+      severity: "High",
+      date: row.transactionDate || row.date,
+      description: row.description,
+      amount: direction === "Debit" ? row.debit : row.credit,
+      direction,
+      reason: "The running balance does not follow the transaction movement."
+    });
+  });
+
+  return {
+    periodStart: dated[0]?.row.transactionDate || dated[0]?.row.date || null,
+    periodEnd: dated[dated.length - 1]?.row.transactionDate || dated[dated.length - 1]?.row.date || null,
+    activeMonths: monthlyTrends.length,
+    netCashFlow: fromMinorUnits(totalCreditMinor - totalDebitMinor),
+    averageMonthlyDebit: monthlyTrends.length ? fromMinorUnits(Math.round(totalDebitMinor / monthlyTrends.length)) : 0,
+    averageMonthlyCredit: monthlyTrends.length ? fromMinorUnits(Math.round(totalCreditMinor / monthlyTrends.length)) : 0,
+    largestDebit: largestDebitRow ? evidenceTransaction(largestDebitRow, "Debit") : null,
+    largestCredit: largestCreditRow ? evidenceTransaction(largestCreditRow, "Credit") : null,
+    topCounterpartyConcentrationPercent: topCounterparties[0]?.sharePercent || 0,
+    monthlyTrends,
+    topCounterparties,
+    recurringPatterns,
+    anomalies: Array.from(anomalies.values()).sort((a, b) => b.amount - a.amount).slice(0, 50)
+  };
+}
+
+export function buildDeterministicNarrative(
+  transactions: ClassifiedTransaction[],
+  insights: AnalysisInsights,
+  qualityReport: AnalysisQualityReport
+): AnalysisNarrative {
+  const currency = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const findings: AnalysisNarrative["findings"] = [];
+  findings.push({
+    title: insights.netCashFlow >= 0 ? "Positive net cash flow" : "Negative net cash flow",
+    body: `Net movement for the analyzed period is ${currency.format(insights.netCashFlow)} across ${insights.activeMonths || 0} active month(s).`,
+    severity: insights.netCashFlow >= 0 ? "Positive" : "Review",
+    evidenceTransactionIds: [insights.largestDebit?.id, insights.largestCredit?.id].filter((id): id is string => Boolean(id))
+  });
+  if (insights.topCounterparties[0]) {
+    const top = insights.topCounterparties[0];
+    findings.push({
+      title: "Counterparty concentration",
+      body: `${top.counterparty} represents ${top.sharePercent}% of analyzed ${top.direction.toLowerCase()} value.`,
+      severity: top.sharePercent >= 40 ? "Review" : "Neutral",
+      evidenceTransactionIds: top.transactionIds
+    });
+  }
+  if (insights.recurringPatterns.length > 0) {
+    const recurring = insights.recurringPatterns[0];
+    findings.push({
+      title: "Recurring activity detected",
+      body: `${recurring.counterparty} appears ${recurring.transactionCount} times with a ${recurring.cadence.toLowerCase()} pattern around ${currency.format(recurring.typicalAmount)}.`,
+      severity: "Neutral",
+      evidenceTransactionIds: recurring.transactionIds
+    });
+  }
+  if (insights.anomalies.length > 0) {
+    findings.push({
+      title: "Transactions require attention",
+      body: `${insights.anomalies.length} deterministic anomaly signal(s) were detected; these are review prompts, not fraud conclusions.`,
+      severity: "Review",
+      evidenceTransactionIds: insights.anomalies.slice(0, 10).map(item => item.transactionId)
+    });
+  }
+
+  const caveats = ["Insights are derived only from transactions extracted from this statement."];
+  if (qualityReport.reviewCount > 0) caveats.push(`${qualityReport.reviewCount} transaction(s) still require human classification.`);
+  if (qualityReport.status !== "Passed") caveats.push(`The analysis quality gate is ${qualityReport.status.toLowerCase()}; resolve integrity findings before relying on conclusions.`);
+
+  return {
+    generatedBy: "DETERMINISTIC",
+    summary: `${transactions.length} transactions were analyzed from ${insights.periodStart || "an unknown start date"} to ${insights.periodEnd || "an unknown end date"}.`,
+    findings,
+    caveats
+  };
 }

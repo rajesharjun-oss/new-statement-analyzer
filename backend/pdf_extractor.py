@@ -18,6 +18,8 @@ from wema_engine import extract_wema_via_coordinates
 from sterling_engine import extract_sterling_via_coordinates, detect_sterling_columns
 from fcmb_engine import extract_fcmb_via_coordinates
 from keystone_engine import extract_keystone_via_coordinates
+from moniepoint_engine import extract_moniepoint_via_coordinates, is_moniepoint_statement
+from opay_engine import extract_opay_statements, is_opay_statement
 from utils import parse_date_smart, DATE_DMY_RE, DATE_MDY_SL_RE, DATE_DMY_YY_RE, ECO_DATE_RE, BARE_MONTH_RE, YEAR_TOKEN_RE
 try:
     from standard_ocr import extract_text_with_gemini_vision, extract_transactions_via_ai
@@ -558,6 +560,10 @@ def detect_template(first_page_text: str) -> str:
     # We restrict to the first 1500 chars to avoid false positives from transaction descriptions
     # (e.g. transferring money to "Access Bank" in a Sterling statement)
     header_text = text[:1500]
+    if is_moniepoint_statement(text[:5000]):
+        return "moniepoint"
+    if is_opay_statement(text[:5000]):
+        return "opay"
     if "ecobank" in header_text:
         return "ecobank"
     if "gtco" in header_text or "guaranty trust" in header_text:
@@ -795,6 +801,10 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
         "access_bank": "access",
         "access-bank": "access",
         "access bank": "access",
+        "monie point": "moniepoint",
+        "moniepoint bank": "moniepoint",
+        "moniepoint mfb": "moniepoint",
+        "o pay": "opay",
     }
     bank_identifier = bank_aliases.get(bank_identifier, bank_identifier)
     
@@ -909,6 +919,20 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
             metadata["bank"] = bank_identifier
             print(f"DEBUG: Detected Template (Pre-Routing): {bank_identifier}")
             # --- TOP-LEVEL ROUTING: Skip auto-detection if bank is known ---
+            if bank_identifier == "moniepoint":
+                 mp_txns, mp_meta = extract_moniepoint_via_coordinates(Path(pdf_path), metadata, pdf=pdf)
+                 if mp_txns:
+                     return [{"transactions": normalize_remarks(mp_txns), "metadata": mp_meta}]
+                 print("WARN: Moniepoint coordinate engine returned 0 transactions. Falling through to generic extraction path.")
+
+            if bank_identifier == "opay":
+                 opay_results = extract_opay_statements(Path(pdf_path), metadata, pdf=pdf)
+                 if opay_results:
+                     for result in opay_results:
+                         result["transactions"] = normalize_remarks(result["transactions"])
+                     return opay_results
+                 print("WARN: OPay coordinate engine returned 0 transactions. Falling through to generic extraction path.")
+
             if bank_identifier == "providus":
                  prov_txns, prov_meta = extract_providus_via_tables(Path(pdf_path), metadata, pdf=pdf)
                  if prov_txns: return [{"transactions": normalize_remarks(prov_txns), "metadata": prov_meta}]

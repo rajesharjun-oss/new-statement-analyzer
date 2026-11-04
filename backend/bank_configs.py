@@ -185,6 +185,45 @@ BANK_CONFIGS = {
             "opening_balance": r"Opening Balance[:\s]+([\d,]+\.\d{2})",
             "closing_balance": r"Closing Balance[:\s]+([\d,]+\.\d{2})"
         }
+    },
+    "moniepoint": {
+        "name": "Moniepoint",
+        "header_patterns": {
+            "trans_date": r"Date",
+            "reference": r"Transaction\s+Ref",
+            "debit": r"Settlement\s+Debit",
+            "credit": r"Settlement\s+Credit",
+            "balance": r"Balance\s+After",
+            "remarks": r"Narration"
+        },
+        "metadata_patterns": {
+            "account_name": r"Business\s+Name\s+(.+)",
+            "statement_period": r"Date\s+(\d{1,2}/\d{1,2}/\d{4}\s*-\s*\d{1,2}/\d{1,2}/\d{4})",
+            "total_debit": r"Total\s+Debits?\s+([\d,]+\.\d{2})",
+            "total_credit": r"Total\s+Credits?\s+([\d,]+\.\d{2})",
+            "opening_balance": r"Opening\s+Balance\s+([\d,]+\.\d{2})",
+            "closing_balance": r"Closing\s+Balance\s+([\d,]+\.\d{2})"
+        }
+    },
+    "opay": {
+        "name": "OPay",
+        "header_patterns": {
+            "trans_date": r"Trans\.\s*Time",
+            "value_date": r"Value\s+Date",
+            "reference": r"Transaction\s+Reference",
+            "debit": r"Debit",
+            "credit": r"Credit",
+            "balance": r"Balance\s+After",
+            "remarks": r"Description"
+        },
+        "metadata_patterns": {
+            "account_name": r"Account\s+Name\s+(.+)",
+            "statement_period": r"Period:\s*-?\s*(.+)",
+            "total_debit": r"Total\s+Debit\s+₦?([\d,]+\.\d{2})",
+            "total_credit": r"Total\s+Credit\s+₦?([\d,]+\.\d{2})",
+            "opening_balance": r"Opening\s+Balance\s+₦?([\d,]+\.\d{2})",
+            "closing_balance": r"Closing\s+Balance\s+₦?([\d,]+\.\d{2})"
+        }
     }
 }
 

@@ -46,8 +46,8 @@ export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ data }) =>
     return { totalDebits, totalCredits, categoryData };
   }, [transactions]);
 
-  const handleDownload = () => {
-    generateExcel(transactions, reconciliation_warnings, reconciliation_failed, currency, organizationName, bankName);
+  const handleDownload = async () => {
+    await generateExcel(transactions, reconciliation_warnings, reconciliation_failed, currency, organizationName, bankName);
   };
 
   const formatCurrency = (val: number) => {
