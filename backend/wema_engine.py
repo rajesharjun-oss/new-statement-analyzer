@@ -441,7 +441,7 @@ def extract_wema_summary(pages: List[pdfplumber.page.Page], existing_summary: Di
                           
     return summary
 
-def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: pdfplumber.PDF = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: pdfplumber.PDF = None, *, source_only: bool = False) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     import time
     _start = time.time()
     txns = []
@@ -709,6 +709,8 @@ def extract_wema_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: 
         }
 
     txns = repair_wema_transaction_descriptions(txns)
+    if source_only:
+        return txns, metadata
     if txns:
         txns = _infer_balances(txns)
         txns, chain_adj = _insert_chain_adjustments(txns)

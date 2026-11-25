@@ -161,6 +161,9 @@ def validate_totals(transactions: List[Dict], metadata: Dict[str, Any]) -> Dict[
         "Totals mismatch: "
         f"Debit diff={debit_diff:.2f}, Credit diff={credit_diff:.2f}"
     )
+    if totals_match and metadata.get("extraction_issue"):
+        status = metadata["extraction_issue"]
+        totals_match = False
 
     return {
         "status": status,

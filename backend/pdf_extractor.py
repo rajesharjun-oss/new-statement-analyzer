@@ -787,7 +787,7 @@ def get_uba_ocr_page_limit(total_pages: int) -> int:
 def get_uba_ai_page_limit(total_pages: int) -> int:
     return _bounded_page_limit("UBA_AI_MAX_PAGES", 30, 80, total_pages)
 
-def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: dict = None, max_pages: int = None) -> List[Dict[str, Any]]:
+def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: dict = None, max_pages: int = None, *, source_only: bool = False) -> List[Dict[str, Any]]:
     """
     Main entry point for PDF extraction. Routes to specific bank engines
     or fallback logic based on bank_identifier.
@@ -954,10 +954,19 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                      print(f"WARN: Zenith coordinate engine failed: {e}. Falling through to generic extraction path.")
 
             if bank_identifier == "wema":
+                 if PYMUPDF_AVAILABLE:
+                     from wema_cover_engine import extract_wema_cover_statement
+                     from wema_ruled_engine import extract_wema_ruled_statement
+                     cover_result = extract_wema_cover_statement(pdf_path, max_pages=max_pages)
+                     if cover_result is None:
+                         cover_result = extract_wema_ruled_statement(pdf_path, max_pages=max_pages)
+                     if cover_result is not None:
+                         cover_txns, cover_meta = cover_result
+                         return [{"transactions": normalize_remarks(cover_txns), "metadata": cover_meta}]
                  print("\n!!! ROUTING: Wema Bank Identified - Calling Unified 2.1 Engine !!!")
                  from wema_engine import extract_wema_via_coordinates
                  try:
-                     wm_txns, wm_meta = extract_wema_via_coordinates(Path(pdf_path), metadata, pdf=pdf)
+                     wm_txns, wm_meta = extract_wema_via_coordinates(Path(pdf_path), metadata, pdf=pdf, source_only=source_only)
                      print(f"!!! ROUTING: Wema Engine returned {len(wm_txns)} transactions\n")
                      if wm_txns: return [{"transactions": normalize_remarks(wm_txns), "metadata": wm_meta}]
                      print("WARN: Wema engine returned 0 txns. Falling through to generic extraction path.")
@@ -1053,7 +1062,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
 
                  # AI fallback (UBA only; First Bank has no AI path)
                  print("DEBUG: UBA PDF requires AI extraction...")
-                 txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='uba', max_pages=get_uba_ai_page_limit(len(pdf_pages)))
+                 txns = [] if source_only else extract_transactions_via_ai(str(pdf_path), bank_identifier='uba', max_pages=get_uba_ai_page_limit(len(pdf_pages)))
                  if txns:
                      uba_meta = {"method": "gemini_vision", **metadata}
                      if os.getenv("OPENAI_API_KEY"):
@@ -1084,7 +1093,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                      else:
                          return [{"transactions": normalize_remarks(txns), "metadata": uba_meta}]
                  # Fallback: OpenAI Vision page-wise extraction for scanned UBA statements
-                 if os.getenv("OPENAI_API_KEY"):
+                 if not source_only and os.getenv("OPENAI_API_KEY"):
                      try:
                          from openai_vision import extract_transactions_from_pdf_with_openai, extract_statement_summary_with_openai
                          oa_txns = extract_transactions_from_pdf_with_openai(str(pdf_path), max_pages=get_uba_ai_page_limit(len(pdf_pages)))
@@ -1122,7 +1131,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
             elif bank_identifier == "access":
                  from access_engine import extract_access_via_coordinates
                  try:
-                     acc_txns, acc_meta = extract_access_via_coordinates(Path(pdf_path), metadata)
+                     acc_txns, acc_meta = extract_access_via_coordinates(Path(pdf_path), metadata, allow_vision=not source_only)
                      if acc_txns:
                          print(f"DEBUG: Access engine returned {len(acc_txns)} transactions")
                          return [{"transactions": normalize_remarks(acc_txns), "metadata": acc_meta}]
@@ -1130,7 +1139,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                      print(f"WARN: Access engine crashed: {e}. Trying AI fallback...")
          
                  # AI fallback for Access Bank ONLY
-                 if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+                 if not source_only and GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
                      try:
                          ai_txns = extract_transactions_via_ai(str(pdf_path), bank_identifier='access', max_pages=15)
                          if ai_txns:
@@ -1154,8 +1163,8 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                      print(f"DEBUG: Ecobank table strategy failed: {e}. Trying Hybrid AI Fallback...")
                 
                 # Hardened Fallback: If 0 transactions found, trigger AI cascade
-                _gemini_key_eco = os.getenv("GEMINI_API_KEY")
-                _anthropic_key_eco = os.getenv("ANTHROPIC_API_KEY")
+                _gemini_key_eco = None if source_only else os.getenv("GEMINI_API_KEY")
+                _anthropic_key_eco = None if source_only else os.getenv("ANTHROPIC_API_KEY")
 
                 # Scanned UBA can look generic to native PDF text extractors.
                 # Prefer deterministic local OCR before any generic AI fallback,
@@ -1266,8 +1275,8 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 # ── STAGE 1 (preferred): Gemini OCR → Claude Sonnet extraction ──
                 # Best for scanned/image-based PDFs: Gemini handles pixel→text,
                 # Claude handles context-aware table extraction.
-                _gemini_key = os.getenv("GEMINI_API_KEY")
-                _anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+                _gemini_key = None if source_only else os.getenv("GEMINI_API_KEY")
+                _anthropic_key = None if source_only else os.getenv("ANTHROPIC_API_KEY")
 
                 # Prefer deterministic local OCR for scanned UBA statements.
                 # The generic AI fallback can return plausible rows but miss UBA
@@ -1342,7 +1351,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                         print(f"DEBUG: Claude direct extraction failed: {e}")
 
                 # ── STAGE 3B: OpenAI Vision scanned fallback ──
-                if os.getenv("OPENAI_API_KEY"):
+                if not source_only and os.getenv("OPENAI_API_KEY"):
                     print("DEBUG: Trying OpenAI Vision scanned fallback (max 15 pages)...")
                     try:
                         from openai_vision import extract_transactions_from_pdf_with_openai, extract_statement_summary_with_openai
@@ -1363,7 +1372,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
 
                 # ── STAGE 4: Legacy OCR (last resort) ──
                 print(f"DEBUG: All AI fallbacks exhausted. Falling back to legacy OCR engine...")
-                if not OCR_MODULE_AVAILABLE:
+                if source_only or not OCR_MODULE_AVAILABLE:
                     raise ValueError("Could not detect column header and all AI fallbacks are unavailable.")
 
                 try:
@@ -1528,7 +1537,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                     
                     if account_changed:
                         current_stmt_id += 1
-                        print(f"DEBUG: New statement group {current_stmt_id} detected on page {page_num} (Acc: {new_acc} != {current_account_no})")
+                        print(f"DEBUG: New statement group {current_stmt_id} detected on page {page_num}.")
 
                     # Update tracking for later split
                     page_meta_map[page_num] = pg_meta
@@ -1679,13 +1688,14 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                     removed_cleanup = before_cleanup - len(normalized)
                     if removed_cleanup:
                         best_meta["gt_static_balance_rows_removed"] = removed_cleanup
-                    normalized = repair_amounts_from_running_balance(normalized)
+                    if not source_only:
+                        normalized = repair_amounts_from_running_balance(normalized)
 
                 # --- 4c) GTBank/GTCO mismatch rescue (page-scoped OpenAI Vision) ---
                 # Some mixed-account GTBank/GTCO bundles start with empty summary pages.
                 # If the active account totals mismatch, re-extract only this group's pages
                 # and choose whichever candidate better matches statement totals.
-                if is_gt_layout and os.getenv("OPENAI_API_KEY"):
+                if not source_only and is_gt_layout and os.getenv("OPENAI_API_KEY"):
                     try:
                         def _num_or_none(v):
                             if v is None:
@@ -1764,7 +1774,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                 # but absent from extracted table rows in the source PDF text layer.
                 # When we have a single-sided delta that exactly equals the closing gap,
                 # infer one explicit adjustment row so totals and closing reconcile.
-                if is_gt_layout and normalized:
+                if not source_only and is_gt_layout and normalized:
                     try:
                         def _num_or_none_local(v):
                             if v is None:
@@ -1863,6 +1873,7 @@ def extract_transactions(pdf_path: str, bank_identifier: str = "auto", config: d
                     len(pages_to_process) > 30
                 )
                 should_run_self_repair = (
+                    not source_only and
                     GEMINI_AVAILABLE and
                     os.getenv("GEMINI_API_KEY") and
                     not dense_gt_large and

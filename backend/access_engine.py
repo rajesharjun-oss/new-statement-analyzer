@@ -212,7 +212,7 @@ def detect_access_columns(
     print(f"DEBUG [Access]: Generated cuts: {cuts}")
     return cuts
 
-def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: pdfplumber.PDF = None, max_pages: int = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf: pdfplumber.PDF = None, max_pages: int = None, *, allow_vision: bool = True) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     from pdf_extractor import parse_date_smart, first_money, is_noise_row
     import pandas as pd
     money_token_re = re.compile(r"\(?-?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})\)?|\(?-?\d+(?:\.\d{1,2})\)?")
@@ -370,7 +370,7 @@ def extract_access_via_coordinates(pdf_path: Path, metadata: Dict[str, Any], pdf
         else:
             print(f"DEBUG [Access]: No rule-based Access header signature found in first 5 pages. Trying Vision once.")
             words = _pdf_handle.pages[0].extract_words()
-            cuts = detect_access_columns(words, pdf_path=pdf_path, allow_vision=True)
+            cuts = detect_access_columns(words, pdf_path=pdf_path, allow_vision=allow_vision)
             if not cuts:
                 print(f"DEBUG [Access]: No Access header signature found in first 5 pages.")
                 return [], metadata

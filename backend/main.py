@@ -1,9 +1,10 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Form
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
+import asyncio
 import os
 import sys
 import uuid
@@ -29,6 +30,7 @@ from validation import validate_totals
 from categorization import categorize_transactions
 from excel_generator import generate_excel
 from claude_service import generate_audit_summary
+from statement_conversion import ConversionError, XLSX_MIME, convert_pdf
 
 ENABLE_API_DOCS = os.getenv("ENABLE_API_DOCS", "false").lower() == "true"
 app = FastAPI(
@@ -88,6 +90,8 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
 MAX_UPLOAD_BYTES = env_int("MAX_UPLOAD_BYTES", 20 * 1024 * 1024)
+MAX_PDF_PAGES = env_int("MAX_PDF_PAGES", 700)
+CONVERT_CONCURRENCY = env_int("CONVERT_CONCURRENCY", 2)
 TEMP_FILE_TTL_SECONDS = env_int("TEMP_FILE_TTL_SECONDS", 60 * 60)
 MAX_CLASSIFY_TRANSACTIONS = env_int("MAX_CLASSIFY_TRANSACTIONS", 500)
 MAX_CLASSIFY_INSTRUCTIONS_CHARS = env_int("MAX_CLASSIFY_INSTRUCTIONS_CHARS", 4000)
@@ -147,6 +151,22 @@ async def startup_cleanup():
 
 
 request_buckets: Dict[str, List[float]] = {}
+convert_slots = asyncio.Semaphore(CONVERT_CONCURRENCY)
+ENABLE_LEGACY_ANALYSIS = os.getenv("ENABLE_LEGACY_ANALYSIS", "false").lower() == "true"
+
+
+@app.middleware("http")
+async def restrict_inactive_workflows(request: Request, call_next):
+    path = request.url.path.rstrip("/")
+    if not ENABLE_LEGACY_ANALYSIS and (
+        path in {"/analyze", "/classify-analysis", "/analysis-narrative"} or path.startswith("/download/")
+    ):
+        return JSONResponse(status_code=404, content={"detail": "This workflow is disabled."})
+    if path == "/convert" and request.method == "POST":
+        length = request.headers.get("content-length", "")
+        if length.isdigit() and int(length) > MAX_UPLOAD_BYTES + 65536:
+            return JSONResponse(status_code=413, content={"detail": "The PDF is too large."})
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -168,6 +188,7 @@ async def reject_oversized_ai_requests(request: Request, call_next):
 @app.middleware("http")
 async def rate_limit_expensive_routes(request: Request, call_next):
     route_limits = {
+        "/convert": ANALYZE_RATE_LIMIT,
         "/analyze": ANALYZE_RATE_LIMIT,
         "/classify-analysis": CLASSIFY_RATE_LIMIT,
         "/analysis-narrative": NARRATIVE_RATE_LIMIT,
@@ -197,7 +218,7 @@ async def add_security_headers(request: Request, call_next):
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
-    if request.url.path.startswith(("/analyze", "/download", "/classify-analysis", "/analysis-narrative")):
+    if request.url.path.startswith(("/convert", "/analyze", "/download", "/classify-analysis", "/analysis-narrative")):
         response.headers.setdefault("Cache-Control", "no-store")
     return response
 
@@ -221,6 +242,53 @@ def normalize_bank_id(bank: str) -> str:
         "o pay": "opay",
     }
     return aliases.get(value, value)
+
+
+@app.post("/convert")
+async def convert_statement(
+    file: UploadFile = File(...),
+    bank: str = Form("auto", max_length=40),
+    password: str = Form(""),
+):
+    allowed_banks = {
+        "auto", "gtbank", "gtco", "ecobank", "access", "fidelity", "apt_securities", "uba",
+        "firstbank", "zenith", "wema", "providus", "fcmb", "keystone", "sterling",
+        "standard_chartered", "moniepoint", "opay",
+    }
+    selected = normalize_bank_id(bank)
+    if selected not in allowed_banks:
+        raise HTTPException(status_code=400, detail="Select a supported issuing bank.")
+    if len(password) > 256:
+        raise HTTPException(status_code=400, detail="The PDF password is too long.")
+    if Path(file.filename or "").suffix.lower() != ".pdf" or file.content_type not in {
+        "application/pdf", "application/octet-stream", None,
+    }:
+        raise HTTPException(status_code=400, detail="Only PDF bank statements are supported.")
+    if convert_slots.locked():
+        raise HTTPException(status_code=503, detail="The converter is busy. Try again shortly.", headers={"Retry-After": "10"})
+
+    async with convert_slots:
+        try:
+            content = await file.read(MAX_UPLOAD_BYTES + 1)
+            validate_upload_content(".pdf", content)
+            workbook, count, verified = await asyncio.to_thread(convert_pdf, content, selected, password, MAX_PDF_PAGES)
+        except ConversionError as exc:
+            raise HTTPException(status_code=exc.status, detail={"code": exc.code, "message": str(exc)}) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            print(f"WARN: Converter failed ({type(exc).__name__}).")
+            raise HTTPException(status_code=500, detail="Conversion failed. Try again with the original statement PDF.") from exc
+        finally:
+            await file.close()
+
+    return Response(content=workbook, media_type=XLSX_MIME, headers={
+        "Content-Disposition": 'attachment; filename="statement.xlsx"',
+        "Cache-Control": "no-store",
+        "X-Transaction-Count": str(count),
+        "X-Statement-Check": "matched" if verified else "unavailable",
+    })
+
 
 def access_result_score(result: dict) -> tuple:
     txns = result.get("transactions") or []
@@ -771,7 +839,7 @@ async def serve_spa(full_path: str):
     Catch-all route to serve React SPA (index.html)
     Exclude API routes (start with /analyze, /download, /docs, /openapi.json)
     """
-    if full_path.startswith(("api", "analyze", "download", "docs", "redoc", "openapi.json")):
+    if full_path.startswith(("api", "convert", "analyze", "download", "docs", "redoc", "openapi.json")):
         raise HTTPException(status_code=404, detail="API route not found")
         
     # Serve index.html for all other routes

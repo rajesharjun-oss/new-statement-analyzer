@@ -1,0 +1,58 @@
+:root {
+  color-scheme: dark;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: #0b0c0e;
+  color: #f2f4f4;
+  font-synthesis: none;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input, select { font: inherit; }
+button, a, select, input { outline-offset: 4px; }
+:focus-visible { outline: 2px solid #90e4ce; }
+.converter-bar { border-bottom: 1px solid #25292d; }
+.converter-bar-inner { max-width: 1120px; margin: auto; padding: 18px 24px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; }
+.converter-brand { display: flex; gap: 9px; align-items: center; font-weight: 700; }
+.converter-brand svg { color: #9ce3cf; }
+.converter-bar-label, .converter-muted { color: #a6aeb4; font-size: 13px; }
+.converter-main { max-width: 760px; margin: 0 auto; padding: 52px 24px 36px; }
+.converter-heading { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; padding-bottom: 23px; border-bottom: 1px solid #25292d; }
+.converter-heading h1 { margin: 0; font-size: 31px; line-height: 1.2; }
+.converter-formats { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 650; color: #a8b2b4; }
+.converter-formats svg:nth-of-type(3) { color: #9ce3cf; }
+.converter-settings { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin: 22px 0 16px; font-size: 14px; }
+.converter-settings label { font-weight: 600; }
+.converter-settings select, .converter-settings input { width: min(100%, 320px); min-height: 44px; padding: 8px 11px; color: #f2f4f4; background: #15181a; border: 1px solid #343b3e; border-radius: 6px; }
+.converter-drop { border: 1px dashed #495154; min-height: 174px; background: #101315; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; padding: 18px; }
+.converter-drop > svg { color: #9ce3cf; flex-shrink: 0; }
+.converter-drop.is-dragging { border-color: #9ce3cf; background: #142522; }
+.converter-drop.has-file { min-height: 78px; justify-content: flex-start; flex-direction: row; border-style: solid; }
+.converter-file-limit { color: #abb4b7; font-size: 13px; }
+.converter-file { display: grid; gap: 4px; flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+.converter-file span { color: #acb8ba; font-size: 12px; }
+.converter-icon { display: grid; place-content: center; width: 40px; height: 40px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: #c8d0d1; cursor: pointer; }
+.converter-icon:hover:not(:disabled) { border-color: #394244; background: #1e2426; }
+.converter-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 9px 14px; border: 1px solid transparent; border-radius: 6px; font-size: 14px; font-weight: 650; cursor: pointer; text-align: center; text-decoration: none; }
+.converter-button.primary { background: #a3e3d0; color: #101d1a; }
+.converter-button.primary:hover:not(:disabled) { background: #bff3e4; }
+.converter-button.secondary { background: #1d2325; color: #f2f4f4; border-color: #394244; }
+.converter-button.secondary:hover { background: #283235; }
+.converter-button:disabled, .converter-icon:disabled { opacity: .46; cursor: not-allowed; }
+.converter-actions { margin-top: 16px; display: flex; align-items: center; justify-content: flex-end; gap: 14px; flex-wrap: wrap; }
+.converter-message { display: flex; align-items: flex-start; gap: 8px; font-size: 14px; line-height: 1.5; }
+.converter-message svg { margin-top: 2px; flex: none; }
+.converter-message.error { color: #ffaaa9; }
+.converter-result { margin-top: 24px; padding: 17px 0; border-block: 1px solid #25292d; display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.converter-result-copy { display: grid; gap: 6px; font-size: 13px; color: #b4bec0; }
+.converter-result-copy strong { color: #f2f4f4; display: flex; align-items: center; gap: 7px; font-size: 14px; }
+.converter-result-copy svg { color: #9ce3cf; }
+.converter-spinner { animation: convert-spin 1s linear infinite; }
+@keyframes convert-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .converter-spinner { animation: none; } }
+@media (max-width: 520px) {
+  .converter-bar-inner { padding: 15px 16px; }
+  .converter-main { padding: 34px 16px 24px; }
+  .converter-heading h1 { font-size: 27px; }
+  .converter-actions .converter-button { width: 100%; }
+}

@@ -2,34 +2,19 @@
 <img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
 </div>
 
-# LedgerSentinel Bank Statement Analyzer
+# LedgerSentinel Bank Statement Converter
 
-Extract, validate, categorize, and export transactions from Nigerian bank statements in PDF, Excel, and CSV formats.
+Convert Nigerian bank statement PDFs to Excel. The application returns a single plain worksheet with source statement details and transaction columns. Dates and amounts are usable Excel values; account numbers, cheque numbers, and references remain text.
 
-Extraction and financial validation are deterministic. AI providers are optional fallbacks for difficult extraction cases and unresolved classification rows; reconciliation and quality-gate decisions never depend on an LLM.
+The converter does not categorize transactions or call AI providers. It checks printed totals when available and declines to create a workbook if it detects a mismatch. A workbook whose statement totals are unavailable is labeled as such in the UI. Multi-account PDFs put each account in its own section on the same worksheet.
 
-## Analysis Integrity
-
-The analysis workspace checks each classified ledger for:
-
-- Cent-accurate opening/debit/credit/closing reconciliation.
-- Running-balance continuity and invalid debit/credit direction.
-- Exact duplicate signatures, missing descriptions, invalid dates, and date-order anomalies.
-- Classification coverage, confidence, review queue size, and source evidence coverage.
-- Export provenance including source file, row/page locator, raw narration, decision source, rule, and reason.
-- Monthly cash-flow trends, counterparty concentration, recurring activity, and robust amount outliers.
-- Browser-local category memory learned only from explicit human review decisions.
-- Optional AI narratives constrained to verified metrics and allowlisted transaction evidence IDs.
-
-Every analysis export includes `Analysis Quality` and `Quality Issues` worksheets. A failed or review-required quality gate is an explicit signal for human review, not an automatic correction of source data.
-
-Analysis exports also include cash-flow, monthly trend, counterparty, recurring-activity, anomaly, and evidence-backed narrative worksheets.
+`POST /convert` accepts multipart `file`, optional `bank` (defaults to auto-detection), and optional `password`. It returns the workbook directly with `Cache-Control: no-store`. The PDF is processed on the server in a temporary directory and deleted after parsing. A hosted instance receives the PDF during conversion; run locally for statements that must stay on your computer. The legacy analysis API is disabled by default.
 
 ## Supported Banks
 
 - Access Bank (searchable PDFs and OCR fallback)
 - UBA (searchable PDFs and OCR fallback)
-- Wema Bank
+- Wema Bank, including the summary cover and the repeated-summary ruled formats
 - FCMB
 - Keystone Bank
 - Zenith Bank
@@ -53,29 +38,14 @@ Analysis exports also include cash-flow, monthly trend, counterparty, recurring-
 
 Prerequisites: Node.js and Python 3.10+.
 
-1. Create a `.env` file from the example:
+1. Start the backend on `http://127.0.0.1:8000`. No API keys are required:
 
 ```bash
-cp .env.example .env
+pip install -r backend/requirements.txt
+uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-2. Add the API keys you use for OCR/fallback extraction:
-
-```env
-GEMINI_API_KEY=your_gemini_key_here
-OPENAI_API_KEY=optional_openai_key_here
-ANTHROPIC_API_KEY=optional_anthropic_key_here
-```
-
-3. Start the backend on `http://localhost:8000`:
-
-```bash
-cd backend
-pip install -r requirements.txt
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
-4. Start the frontend on `http://localhost:5000`:
+2. Start the frontend from the repository root on `http://localhost:5000`:
 
 ```bash
 npm install
@@ -122,15 +92,13 @@ The Dockerfile builds the React frontend and serves it through FastAPI.
 
 Set these environment variables in Render:
 
-- `GEMINI_API_KEY`
-- `OPENAI_API_KEY` if OpenAI fallback is enabled
-- `ANTHROPIC_API_KEY` if Claude fallback is enabled
 - `PYTHONPATH=/app/backend`
 - `ALLOWED_ORIGINS` as a comma-separated list of trusted frontend origins for cross-origin development access
 - `MAX_UPLOAD_BYTES` to cap upload size, defaults to `20971520` (20MB)
-- `MAX_NARRATIVE_PAYLOAD_CHARS` to cap optional AI narrative input, defaults to `100000`
-- `TEMP_FILE_TTL_SECONDS` to remove stale upload/download artifacts, defaults to `3600`
+- `MAX_PDF_PAGES` to cap the number of PDF pages, defaults to `700`
+- `CONVERT_CONCURRENCY` to limit simultaneous conversions per process, defaults to `2`
+- `ENABLE_LEGACY_ANALYSIS=false` to keep the legacy analysis and report routes disabled
 - `ENABLE_API_DOCS=false` in production unless protected behind trusted access
 - `DEBUG_ERRORS=false` in production so stack traces are not returned to clients
 
-`temp_uploads/` and `temp_downloads/` are ephemeral and are cleaned by TTL. For production workloads with large files or long retention needs, attach private persistent storage with a retention policy.
+No persistent statement storage is required for the converter.

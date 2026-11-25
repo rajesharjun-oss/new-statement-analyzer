@@ -9,6 +9,12 @@ export default defineConfig(() => {
       host: '0.0.0.0',
       allowedHosts: ['localhost', '127.0.0.1'],
       proxy: {
+        '/convert': {
+          target: 'http://127.0.0.1:8000',
+          changeOrigin: true,
+          timeout: 300000,
+          proxyTimeout: 300000,
+        },
         '/health': {
           target: 'http://127.0.0.1:8000',
           changeOrigin: true,
