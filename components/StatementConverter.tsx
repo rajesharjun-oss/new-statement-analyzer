@@ -1,15 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { DragEvent, FormEvent } from "react";
-import { AlertCircle, CheckCircle2, Download, FileSpreadsheet, FileText, LoaderCircle, Upload, X } from "lucide-react";
+import { AlertCircle, ArrowDownToLine, ArrowRight, CheckCircle2, Download, FileSpreadsheet, FileText, LoaderCircle, LockKeyhole, RefreshCw, Upload, X } from "lucide-react";
+import { statementBanks } from "../services/statementBanks";
 import "./statement-converter.css";
-
-const banks = [
-  ["auto", "Auto-detect bank"], ["access", "Access Bank"], ["apt_securities", "APT Securities"],
-  ["ecobank", "Ecobank"], ["fcmb", "FCMB"], ["fidelity", "Fidelity Bank"], ["firstbank", "First Bank"],
-  ["gtbank", "GTBank"], ["gtco", "GTCO"], ["keystone", "Keystone Bank"], ["moniepoint", "Moniepoint"],
-  ["opay", "OPay"], ["providus", "Providus Bank"], ["standard_chartered", "Standard Chartered"],
-  ["sterling", "Sterling Bank"], ["uba", "UBA"], ["wema", "Wema Bank"], ["zenith", "Zenith Bank"],
-] as const;
 
 interface Converted {
   url: string;
@@ -17,6 +10,9 @@ interface Converted {
   count: number;
   matched: boolean;
 }
+
+type Transfer = { phase: "uploading"; percent: number | null } | { phase: "processing" };
+type ConversionError = { detail?: string | { code?: string; message?: string } };
 
 const maxBytes = 20 * 1024 * 1024;
 const xlsxMime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
@@ -26,50 +22,62 @@ function excelFilename(name: string) {
   return `${base || "Statement"}.xlsx`;
 }
 
-interface Props {
-  initialFile: File | null;
-  initialBank: string;
-  onClose: () => void;
-}
-
-export default function StatementConverter({ initialFile, initialBank, onClose }: Props) {
-  const [file, setFile] = useState(initialFile);
-  const [bank, setBank] = useState(initialBank);
+export default function StatementConverter() {
+  const [file, setFile] = useState<File | null>(null);
+  const [bank, setBank] = useState("auto");
   const [password, setPassword] = useState("");
   const [needsPassword, setNeedsPassword] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [transfer, setTransfer] = useState<Transfer | null>(null);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState("");
   const [converted, setConverted] = useState<Converted | null>(null);
+  const busy = transfer !== null;
   const input = useRef<HTMLInputElement>(null);
-  const dialog = useRef<HTMLDialogElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+  const pickFile = useRef<HTMLButtonElement>(null);
+  const selectedFile = useRef<HTMLDivElement>(null);
+  const fileChanged = useRef(false);
+  const convertButton = useRef<HTMLButtonElement>(null);
+  const downloadLink = useRef<HTMLAnchorElement>(null);
   const passwordInput = useRef<HTMLInputElement>(null);
-  const request = useRef<AbortController | null>(null);
+  const request = useRef<XMLHttpRequest | null>(null);
 
-  useEffect(() => {
-    if (dialog.current && !dialog.current.open) dialog.current.showModal();
+  useEffect(() => () => {
+    const active = request.current;
+    request.current = null;
+    active?.abort();
   }, []);
-  useEffect(() => () => request.current?.abort(), []);
   useEffect(() => {
-    if (converted) return () => URL.revokeObjectURL(converted.url);
+    if (converted) {
+      downloadLink.current?.focus();
+      return () => URL.revokeObjectURL(converted.url);
+    }
   }, [converted]);
   useEffect(() => {
-    if (needsPassword && !busy) passwordInput.current?.focus();
-  }, [needsPassword, busy]);
+    if (!fileChanged.current) return;
+    fileChanged.current = false;
+    if (file) selectedFile.current?.focus();
+    else pickFile.current?.focus();
+  }, [file]);
+  useEffect(() => {
+    if (busy || !file || converted) return;
+    if (needsPassword && !passwordInput.current?.value) passwordInput.current?.focus();
+    else if (document.activeElement === document.body && formRef.current?.getClientRects().length) convertButton.current?.focus();
+  }, [needsPassword, busy, file, converted]);
 
   function selectFile(next: File | null) {
     if (request.current) return;
+    setDragging(false);
+    if (next && (!/\.pdf$/i.test(next.name) || !next.size || next.size > maxBytes)) {
+      setError("Choose a non-empty PDF no larger than 20 MB.");
+      return;
+    }
     setConverted(null);
     setPassword("");
     setNeedsPassword(false);
-    setDragging(false);
-    if (next && (!/\.pdf$/i.test(next.name) || !next.size || next.size > maxBytes)) {
-      setFile(null);
-      setError("Choose a non-empty PDF no larger than 20 MB.");
-    } else {
-      setFile(next);
-      setError("");
-    }
+    fileChanged.current = true;
+    setFile(next);
+    setError("");
   }
 
   function drop(event: DragEvent) {
@@ -77,72 +85,160 @@ export default function StatementConverter({ initialFile, initialBank, onClose }
     setDragging(false);
     if (busy) return;
     if (event.dataTransfer.files.length > 1) {
-      selectFile(null);
       setError("Choose one statement PDF at a time.");
     } else if (event.dataTransfer.files.length === 1) {
       selectFile(event.dataTransfer.files[0]);
     }
   }
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
+  function stopWaiting() {
+    const active = request.current;
+    request.current = null;
+    active?.abort();
+    setTransfer(null);
+  }
+
+  function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!file || request.current) return;
-    const controller = new AbortController();
-    request.current = controller;
-    const timer = window.setTimeout(() => controller.abort(), 300_000);
-    setBusy(true);
+    if (!file || request.current || converted) return;
+    const xhr = new XMLHttpRequest();
+    request.current = xhr;
+    setTransfer({ phase: "uploading", percent: null });
     setError("");
-    setConverted(null);
+
+    function finish() {
+      if (request.current !== xhr) return false;
+      request.current = null;
+      setTransfer(null);
+      return true;
+    }
+
+    function fail(message: string) {
+      if (finish()) setError(message);
+    }
+
+    xhr.upload.addEventListener("progress", ({ lengthComputable, loaded, total }) => {
+      if (request.current === xhr && lengthComputable && total > 0) {
+        setTransfer({ phase: "uploading", percent: Math.min(100, Math.floor(loaded / total * 100)) });
+      }
+    });
+    xhr.upload.addEventListener("load", () => {
+      if (request.current === xhr) setTransfer({ phase: "processing" });
+    });
+    xhr.addEventListener("timeout", () => fail("Conversion timed out. Try again."));
+    xhr.addEventListener("error", () => fail("The converter could not be reached. Check your connection and retry."));
+    xhr.addEventListener("load", async () => {
+      if (request.current !== xhr) return;
+      if (xhr.status < 200 || xhr.status >= 300) {
+        const body: ConversionError | null = await (xhr.response as Blob | null)?.text().then(JSON.parse).catch(() => null) ?? null;
+        const detail = body?.detail;
+        const reason = typeof detail === "string" ? detail : detail?.message;
+        if (!finish()) return;
+        if (typeof detail === "object" && detail?.code === "pdf_password_required") {
+          setNeedsPassword(true);
+          setPassword("");
+        }
+        setError(xhr.status === 503 || xhr.status === 429
+          ? "The converter is busy. Try again shortly."
+          : typeof reason === "string" && reason ? reason : "Conversion failed. Try again.");
+        return;
+      }
+      const workbook = xhr.response as Blob | null;
+      if (!xhr.getResponseHeader("Content-Type")?.startsWith(xlsxMime) || !workbook?.size) {
+        fail("The converter did not return an Excel workbook. Try again.");
+        return;
+      }
+      if (!finish()) return;
+      setConverted({
+        url: URL.createObjectURL(workbook), filename: excelFilename(file.name),
+        count: Number(xhr.getResponseHeader("X-Transaction-Count") || 0),
+        matched: xhr.getResponseHeader("X-Statement-Check") === "matched",
+      });
+      setPassword("");
+      setNeedsPassword(false);
+    });
+
     try {
       const form = new FormData();
       form.append("file", file);
       form.append("bank", bank);
-      if (password) form.append("password", password);
-      const response = await fetch("/convert", { method: "POST", body: form, signal: controller.signal });
-      if (!response.ok) {
-        const { detail } = await response.json().catch(() => ({}));
-        if (detail?.code === "pdf_password_required") {
-          setNeedsPassword(true);
-          setPassword("");
-        }
-        const message = response.status === 503 || response.status === 429
-          ? "The converter is busy. Try again shortly."
-          : typeof detail === "string" ? detail : detail?.message || "Conversion failed. Try again.";
-        throw new Error(message);
-      }
-      if (!response.headers.get("Content-Type")?.startsWith(xlsxMime)) {
-        throw new Error("The converter did not return an Excel workbook. Try again.");
-      }
-      const workbook = await response.blob();
-      if (controller.signal.aborted) return;
-      setConverted({
-        url: URL.createObjectURL(workbook), filename: excelFilename(file.name),
-        count: Number(response.headers.get("X-Transaction-Count") || 0),
-        matched: response.headers.get("X-Statement-Check") === "matched",
-      });
-      setPassword("");
-      setNeedsPassword(false);
-    } catch (failure) {
-      setError(controller.signal.aborted ? "Conversion timed out. Try again." :
-        failure instanceof TypeError ? "The converter could not be reached. Check your connection and retry." :
-        failure instanceof Error ? failure.message : "Conversion failed. Try again.");
-    } finally {
-      window.clearTimeout(timer);
-      request.current = null;
-      setBusy(false);
+      if (needsPassword && password) form.append("password", password);
+      xhr.open("POST", "/convert");
+      xhr.responseType = "blob";
+      xhr.timeout = 300_000;
+      xhr.send(form);
+    } catch {
+      fail("The converter could not be reached. Check your connection and retry.");
     }
   }
 
   return (
-    <dialog ref={dialog} className="converter" aria-labelledby="pdf-to-excel-title" onClose={onClose}>
-      <div className="converter-main">
-        <div className="converter-heading">
-          <h2 id="pdf-to-excel-title">PDF to Excel</h2>
-          <button type="button" className="converter-icon" title="Close converter" aria-label="Close converter" onClick={() => dialog.current?.close()}>
-            <X size={18} aria-hidden="true" />
-          </button>
+    <section className="converter" aria-labelledby="pdf-to-excel-title">
+      <header className="converter-heading">
+        <h1 id="pdf-to-excel-title">PDF to Excel</h1>
+        <div className="converter-format" aria-label="PDF input, Excel workbook output">
+          <span><FileText size={17} aria-hidden="true" /> PDF</span>
+          <ArrowRight size={16} aria-hidden="true" />
+          <span><FileSpreadsheet size={17} aria-hidden="true" /> XLSX</span>
         </div>
-        <form aria-label="Convert a bank statement" aria-busy={busy} onSubmit={submit}>
+      </header>
+      <form ref={formRef} className="converter-form" aria-label="Convert a bank statement" onSubmit={submit}>
+        <div className="converter-grid">
+          <div className="converter-source">
+            <h2>Bank statement</h2>
+            <input ref={input} type="file" accept=".pdf,application/pdf" aria-label="Statement PDF" hidden
+              onChange={(event) => {
+                const next = event.currentTarget.files?.[0];
+                if (next) selectFile(next);
+                event.currentTarget.value = "";
+              }} />
+            <div className={`converter-file-area${dragging ? " is-dragging" : ""}${file ? " has-file" : ""}`}
+              onDragOver={(event) => {
+                event.preventDefault();
+                event.dataTransfer.dropEffect = busy ? "none" : "copy";
+                if (!busy && event.dataTransfer.types.includes("Files")) setDragging(true);
+              }}
+              onDragLeave={(event) => {
+                if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDragging(false);
+              }} onDrop={drop}>
+              {file ? (
+                <>
+                  <div ref={selectedFile} tabIndex={-1} className="converter-selected">
+                    <span className="converter-file-icon"><FileText size={21} aria-hidden="true" /></span>
+                    <div className="converter-file"><strong>{file.name}</strong><span>{file.size < 1024 * 1024 ? `${Math.max(1, Math.round(file.size / 1024))} KB` : `${(file.size / (1024 * 1024)).toFixed(2)} MB`}</span></div>
+                    <div className="converter-file-actions">
+                      <button type="button" className="converter-replace" aria-label="Replace PDF" disabled={busy} onClick={() => input.current?.click()}><RefreshCw size={14} aria-hidden="true" /> Replace</button>
+                      <button type="button" title="Remove PDF" aria-label="Remove PDF" className="converter-icon" disabled={busy} onClick={() => selectFile(null)}><X size={17} aria-hidden="true" /></button>
+                    </div>
+                  </div>
+                  <div role="status" className="converter-status">
+                    {transfer?.phase === "uploading" && <span>Uploading PDF</span>}
+                    {transfer?.phase === "processing" && <span className="converter-processing"><LoaderCircle size={16} className="converter-spinner" aria-hidden="true" /> Extracting and checking transactions</span>}
+                    {converted && <div className="converter-result-copy">
+                      <strong><CheckCircle2 size={17} aria-hidden="true" /> Workbook ready</strong>
+                      <span>{converted.count.toLocaleString()} {converted.count === 1 ? "transaction" : "transactions"} <span aria-hidden="true">/</span> {converted.matched ? "Totals match statement" : "Statement totals unavailable"}</span>
+                    </div>}
+                  </div>
+                  {transfer?.phase === "uploading" && <div className="converter-progress">
+                    <progress aria-label="PDF upload progress" max={100} value={transfer.percent ?? undefined} />
+                    {transfer.percent !== null && <span aria-hidden="true">{transfer.percent}%</span>}
+                  </div>}
+                  {needsPassword && <div className="converter-password">
+                    <label htmlFor="statement-password"><LockKeyhole size={16} aria-hidden="true" /> PDF password</label>
+                    <input id="statement-password" ref={passwordInput} autoComplete="off" type="password" maxLength={256} required value={password} disabled={busy} onChange={(event) => setPassword(event.target.value)} />
+                  </div>}
+                </>
+              ) : (
+                <button ref={pickFile} type="button" className="converter-drop" onClick={() => input.current?.click()} aria-label="Browse for a statement PDF" aria-describedby="statement-file-limit">
+                  <span className="converter-upload-icon"><Upload size={23} aria-hidden="true" /></span>
+                  <strong>Drop a bank statement here</strong>
+                  <span className="converter-browse">Browse PDF <ArrowRight size={15} aria-hidden="true" /></span>
+                  <span id="statement-file-limit" className="converter-file-limit">One PDF, up to 20 MB</span>
+                </button>
+              )}
+              {error && <p className="converter-message" role="alert"><AlertCircle size={17} aria-hidden="true" />{error}</p>}
+            </div>
+          </div>
           <div className="converter-settings">
             <label htmlFor="statement-bank">Issuing bank</label>
             <select id="statement-bank" disabled={busy} value={bank} onChange={(event) => {
@@ -150,54 +246,27 @@ export default function StatementConverter({ initialFile, initialBank, onClose }
               setConverted(null);
               setError("");
             }}>
-              {banks.map(([key, name]) => <option key={key} value={key}>{name}</option>)}
+              {statementBanks.map(([key, name]) => <option key={key} value={key}>{name}</option>)}
             </select>
+            <div className="converter-output">
+              <span className="converter-output-icon"><ArrowDownToLine size={17} aria-hidden="true" /></span>
+              <div><strong>Excel workbook</strong><span>One worksheet</span></div>
+            </div>
           </div>
-          <input ref={input} type="file" accept=".pdf,application/pdf" aria-label="Statement PDF" hidden
-            onChange={(event) => {
-              selectFile(event.currentTarget.files?.[0] || null);
-              event.currentTarget.value = "";
-            }} />
-          <div className={`converter-drop${dragging ? " is-dragging" : ""}${file ? " has-file" : ""}`}
-            onDragOver={(event) => { event.preventDefault(); if (!busy) setDragging(true); }}
-            onDragLeave={(event) => {
-              if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDragging(false);
-            }} onDrop={drop}>
-            {file ? (
-              <>
-                <FileText size={22} aria-hidden="true" />
-                <div className="converter-file"><strong>{file.name}</strong><span>{(file.size / (1024 * 1024)).toFixed(2)} MB</span></div>
-                <button type="button" title="Remove PDF" aria-label="Remove PDF" className="converter-icon" disabled={busy} onClick={() => selectFile(null)}><X size={18} aria-hidden="true" /></button>
-              </>
+        </div>
+        <div className="converter-actions">
+            {busy && <button type="button" className="converter-button secondary" onClick={stopWaiting}>
+              {transfer.phase === "uploading" ? "Cancel upload" : "Stop waiting"}
+            </button>}
+            {converted ? (
+              <a ref={downloadLink} className="converter-button primary" href={converted.url} download={converted.filename}><Download size={17} aria-hidden="true" /> Download Excel</a>
             ) : (
-              <>
-                <Upload size={24} aria-hidden="true" />
-                <span className="converter-file-limit">PDF, up to 20 MB</span>
-                <button type="button" className="converter-button secondary" onClick={() => input.current?.click()}>Choose PDF</button>
-              </>
+              <button ref={convertButton} type="submit" className="converter-button primary" disabled={!file || busy}>
+                <FileSpreadsheet size={17} aria-hidden="true" /> {busy ? "Converting..." : "Convert to Excel"}
+              </button>
             )}
-          </div>
-          {needsPassword && <div className="converter-settings">
-            <label htmlFor="statement-password">PDF password</label>
-            <input id="statement-password" ref={passwordInput} autoComplete="off" type="password" maxLength={256} required value={password} disabled={busy} onChange={(event) => setPassword(event.target.value)} />
-          </div>}
-          {error && <p className="converter-message error" role="alert"><AlertCircle size={18} aria-hidden="true" />{error}</p>}
-          <div className="converter-actions">
-            {busy && <span role="status" className="converter-muted">Extracting and checking transactions</span>}
-            <button type="submit" className="converter-button primary" disabled={!file || busy}>
-              {busy ? <LoaderCircle className="converter-spinner" size={17} aria-hidden="true" /> : <FileSpreadsheet size={17} aria-hidden="true" />}
-              {busy ? "Converting..." : "Convert to Excel"}
-            </button>
-          </div>
-        </form>
-        {converted && <section className="converter-result" aria-label="Conversion result">
-          <div className="converter-result-copy" role="status">
-            <strong><CheckCircle2 size={18} aria-hidden="true" /> Workbook ready</strong>
-            <span>{converted.count.toLocaleString()} {converted.count === 1 ? "transaction" : "transactions"}{" / "}{converted.matched ? "Totals match statement" : "Statement totals unavailable"}</span>
-          </div>
-          <a className="converter-button secondary" href={converted.url} download={converted.filename}><Download size={17} aria-hidden="true" /> Download Excel</a>
-        </section>}
-      </div>
-    </dialog>
+        </div>
+      </form>
+    </section>
   );
 }

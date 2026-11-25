@@ -10,7 +10,7 @@ Extraction and financial validation are deterministic. AI providers are optional
 
 ## PDF-to-Excel Export
 
-In the Reconciliation Workspace, choose **PDF to Excel** to convert a file without running analysis. When reviewing an imported PDF, **Export Excel** opens the same converter with the source file already selected. Existing analysis workflows and non-PDF reports are unchanged.
+**PDF to Excel** is the default workspace. Choose a statement PDF, leave the bank on auto-detect or select it manually, and convert. The separate **Analysis Workspace** still accepts PDFs, spreadsheets, CSV files, and supported images for review and categorization.
 
 The converter returns one plain worksheet with statement details and original transaction columns. It does not categorize transactions or call AI providers. Dates and amounts are typed Excel values, while account, cheque, and reference numbers remain text. Password-protected PDFs prompt for a password without requiring analysis. Printed totals are checked when available; a detected mismatch prevents export.
 

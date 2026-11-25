@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { BarChart3, CheckCircle2, Download, FileCheck, FileSpreadsheet, Loader2, Play, ShieldCheck, Sparkles, Trash2, Upload } from "lucide-react";
 import { AnalysisNarrative, AnalysisTemplate, CATEGORIES, ClassifiedTransaction } from "../types";
 import { analyzeDocument } from "../services/analysisService";
+import { statementBanks } from "../services/statementBanks";
 import { analysisTemplates, cloneTemplate, createCustomAnalysisTemplate } from "../services/analysisTemplates";
 import { buildDeterministicNarrative, calculateAnalysisInsights, calculateAnalysisQuality, calculateCategorySummary, calculateReconciliation } from "../services/analysisRules";
 import { classifyTransactions } from "../services/classifyTransactions";
@@ -41,7 +42,8 @@ function buildExportFileName(organizationName: string | undefined, templateName:
   return `${org}_${analysis}.xlsx`;
 }
 
-export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) {
+export function AIAnalysisWorkspace() {
+  const [selectedBank, setSelectedBank] = useState("auto");
   const [step, setStep] = useState(0);
   const [fileName, setFileName] = useState("");
   const [status, setStatus] = useState("");
@@ -326,6 +328,10 @@ export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) 
             </div>
             <FileCheck className="w-5 h-5 text-[#9B87FF]" />
           </div>
+          <label htmlFor="analysis-bank" className="block mb-2 text-xs font-semibold text-zinc-300">Issuing bank</label>
+          <select id="analysis-bank" className="mb-4 h-11 w-full rounded-md border border-white/10 bg-[#17191e] px-3 text-sm text-zinc-200" value={selectedBank} disabled={isBusy} onChange={(event) => setSelectedBank(event.target.value)}>
+            {statementBanks.map(([key, name]) => <option key={key} value={key}>{name}</option>)}
+          </select>
           <label className="block border border-dashed border-[#9B87FF]/25 rounded-[14px] p-6 text-center hover:bg-[#9B87FF]/[0.04] cursor-pointer transition-colors">
             <div className="w-12 h-12 rounded-full bg-[#9B87FF]/10 border border-[#9B87FF]/20 flex items-center justify-center mx-auto mb-3">
               <Upload className="w-6 h-6 text-[#C6B8FF]" />
@@ -341,7 +347,7 @@ export function AIAnalysisWorkspace({ selectedBank }: { selectedBank: string }) 
             </div>
             <div className="rounded-[10px] bg-white/[0.03] p-3">
               <div className="text-[10px] uppercase text-zinc-500">Bank</div>
-              <div className="text-sm font-semibold text-white truncate">{extractedResult?.bankName || selectedBank}</div>
+              <div className="text-sm font-semibold text-white truncate">{extractedResult?.bankName || statementBanks.find(([key]) => key === selectedBank)?.[1]}</div>
             </div>
           </div>
         </Card>
