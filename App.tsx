@@ -25,6 +25,7 @@ import {
 
 import { Button, Card, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Progress, cn, Badge, Input } from "./components/PrimitiveUI";
 import { AIAnalysisWorkspace } from './components/AIAnalysisWorkspace';
+import StatementConverter from './components/StatementConverter';
 import { analyzeDocument } from './services/analysisService';
 import { generateExcel } from './services/excelService';
 import { AnalysisResult, Transaction, DecisionSource } from './types';
@@ -133,6 +134,8 @@ export default function App() {
    const [isAnalyzing, setIsAnalyzing] = useState(false);
    const [error, setError] = useState<string | null>(null);
    const [fileName, setFileName] = useState("");
+   const [sourcePdf, setSourcePdf] = useState<File | null>(null);
+   const [pdfConversion, setPdfConversion] = useState<{ file: File | null; bank: string } | null>(null);
    const [processingTime, setProcessingTime] = useState(0);
    const [selectedBank, setSelectedBank] = useState("auto"); // Default to auto
    const [searchTerm, setSearchTerm] = useState("");
@@ -261,6 +264,8 @@ export default function App() {
    const [analysisProgress, setAnalysisProgress] = useState(0);
 
    const handleFileProcess = async (file: File) => {
+      const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+      setSourcePdf(isPdf ? file : null);
       setAnalysisResult(null); // FORCE RESET - DO ACTUAL WORK
       setHasFile(false);
       setFileName(file.name);
@@ -281,7 +286,7 @@ export default function App() {
             file.name.toLowerCase().endsWith('.xls') ||
             file.name.toLowerCase().endsWith('.csv');
 
-         if (file.type === 'application/pdf' || isExcelCsv) {
+         if (isPdf || isExcelCsv) {
             const result = await analyzeDocument(
                file,
                selectedBank,
@@ -332,6 +337,10 @@ export default function App() {
 
    const handleExportReport = async () => {
       if (!analysisResult) return;
+      if (sourcePdf) {
+         setPdfConversion({ file: sourcePdf, bank: selectedBank });
+         return;
+      }
 
       const org = sanitizeFilenamePart(analysisResult.organizationName || "Statement", "Statement");
       const bank = sanitizeFilenamePart(prettifyBankName(analysisResult.bankName || selectedBank), "Bank");
@@ -378,6 +387,13 @@ export default function App() {
 
    return (
       <div className="min-h-screen font-sans text-zinc-300">
+         {pdfConversion && (
+            <StatementConverter
+               initialFile={pdfConversion.file}
+               initialBank={pdfConversion.bank}
+               onClose={() => setPdfConversion(null)}
+            />
+         )}
 
          {/* Top Bar - Apexfy Style: Dark, Minimal, Logo Left */}
          <header className="fixed top-0 left-0 right-0 z-50 h-16 border-b border-white/[0.06] bg-[#070707]/90 backdrop-blur-md">
@@ -648,6 +664,14 @@ export default function App() {
                                     </div>
 
                                     <Button variant="primary" className="w-full text-sm">Select file</Button>
+                                    <Button
+                                       type="button"
+                                       variant="outline"
+                                       className="relative z-30 w-full text-xs"
+                                       onClick={() => setPdfConversion({ file: null, bank: selectedBank })}
+                                    >
+                                       PDF to Excel
+                                    </Button>
                                     <Button variant="ghost" className="w-full text-xs h-8" onClick={() => {/* TODO: Load sample */ }}>Use sample statement</Button>
 
                                  </div>
@@ -727,9 +751,12 @@ export default function App() {
 
                      </div>
                      <div className="flex gap-3">
-                        <Button variant="outline" size="sm" onClick={() => setHasFile(false)}>Reset</Button>
+                        <Button variant="outline" size="sm" onClick={() => {
+                           setHasFile(false);
+                           setSourcePdf(null);
+                        }}>Reset</Button>
                         <Button variant="primary" size="sm" onClick={handleExportReport}>
-                           Export Report
+                           {sourcePdf ? "Export Excel" : "Export Report"}
                         </Button>
                      </div>
                   </div>

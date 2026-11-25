@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { DragEvent, FormEvent } from "react";
-import { AlertCircle, ArrowRight, CheckCircle2, Download, FileSpreadsheet, FileText, LoaderCircle, ShieldCheck, Upload, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, Download, FileSpreadsheet, FileText, LoaderCircle, Upload, X } from "lucide-react";
 import "./statement-converter.css";
 
 const banks = [
@@ -26,9 +26,15 @@ function excelFilename(name: string) {
   return `${base || "Statement"}.xlsx`;
 }
 
-export default function StatementConverter() {
-  const [file, setFile] = useState<File | null>(null);
-  const [bank, setBank] = useState("auto");
+interface Props {
+  initialFile: File | null;
+  initialBank: string;
+  onClose: () => void;
+}
+
+export default function StatementConverter({ initialFile, initialBank, onClose }: Props) {
+  const [file, setFile] = useState(initialFile);
+  const [bank, setBank] = useState(initialBank);
   const [password, setPassword] = useState("");
   const [needsPassword, setNeedsPassword] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -36,9 +42,13 @@ export default function StatementConverter() {
   const [error, setError] = useState("");
   const [converted, setConverted] = useState<Converted | null>(null);
   const input = useRef<HTMLInputElement>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
   const passwordInput = useRef<HTMLInputElement>(null);
   const request = useRef<AbortController | null>(null);
 
+  useEffect(() => {
+    if (dialog.current && !dialog.current.open) dialog.current.showModal();
+  }, []);
   useEffect(() => () => request.current?.abort(), []);
   useEffect(() => {
     if (converted) return () => URL.revokeObjectURL(converted.url);
@@ -103,8 +113,10 @@ export default function StatementConverter() {
       if (!response.headers.get("Content-Type")?.startsWith(xlsxMime)) {
         throw new Error("The converter did not return an Excel workbook. Try again.");
       }
+      const workbook = await response.blob();
+      if (controller.signal.aborted) return;
       setConverted({
-        url: URL.createObjectURL(await response.blob()), filename: excelFilename(file.name),
+        url: URL.createObjectURL(workbook), filename: excelFilename(file.name),
         count: Number(response.headers.get("X-Transaction-Count") || 0),
         matched: response.headers.get("X-Statement-Check") === "matched",
       });
@@ -122,17 +134,13 @@ export default function StatementConverter() {
   }
 
   return (
-    <div className="converter">
-      <header className="converter-bar">
-        <div className="converter-bar-inner">
-          <span className="converter-brand"><ShieldCheck size={22} aria-hidden="true" /> LedgerSentinel</span>
-          <span className="converter-bar-label">Statement Converter</span>
-        </div>
-      </header>
-      <main className="converter-main">
+    <dialog ref={dialog} className="converter" aria-labelledby="pdf-to-excel-title" onClose={onClose}>
+      <div className="converter-main">
         <div className="converter-heading">
-          <h1>PDF to Excel</h1>
-          <div className="converter-formats" aria-hidden="true"><FileText size={17} /> PDF <ArrowRight size={15} /> <FileSpreadsheet size={17} /> XLSX</div>
+          <h2 id="pdf-to-excel-title">PDF to Excel</h2>
+          <button type="button" className="converter-icon" title="Close converter" aria-label="Close converter" onClick={() => dialog.current?.close()}>
+            <X size={18} aria-hidden="true" />
+          </button>
         </div>
         <form aria-label="Convert a bank statement" aria-busy={busy} onSubmit={submit}>
           <div className="converter-settings">
@@ -189,7 +197,7 @@ export default function StatementConverter() {
           </div>
           <a className="converter-button secondary" href={converted.url} download={converted.filename}><Download size={17} aria-hidden="true" /> Download Excel</a>
         </section>}
-      </main>
-    </div>
+      </div>
+    </dialog>
   );
 }

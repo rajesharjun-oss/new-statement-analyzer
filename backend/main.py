@@ -152,16 +152,11 @@ async def startup_cleanup():
 
 request_buckets: Dict[str, List[float]] = {}
 convert_slots = asyncio.Semaphore(CONVERT_CONCURRENCY)
-ENABLE_LEGACY_ANALYSIS = os.getenv("ENABLE_LEGACY_ANALYSIS", "false").lower() == "true"
 
 
 @app.middleware("http")
-async def restrict_inactive_workflows(request: Request, call_next):
+async def reject_oversized_conversions(request: Request, call_next):
     path = request.url.path.rstrip("/")
-    if not ENABLE_LEGACY_ANALYSIS and (
-        path in {"/analyze", "/classify-analysis", "/analysis-narrative"} or path.startswith("/download/")
-    ):
-        return JSONResponse(status_code=404, content={"detail": "This workflow is disabled."})
     if path == "/convert" and request.method == "POST":
         length = request.headers.get("content-length", "")
         if length.isdigit() and int(length) > MAX_UPLOAD_BYTES + 65536:

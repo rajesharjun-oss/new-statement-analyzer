@@ -1,26 +1,24 @@
-:root {
+.converter {
   color-scheme: dark;
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  background: #0b0c0e;
+  position: fixed;
+  inset: 0;
+  width: min(620px, calc(100% - 24px));
+  max-height: calc(100dvh - 24px);
+  margin: auto;
+  padding: 0;
+  overflow: auto;
+  background: #111318;
+  border: 1px solid #343b3e;
+  border-radius: 8px;
   color: #f2f4f4;
-  font-synthesis: none;
 }
 
-* { box-sizing: border-box; }
-body { margin: 0; }
-button, input, select { font: inherit; }
-button, a, select, input { outline-offset: 4px; }
-:focus-visible { outline: 2px solid #90e4ce; }
-.converter-bar { border-bottom: 1px solid #25292d; }
-.converter-bar-inner { max-width: 1120px; margin: auto; padding: 18px 24px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; }
-.converter-brand { display: flex; gap: 9px; align-items: center; font-weight: 700; }
-.converter-brand svg { color: #9ce3cf; }
-.converter-bar-label, .converter-muted { color: #a6aeb4; font-size: 13px; }
-.converter-main { max-width: 760px; margin: 0 auto; padding: 52px 24px 36px; }
-.converter-heading { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; padding-bottom: 23px; border-bottom: 1px solid #25292d; }
-.converter-heading h1 { margin: 0; font-size: 31px; line-height: 1.2; }
-.converter-formats { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 650; color: #a8b2b4; }
-.converter-formats svg:nth-of-type(3) { color: #9ce3cf; }
+.converter::backdrop { background: rgb(0 0 0 / 68%); }
+.converter :focus-visible { outline: 2px solid #b6a8ff; outline-offset: 3px; }
+.converter-muted { color: #a6aeb4; font-size: 13px; }
+.converter-main { padding: 22px 24px 24px; }
+.converter-heading { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding-bottom: 12px; border-bottom: 1px solid #25292d; }
+.converter-heading h2 { margin: 0; font-size: 20px; font-weight: 650; line-height: 1.2; }
 .converter-settings { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin: 22px 0 16px; font-size: 14px; }
 .converter-settings label { font-weight: 600; }
 .converter-settings select, .converter-settings input { width: min(100%, 320px); min-height: 44px; padding: 8px 11px; color: #f2f4f4; background: #15181a; border: 1px solid #343b3e; border-radius: 6px; }
@@ -34,8 +32,8 @@ button, a, select, input { outline-offset: 4px; }
 .converter-icon { display: grid; place-content: center; width: 40px; height: 40px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: #c8d0d1; cursor: pointer; }
 .converter-icon:hover:not(:disabled) { border-color: #394244; background: #1e2426; }
 .converter-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 9px 14px; border: 1px solid transparent; border-radius: 6px; font-size: 14px; font-weight: 650; cursor: pointer; text-align: center; text-decoration: none; }
-.converter-button.primary { background: #a3e3d0; color: #101d1a; }
-.converter-button.primary:hover:not(:disabled) { background: #bff3e4; }
+.converter-button.primary { background: #9b87ff; color: #141124; }
+.converter-button.primary:hover:not(:disabled) { background: #baabff; }
 .converter-button.secondary { background: #1d2325; color: #f2f4f4; border-color: #394244; }
 .converter-button.secondary:hover { background: #283235; }
 .converter-button:disabled, .converter-icon:disabled { opacity: .46; cursor: not-allowed; }
@@ -51,8 +49,6 @@ button, a, select, input { outline-offset: 4px; }
 @keyframes convert-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .converter-spinner { animation: none; } }
 @media (max-width: 520px) {
-  .converter-bar-inner { padding: 15px 16px; }
-  .converter-main { padding: 34px 16px 24px; }
-  .converter-heading h1 { font-size: 27px; }
+  .converter-main { padding: 16px; }
   .converter-actions .converter-button { width: 100%; }
 }

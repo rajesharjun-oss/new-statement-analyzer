@@ -68,15 +68,39 @@ class StatementConversionTests(unittest.TestCase):
         self.assertEqual(response.json()["detail"]["code"], "statement_mismatch")
         self.assertNotIn("content-disposition", response.headers)
 
-    def test_invalid_bank_file_type_size_and_disabled_analysis(self):
-        with TestClient(main.app) as client, patch.object(main, "ENABLE_LEGACY_ANALYSIS", False):
-            self.assertEqual(client.post("/analyze").status_code, 404)
-            self.assertEqual(client.post("/classify-analysis").status_code, 404)
+    def test_invalid_bank_file_type_and_size(self):
+        with TestClient(main.app) as client:
             file = ("sample.pdf", b"not-a-pdf", "application/pdf")
             self.assertEqual(client.post("/convert", files={"file": file}).status_code, 400)
             self.assertEqual(client.post("/convert", files={"file": file}, data={"bank": "invalid"}).status_code, 400)
             with patch.object(main, "MAX_UPLOAD_BYTES", 6):
                 self.assertEqual(client.post("/convert", files={"file": file}).status_code, 413)
+
+    def test_reconciliation_analysis_and_report_routes_remain_available(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "example.pdf"
+            upload_dir = root / "uploads"
+            download_dir = root / "downloads"
+            upload_dir.mkdir()
+            download_dir.mkdir()
+            create_statement(source)
+            with (
+                patch.object(main, "UPLOAD_DIR", upload_dir),
+                patch.object(main, "DOWNLOAD_DIR", download_dir),
+                TestClient(main.app) as client,
+                redirect_stdout(StringIO()),
+            ):
+                response = client.post("/analyze", files={
+                    "file": ("synthetic-statement.pdf", source.read_bytes(), "application/pdf"),
+                })
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertEqual(payload["summary"]["transactionCount"], 2)
+                self.assertTrue(payload["summary"]["totalsMatch"])
+                self.assertEqual(client.get(payload["downloadUrl"]).status_code, 200)
+                self.assertEqual(client.post("/classify-analysis", json={}).status_code, 422)
+                self.assertEqual(client.post("/analysis-narrative", json={}).status_code, 422)
 
     def test_multiple_accounts_stay_on_one_sheet_and_formulas_are_text(self):
         data = [{"metadata": {"account_name": "=1+1", "account_type": label},
